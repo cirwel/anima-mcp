@@ -1448,7 +1448,9 @@ class DrawingEngine:
             try:
                 anima = self.last_anima
                 readings = getattr(self, '_last_readings', None)
-                if anima and readings:
+                if anima:
+                    if not readings:
+                        print("[Growth] Warning: no sensor readings at canvas_save, using defaults", file=sys.stderr, flush=True)
                     from ..growth import get_growth_system
                     anima_state = {
                         "warmth": anima.warmth,
@@ -1456,11 +1458,10 @@ class DrawingEngine:
                         "stability": anima.stability,
                         "presence": anima.presence,
                     }
-                    # Correct for LED self-glow: growth preferences should
                     environment = {
-                        "light_lux": readings.light_lux or 0.0,
-                        "temp_c": readings.ambient_temp_c or 22,
-                        "humidity_pct": readings.humidity_pct or 50,
+                        "light_lux": (readings.light_lux or 0.0) if readings else 0.0,
+                        "temp_c": (readings.ambient_temp_c or 22) if readings else 22,
+                        "humidity_pct": (readings.humidity_pct or 50) if readings else 50,
                     }
                     phase = self.canvas.drawing_phase or "resting"
                     growth = get_growth_system()
@@ -1489,6 +1490,8 @@ class DrawingEngine:
                     except Exception as e:
                         print(f"[Growth] Drawing feedback failed: {e}",
                               file=sys.stderr, flush=True)
+                else:
+                    print("[Growth] Warning: no anima at canvas_save, skipping growth notify", file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[Notepad] Growth notify failed: {e}", file=sys.stderr, flush=True)
 
