@@ -314,6 +314,18 @@ async def handle_post_message(arguments: dict) -> list[TextContent]:
         except Exception:
             pass
 
+    # Auto-detect person: if relationships know this author is a person,
+    # treat as human interaction regardless of source parameter
+    if source != "human" and agent_name:
+        try:
+            growth = _get_growth()
+            if growth and hasattr(growth, '_relationships') and isinstance(growth._relationships, dict):
+                rel = growth._relationships.get(agent_name.lower())
+                if rel and getattr(rel, 'is_person', False):
+                    source = "human"
+        except Exception:
+            pass
+
     if not message:
         return [TextContent(type="text", text=json.dumps({
             "error": "message parameter required"
