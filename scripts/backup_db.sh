@@ -10,13 +10,20 @@ TIMESTAMP=$(date +%Y%m%d_%H)
 mkdir -p "$BACKUP_DIR"
 
 if [ -f "$DB_PATH" ]; then
-    sqlite3 "$DB_PATH" ".backup '$BACKUP_DIR/anima_${TIMESTAMP}.db'" 2>/dev/null
+    # Use Python's sqlite3.backup() for WAL-safe copy (sqlite3 CLI not installed)
+    python3 -c "
+import sqlite3, sys
+src = sqlite3.connect('$DB_PATH')
+dst = sqlite3.connect('$BACKUP_DIR/anima_${TIMESTAMP}.db')
+src.backup(dst)
+dst.close()
+src.close()
+" 2>/dev/null
     if [ $? -eq 0 ]; then
         echo "[$(date)] Backup OK: anima_${TIMESTAMP}.db"
     else
-        # Fall back to cp if sqlite3 .backup fails
         cp "$DB_PATH" "$BACKUP_DIR/anima_${TIMESTAMP}.db"
-        echo "[$(date)] Backup via cp (sqlite3 failed): anima_${TIMESTAMP}.db"
+        echo "[$(date)] Backup via cp (python backup failed): anima_${TIMESTAMP}.db"
     fi
 
     # Keep only last 24 backups
