@@ -229,9 +229,12 @@ class GoalsMixin:
 
         desc, motivation = random.choice(suggestions)
 
-        # Dedup against active goals (exact match, not substring)
-        for g in self._goals.values():
-            if g.status == GoalStatus.ACTIVE and desc.lower() == g.description.lower():
-                return None
+        # Dedup against ALL goals including achieved/abandoned (prevents re-creating)
+        conn = self._connect()
+        existing = conn.execute(
+            "SELECT 1 FROM goals WHERE LOWER(description) = LOWER(?)", (desc,)
+        ).fetchone()
+        if existing:
+            return None
 
         return self.form_goal(desc, motivation, target_days=7)

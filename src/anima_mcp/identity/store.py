@@ -622,11 +622,13 @@ class IdentityStore:
 
         Uses a dedicated connection because this is called from the display
         render thread, not the main server thread — SQLite connections can't
-        cross threads.
+        cross threads. Must use WAL mode to match main connection.
         """
         try:
             conn = sqlite3.connect(self.db_path, timeout=5.0)
             try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")
                 conn.execute(
                     """INSERT INTO drawing_history
                        (timestamp, E, I, S, V, C, marks, phase, era, energy,

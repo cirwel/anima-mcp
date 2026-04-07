@@ -411,12 +411,17 @@ def sleep():
             except (ValueError, OSError):
                 # stdout/stderr might be closed - ignore
                 pass
-            # Checkpoint WAL to prevent large recovery on next startup
-            try:
-                if _ctx.store._conn:
-                    _ctx.store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception as e:
-                logger.debug("[Sleep] WAL checkpoint error: %s", e)
+            # Checkpoint WAL to prevent corruption on next startup
+            for attempt in range(3):
+                try:
+                    if _ctx.store._conn:
+                        _ctx.store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        break
+                except Exception as e:
+                    logger.debug("[Sleep] WAL checkpoint attempt %d failed: %s", attempt + 1, e)
+                    if attempt < 2:
+                        import time
+                        time.sleep(0.5)
             _ctx.store.close()
         except Exception as e:
             # Don't crash on shutdown errors
