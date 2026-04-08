@@ -1149,14 +1149,15 @@ async def _update_display_loop():
                 pass
 
             # System metrics persistence: Every 15 iterations (~30s), record to SQLite
-            if loop_count % SYSTEM_METRICS_RECORD_INTERVAL == 0 and readings and _ctx and _ctx.store:
-                try:
-                    _ctx.store.record_system_metrics(readings)
-                    # Heartbeat rate-of-change probes now that they have fresh data
-                    _health.heartbeat("thermal_trend")
-                    _health.heartbeat("memory_pressure")
-                except Exception:
-                    pass  # Non-fatal — don't disrupt main loop
+            if loop_count % SYSTEM_METRICS_RECORD_INTERVAL == 0:
+                if readings and _ctx and _ctx.store:
+                    try:
+                        _ctx.store.record_system_metrics(readings)
+                    except Exception:
+                        pass  # Non-fatal — don't disrupt main loop
+                # Heartbeat regardless of readings — probes fail open independently
+                _health.heartbeat("thermal_trend")
+                _health.heartbeat("memory_pressure")
 
             # System metrics pruning: Every 1800 iterations (~1h), delete old rows
             if loop_count % SYSTEM_METRICS_PRUNE_INTERVAL == 0 and loop_count > 0 and _ctx and _ctx.store:
