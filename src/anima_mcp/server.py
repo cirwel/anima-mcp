@@ -1156,8 +1156,9 @@ async def _update_display_loop():
                     except Exception:
                         pass  # Non-fatal — don't disrupt main loop
                 # Heartbeat regardless of readings — probes fail open independently
-                _health.heartbeat("thermal_trend")
-                _health.heartbeat("memory_pressure")
+                if _health is not None:
+                    _health.heartbeat("thermal_trend")
+                    _health.heartbeat("memory_pressure")
 
             # System metrics pruning: Every 1800 iterations (~1h), delete old rows
             if loop_count % SYSTEM_METRICS_PRUNE_INTERVAL == 0 and loop_count > 0 and _ctx and _ctx.store:
