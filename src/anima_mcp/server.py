@@ -1152,6 +1152,9 @@ async def _update_display_loop():
             if loop_count % SYSTEM_METRICS_RECORD_INTERVAL == 0 and readings and _ctx and _ctx.store:
                 try:
                     _ctx.store.record_system_metrics(readings)
+                    # Heartbeat rate-of-change probes now that they have fresh data
+                    _health.heartbeat("thermal_trend")
+                    _health.heartbeat("memory_pressure")
                 except Exception:
                     pass  # Non-fatal — don't disrupt main loop
 

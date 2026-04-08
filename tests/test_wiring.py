@@ -43,18 +43,21 @@ class TestTrajectoryToPrimitiveLanguageWiring:
 
         # Feed through primitive language with anchor mechanism
         pls = PrimitiveLanguageSystem(db_path=str(tmp_path / "test.db"))
-        state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.7, "presence": 0.5}
+        try:
+            state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.7, "presence": 0.5}
 
-        # With anchor, first token should always be from suggested set
-        hits = 0
-        trials = 50
-        for _ in range(trials):
-            tokens = pls.select_tokens(state, count=2, suggested_tokens=lumen_tokens)
-            if any(t in lumen_tokens for t in tokens):
-                hits += 1
+            # With anchor, first token should always be from suggested set
+            hits = 0
+            trials = 50
+            for _ in range(trials):
+                tokens = pls.select_tokens(state, count=2, suggested_tokens=lumen_tokens)
+                if any(t in lumen_tokens for t in tokens):
+                    hits += 1
 
-        # Anchor guarantees at least one suggested token every time
-        assert hits == trials, f"Anchor should guarantee suggested token in every utterance, got {hits}/{trials}"
+            # Anchor guarantees at least one suggested token every time
+            assert hits == trials, f"Anchor should guarantee suggested token in every utterance, got {hits}/{trials}"
+        finally:
+            pls.close()
 
     def test_trajectory_awareness_to_utterance_coherence(self, tmp_path):
         """Full pipeline: TrajectoryAwareness → suggestion → utterance → coherence > 0."""
@@ -63,26 +66,29 @@ class TestTrajectoryToPrimitiveLanguageWiring:
 
         ta = TrajectoryAwareness(buffer_size=10, seed=42)
         pls = PrimitiveLanguageSystem(db_path=str(tmp_path / "test.db"))
+        try:
+            # Fill buffer with enough states (> MIN_STATES=5)
+            for i in range(8):
+                ta._last_record_time = 0  # Force recording (bypass interval)
+                ta.record_state(warmth=0.5, clarity=0.6, stability=0.7, presence=0.5)
 
-        # Fill buffer with enough states (> MIN_STATES=5)
-        for i in range(8):
-            ta._last_record_time = 0  # Force recording (bypass interval)
-            ta.record_state(warmth=0.5, clarity=0.6, stability=0.7, presence=0.5)
+            lang_state = {"warmth": 0.5, "clarity": 0.6, "stability": 0.7, "presence": 0.5}
+            suggestion = ta.get_trajectory_suggestion(lang_state)
 
-        lang_state = {"warmth": 0.5, "clarity": 0.6, "stability": 0.7, "presence": 0.5}
-        suggestion = ta.get_trajectory_suggestion(lang_state)
+            assert suggestion is not None, "Should produce suggestion with 8 states in buffer"
+            assert "suggested_tokens" in suggestion
+            assert len(suggestion["suggested_tokens"]) > 0
 
-        assert suggestion is not None, "Should produce suggestion with 8 states in buffer"
-        assert "suggested_tokens" in suggestion
-        assert len(suggestion["suggested_tokens"]) > 0
+            # Generate utterance with suggestions
+            utterance = pls.generate_utterance(lang_state, suggested_tokens=suggestion["suggested_tokens"])
 
-        # Generate utterance with suggestions
-        utterance = pls.generate_utterance(lang_state, suggested_tokens=suggestion["suggested_tokens"])
-
-        # Compute coherence
-        coherence = compute_expression_coherence(suggestion["suggested_tokens"], utterance.tokens)
-        assert coherence is not None
-        assert coherence > 0, f"Coherence should be > 0 with anchor mechanism, got {coherence}"
+            # Compute coherence
+            coherence = compute_expression_coherence(suggestion["suggested_tokens"], utterance.tokens)
+            assert coherence is not None
+            assert coherence > 0, f"Coherence should be > 0 with anchor mechanism, got {coherence}"
+        finally:
+            ta.close()
+            pls.close()
 
 
 # ============================================================

@@ -181,6 +181,12 @@ class PrimitiveLanguageSystem:
         self._total_utterances = 0
         self._successful_utterances = 0
 
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
     def _connect(self) -> sqlite3.Connection:
         """Get database connection."""
         if self._conn is None:

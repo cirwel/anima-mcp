@@ -183,6 +183,8 @@ def share_insight_sync(
                     )
                 )
             finally:
+                # Drain pending callbacks (aiohttp connector cleanup)
+                loop.run_until_complete(asyncio.sleep(0))
                 loop.close()
     except Exception:
         return None

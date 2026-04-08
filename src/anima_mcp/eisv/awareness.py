@@ -86,6 +86,12 @@ class TrajectoryAwareness:
     # Persistence helpers
     # ------------------------------------------------------------------
 
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._db_conn is not None:
+            self._db_conn.close()
+            self._db_conn = None
+
     def _init_db(self) -> None:
         """Create the trajectory_events table if it doesn't exist."""
         try:
