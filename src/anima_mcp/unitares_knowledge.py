@@ -21,6 +21,10 @@ _shared_insights: set = set()
 _last_share_time: float = 0.0
 MIN_SHARE_INTERVAL = 60.0  # Don't share more than once per minute
 
+# Reusable session — avoids allocating a new ClientSession per call
+_http_session: Optional[Any] = None
+_session_loop: Optional[Any] = None
+
 
 async def share_insight_to_unitares(
     insight: str,
@@ -110,36 +114,49 @@ async def share_insight_to_unitares(
             "X-Session-ID": f"anima-{agent_id[:8]}"
         }
         
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
-            async with session.post(mcp_url, json=mcp_request, headers=headers) as response:
-                if response.status == 200:
-                    # Parse response
-                    content_type = response.headers.get("Content-Type", "")
-                    if "text/event-stream" in content_type:
-                        text = await response.text()
-                        for line in text.split("\n"):
-                            if line.startswith("data: "):
-                                try:
-                                    result = json.loads(line[6:])
-                                    if "result" in result:
-                                        # Success - track this insight
-                                        _shared_insights.add(insight_hash)
-                                        _last_share_time = now
-                                        # Keep set bounded
-                                        if len(_shared_insights) > 1000:
-                                            _shared_insights.clear()
-                                        return result["result"]
-                                except json.JSONDecodeError:
-                                    continue
-                    else:
-                        result = await response.json()
-                        if "result" in result:
-                            _shared_insights.add(insight_hash)
-                            _last_share_time = now
-                            if len(_shared_insights) > 1000:
-                                _shared_insights.clear()
-                            return result["result"]
-        
+        global _http_session, _session_loop
+
+        # Reuse session if still valid for this event loop
+        current_loop = asyncio.get_running_loop()
+        if (_http_session is None
+                or _http_session.closed
+                or _session_loop is not current_loop):
+            if _http_session is not None and not _http_session.closed:
+                await _http_session.close()
+            _http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            )
+            _session_loop = current_loop
+
+        async with _http_session.post(mcp_url, json=mcp_request, headers=headers) as response:
+            if response.status == 200:
+                # Parse response
+                content_type = response.headers.get("Content-Type", "")
+                if "text/event-stream" in content_type:
+                    text = await response.text()
+                    for line in text.split("\n"):
+                        if line.startswith("data: "):
+                            try:
+                                result = json.loads(line[6:])
+                                if "result" in result:
+                                    # Success - track this insight
+                                    _shared_insights.add(insight_hash)
+                                    _last_share_time = now
+                                    # Keep set bounded
+                                    if len(_shared_insights) > 1000:
+                                        _shared_insights.clear()
+                                    return result["result"]
+                            except json.JSONDecodeError:
+                                continue
+                else:
+                    result = await response.json()
+                    if "result" in result:
+                        _shared_insights.add(insight_hash)
+                        _last_share_time = now
+                        if len(_shared_insights) > 1000:
+                            _shared_insights.clear()
+                        return result["result"]
+
         return None
         
     except ImportError:
