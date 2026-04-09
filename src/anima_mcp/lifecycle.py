@@ -392,6 +392,20 @@ def sleep():
     except Exception as e:
         logger.debug("[Sleep] SelfReflection close error: %s", e)
 
+    # Close PrimitiveLanguageSystem SQLite connection
+    try:
+        from .primitive_language import get_language_system
+        get_language_system().close()
+    except Exception as e:
+        logger.debug("[Sleep] PrimitiveLanguageSystem close error: %s", e)
+
+    # Close TrajectoryAwareness SQLite connection
+    try:
+        from .eisv import get_trajectory_awareness
+        get_trajectory_awareness().close()
+    except Exception as e:
+        logger.debug("[Sleep] TrajectoryAwareness close error: %s", e)
+
     # Stop voice system if running
     if _ctx and _ctx.voice_instance:
         try:
