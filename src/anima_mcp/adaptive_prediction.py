@@ -143,6 +143,24 @@ class AdaptivePredictionModel:
             except Exception as e:
                 print(f"[AdaptivePrediction] Could not load patterns: {e}")
 
+    def _prune_patterns(self, max_total: int = 5000):
+        """Evict low-value patterns when dict grows too large."""
+        total = sum(len(p) for p in self._patterns.values())
+        if total <= max_total:
+            return
+
+        all_patterns = [
+            (var, key, pattern)
+            for var, patterns in self._patterns.items()
+            for key, pattern in patterns.items()
+        ]
+        # Evict weakest: lowest sample count, then lowest confidence
+        all_patterns.sort(key=lambda x: (x[2].sample_count, x[2].confidence))
+
+        to_remove = total - max_total
+        for var, key, _ in all_patterns[:to_remove]:
+            del self._patterns[var][key]
+
     def _save_patterns(self):
         """Save learned patterns to disk."""
         try:
@@ -339,8 +357,9 @@ class AdaptivePredictionModel:
         history_entry = {**observations, "timestamp": current_time.isoformat()}
         self._history.append(history_entry)
 
-        # Periodically save patterns
+        # Periodically prune and save patterns
         if len(self._history) % 10 == 0:
+            self._prune_patterns()
             self._save_patterns()
 
     def record_prediction_error(self, variable: str, predicted: float, actual: float):
