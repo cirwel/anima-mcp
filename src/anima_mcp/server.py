@@ -1121,9 +1121,6 @@ async def _update_display_loop():
                             presence=anima.presence,
                             mood=mood
                         )
-                        if _health:
-                            _health.heartbeat("voice")
-
                         if readings:
                             voice.update_environment(
                                 temperature=readings.ambient_temp_c or 22.0,
@@ -1133,6 +1130,9 @@ async def _update_display_loop():
                 except Exception as e:
                     if loop_count % STATUS_LOG_THROTTLE == 0:
                         logger.debug("[Voice] State update error: %s", e)
+                # Heartbeat regardless of voice init — probe detects failure independently
+                if _health:
+                    _health.heartbeat("voice")
 
             # Log update status every 20th iteration
             if loop_count % DISPLAY_LOG_THROTTLE == 1 and (display_updated or led_updated):
@@ -1241,8 +1241,9 @@ async def _update_display_loop():
                         add_observation(milestone, author="lumen")
 
                 safe_call(growth_observe, default=None, log_error=True)
-                if _health:
-                    _health.heartbeat("growth")
+            # Heartbeat regardless of _ctx.growth — probe detects init failure independently
+            if loop_count % GROWTH_INTERVAL == 0 and _health:
+                _health.heartbeat("growth")
 
             # Goal system: Suggest new goals every ~2 hours
             if loop_count % GOAL_SUGGEST_INTERVAL == 0 and anima and _ctx and _ctx.growth:
