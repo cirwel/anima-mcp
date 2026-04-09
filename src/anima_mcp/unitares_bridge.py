@@ -112,7 +112,7 @@ class UnitaresBridge:
             limit=5,
             limit_per_host=3,
             ttl_dns_cache=300,
-            keepalive_timeout=30,
+            force_close=True,  # Disable keep-alive — uvicorn hangs on idle connections
         )
         self._session_timeout = aiohttp.ClientTimeout(total=self._timeout)
         self._http_session = aiohttp.ClientSession(
