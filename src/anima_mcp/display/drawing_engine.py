@@ -1396,7 +1396,7 @@ class DrawingEngine:
 
             # Atomic save: write to temp file, then rename to prevent 0-byte files on crash
             tmp_path = filepath.with_suffix(".tmp")
-            img.save(tmp_path)
+            img.save(tmp_path, format="PNG")
             tmp_path.rename(filepath)
 
             # Update tracking

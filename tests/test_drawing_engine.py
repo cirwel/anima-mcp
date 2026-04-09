@@ -1287,6 +1287,31 @@ class TestDrawingEngineCanvasCheckAutonomy:
 # DrawingEISV backward compatibility alias
 # ---------------------------------------------------------------------------
 
+class TestCanvasSaveAtomicPNG:
+    """Test that canvas_save writes valid PNG via atomic temp file."""
+
+    def test_atomic_save_writes_png(self, tmp_path):
+        """Regression: img.save(.tmp) failed because PIL needs format='PNG'."""
+        from pathlib import Path
+
+        engine = DrawingEngine()
+        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        engine.canvas.draw_pixel(20, 20, (0, 255, 0))
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = engine.canvas_save()
+
+        assert result is not None
+        saved = Path(result)
+        assert saved.exists()
+        assert saved.suffix == ".png"
+        assert saved.stat().st_size > 0
+        # No .tmp files should remain
+        drawings_dir = tmp_path / ".anima" / "drawings"
+        tmp_files = list(drawings_dir.glob("*.tmp"))
+        assert tmp_files == []
+
+
 class TestDrawingEISVAlias:
     """Test that DrawingEISV is an alias for DrawingState."""
 
