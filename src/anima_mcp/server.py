@@ -999,10 +999,6 @@ async def _update_display_loop():
                             logger.debug("[Loop] Display update timed out (2s)")
                     display_updated = display_result is True
                     if display_updated:
-                        if _health:
-                            _health.heartbeat("display")
-
-                    if display_updated:
                         if loop_count == 1:
                             print("[Loop] Display render successful - face showing", file=sys.stderr, flush=True)
                     elif loop_count == 1:
@@ -1014,6 +1010,9 @@ async def _update_display_loop():
             else:
                 if loop_count == 1:
                     print("[Loop] Display not initialized", file=sys.stderr, flush=True)
+            # Heartbeat regardless of render success — probe detects hardware failure independently
+            if _ctx.display and _health:
+                _health.heartbeat("display")
 
             # Update LEDs with raw anima state (independent from face)
             # LEDs reflect proprioceptive state directly - what Lumen actually feels
@@ -1071,9 +1070,6 @@ async def _update_display_loop():
 
                 led_state = safe_call(update_leds, default=None, log_error=True)
                 led_updated = led_state is not None
-                if led_updated:
-                    if _health:
-                        _health.heartbeat("leds")
                 if led_updated and loop_count == 1:
                     total_duration = time.time() - update_start
                     print(f"[Loop] LED update took {total_duration*1000:.1f}ms", file=sys.stderr, flush=True)
@@ -1096,6 +1092,9 @@ async def _update_display_loop():
             elif _ctx.leds:
                 if loop_count == 1:
                     print("[Loop] LEDs not available (hardware issue?)", file=sys.stderr, flush=True)
+            # Heartbeat regardless of LED update success — probe detects hardware failure independently
+            if _ctx.leds and _health:
+                _health.heartbeat("leds")
 
             # Update voice system with anima state (for listening and text expression)
             if loop_count % VOICE_INTERVAL == 0:
