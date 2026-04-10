@@ -1550,7 +1550,6 @@ def run_http_server(host: str, port: int):
         from starlette.responses import JSONResponse
 
         _streamable_session_manager = None
-        _streamable_running = False
 
         # Create session manager for Streamable HTTP
         _streamable_session_manager = StreamableHTTPSessionManager(
@@ -1599,14 +1598,6 @@ def run_http_server(host: str, port: int):
         async def streamable_mcp_asgi(scope, receive, send):
             """ASGI app for Streamable HTTP MCP at /mcp/."""
             if scope.get("type") != "http":
-                return
-
-            if not _streamable_running:
-                response = JSONResponse({
-                    "status": "starting_up",
-                    "message": "Streamable HTTP session manager not ready"
-                }, status_code=503)
-                await response(scope, receive, send)
                 return
 
             try:
@@ -1695,7 +1686,48 @@ def run_http_server(host: str, port: int):
             Route("/schema-data", rest_schema_data, methods=["GET"]),
             Route("/schema", rest_schema_page, methods=["GET"]),
         ]
-        _inner_app = Starlette(routes=all_routes)
+        # Starlette lifespan — single owner of session manager lifecycle.
+        # session_manager.run() creates the anyio task group internally;
+        # no manual _task_group/_has_started poking needed.
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def lifespan(app):
+            start_display_loop()
+            print("[Server] Display loop started", file=sys.stderr, flush=True)
+
+            async with _streamable_session_manager.run():
+                print("[Server] Streamable HTTP session manager running", file=sys.stderr, flush=True)
+
+                # Server warmup task - marks server ready after brief delay
+                async def server_warmup_task():
+                    global SERVER_READY, SERVER_STARTUP_TIME
+                    SERVER_STARTUP_TIME = datetime.now()
+                    try:
+                        from pathlib import Path
+                        lockfile = Path("/tmp/anima-restarting")
+                        if lockfile.exists():
+                            lockfile.unlink()
+                            print("[Server] Cleared restart lockfile", file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2.0)
+                    SERVER_READY = True
+                    print("[Server] Warmup complete - server ready", file=sys.stderr, flush=True)
+
+                asyncio.create_task(server_warmup_task())
+
+                print(f"MCP server running at http://{host}:{port}", file=sys.stderr, flush=True)
+                print(f"  Streamable HTTP: http://{host}:{port}/mcp/", file=sys.stderr, flush=True)
+
+                yield  # Server accepts requests here
+
+            # Cleanup after uvicorn shuts down
+            print("[Server] Streamable HTTP session manager shut down", file=sys.stderr, flush=True)
+            stop_display_loop()
+            sleep()
+
+        _inner_app = Starlette(routes=all_routes, lifespan=lifespan)
 
         # Wrap app to rewrite /mcp → /mcp/ at the ASGI level.
         # Starlette's Mount issues a 307 redirect for missing trailing slash,
@@ -1710,92 +1742,19 @@ def run_http_server(host: str, port: int):
         app = _rewrite_mcp_slash
         print("[Server] Starlette app created with all routes", file=sys.stderr, flush=True)
 
-        # Start display loop before server runs
-        start_display_loop()
-        print("[Server] Display loop started", file=sys.stderr, flush=True)
-
-        # Server warmup task - marks server ready after brief delay
-        async def server_warmup_task():
-            global SERVER_READY, SERVER_STARTUP_TIME
-            SERVER_STARTUP_TIME = datetime.now()
-            # Clear restart lockfile — we're back up
-            try:
-                from pathlib import Path
-                lockfile = Path("/tmp/anima-restarting")
-                if lockfile.exists():
-                    lockfile.unlink()
-                    print("[Server] Cleared restart lockfile", file=sys.stderr, flush=True)
-            except Exception:
-                pass
-            await asyncio.sleep(2.0)
-            SERVER_READY = True
-            print("[Server] Warmup complete - server ready", file=sys.stderr, flush=True)
-
-        asyncio.create_task(server_warmup_task())
-
-        print(f"MCP server running at http://{host}:{port}", file=sys.stderr, flush=True)
-        print(f"  Streamable HTTP: http://{host}:{port}/mcp/", file=sys.stderr, flush=True)
-
-        # Start Streamable HTTP session manager as background task
-        # Uses anyio task group pattern (same as governance-mcp)
-        import anyio
-
-        async def start_streamable_http():
-            nonlocal _streamable_running
-            try:
-                async with anyio.create_task_group() as tg:
-                    # Manually set internal state (same pattern as governance-mcp)
-                    _streamable_session_manager._task_group = tg
-                    _streamable_session_manager._has_started = True
-                    _streamable_running = True
-                    print("[Server] Streamable HTTP session manager running", file=sys.stderr, flush=True)
-                    # Keep running until cancelled
-                    await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                print("[Server] Streamable HTTP session manager shutting down", file=sys.stderr, flush=True)
-                _streamable_running = False
-            except Exception as e:
-                print(f"[Server] Streamable HTTP error: {e}", file=sys.stderr, flush=True)
-                _streamable_running = False
-
-        streamable_task = asyncio.create_task(start_streamable_http())
-
-        try:
-            # Run with uvicorn
-            config = uvicorn.Config(
-                app,
-                host=host,
-                port=port,
-                log_level="info",
-                limit_concurrency=100,
-                timeout_keep_alive=5,
-                proxy_headers=True,          # Trust X-Forwarded-Proto from cloudflared
-                forwarded_allow_ips="*",     # Allow proxy headers from any IP
-            )
-            server = uvicorn.Server(config)
-            await server.serve()
-        finally:
-            streamable_task.cancel()
-            stop_display_loop()
-            sleep()
-
-    # Handle graceful shutdown
-    def shutdown_handler(sig, frame):
-        global SERVER_SHUTTING_DOWN
-        SERVER_SHUTTING_DOWN = True  # Signal handlers to reject new requests
-        try:
-            print("\nShutting down...", file=sys.stderr, flush=True)
-        except (ValueError, OSError):
-            pass
-        try:
-            stop_display_loop()
-            sleep()
-        except Exception as e:
-            logger.debug("[Shutdown] Cleanup error: %s", e)
-        raise SystemExit(0)
-
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+        # Run with uvicorn — lifespan handles startup/shutdown cleanup
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            limit_concurrency=100,
+            timeout_keep_alive=5,
+            proxy_headers=True,          # Trust X-Forwarded-Proto from cloudflared
+            forwarded_allow_ips="*",     # Allow proxy headers from any IP
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
 
     # Run the async server
     asyncio.run(_run_http_server_async())
