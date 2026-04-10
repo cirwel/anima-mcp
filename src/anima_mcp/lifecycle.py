@@ -372,7 +372,10 @@ def sleep():
             except (ValueError, OSError):
                 pass
 
-    # Close server-side UNITARES bridge if it was used
+    # Close server-side UNITARES bridge if it was used.
+    # NOTE: bridge.close() is async. In HTTP mode, the lifespan awaits it
+    # before calling sleep(). This fire-and-forget is a best-effort fallback
+    # for non-lifespan shutdown paths (stdio signal handler, main() finally).
     bridge = _get_server_bridge()
     if bridge:
         try:

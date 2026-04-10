@@ -1724,6 +1724,17 @@ def run_http_server(host: str, port: int):
 
             # Cleanup after uvicorn shuts down
             print("[Server] Streamable HTTP session manager shut down", file=sys.stderr, flush=True)
+
+            # Await bridge close here (async context) — sleep()'s fire-and-forget
+            # can't reliably close it when the loop is about to stop.
+            from .accessors import _get_server_bridge
+            bridge = _get_server_bridge()
+            if bridge:
+                try:
+                    await bridge.close()
+                except Exception as e:
+                    logger.debug("[Shutdown] Bridge close error: %s", e)
+
             stop_display_loop()
             sleep()
 

@@ -242,23 +242,23 @@ def _handle_separate_button(
         hold_duration = time.time() - _ctx.sep_btn_press_start
 
         # Long press (3+ seconds) = graceful shutdown
+        # Signal the process to shut down via SIGTERM so uvicorn/lifespan
+        # drive cleanup ordering. Do NOT call sleep()/stop_display_loop()
+        # directly — that bypasses the lifespan's teardown path.
         if hold_duration >= SHUTDOWN_LONG_PRESS_SECONDS:
-            print(f"[Shutdown] Long press detected ({hold_duration:.1f}s) - initiating graceful shutdown...", file=sys.stderr, flush=True)
+            print(f"[Shutdown] Long press detected ({hold_duration:.1f}s) - requesting graceful shutdown...", file=sys.stderr, flush=True)
             try:
                 if current_mode == ScreenMode.NOTEPAD:
                     saved_path = renderer.canvas_save()
                     if saved_path:
                         print(f"[Shutdown] Saved drawing to {saved_path}", file=sys.stderr, flush=True)
 
-                from .server import stop_display_loop, sleep
-                stop_display_loop()
-                sleep()
-                print("[Shutdown] Complete - safe to unplug", file=sys.stderr, flush=True)
-                raise SystemExit(0)
-            except SystemExit:
-                raise
+                import os
+                import signal
+                os.kill(os.getpid(), signal.SIGTERM)
+                return  # Let the signal handler / lifespan drive shutdown
             except Exception as e:
-                print(f"[Shutdown] Error during shutdown: {e}", file=sys.stderr, flush=True)
+                print(f"[Shutdown] Error requesting shutdown: {e}", file=sys.stderr, flush=True)
                 raise SystemExit(1)
     else:
         # Button released - check if it was a short press
