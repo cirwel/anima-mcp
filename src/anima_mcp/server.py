@@ -234,11 +234,19 @@ async def _update_display_loop():
     # Event for immediate re-render when screen mode changes
     mode_change_event = asyncio.Event()
     
-    # Start fast input polling task (delegated to input_handler.py)
+    # Start fast input polling task (delegated to input_handler.py).
+    # Store handle on _ctx so stop_display_loop() can cancel it cleanly —
+    # otherwise a duplicate poller can outlive shutdown or restart.
     try:
         from .input_handler import fast_input_poll
-        loop = asyncio.get_event_loop()
-        loop.create_task(fast_input_poll(mode_change_event))
+        if _ctx is not None:
+            # Cancel any previous poller before spawning a new one
+            prev = getattr(_ctx, "input_poll_task", None)
+            if prev is not None and not prev.done():
+                prev.cancel()
+            _ctx.input_poll_task = asyncio.create_task(fast_input_poll(mode_change_event))
+        else:
+            asyncio.create_task(fast_input_poll(mode_change_event))
     except Exception as e:
         print(f"[Input] Failed to start fast polling: {e}", file=sys.stderr, flush=True)
     
@@ -1451,6 +1459,9 @@ def stop_display_loop():
                 print("[Display] Stopped continuous update loop", file=sys.stderr, flush=True)
             except (ValueError, OSError):
                 pass
+        # Also cancel the fast input poller — it lives alongside the display loop
+        if _ctx and _ctx.input_poll_task and not _ctx.input_poll_task.done():
+            _ctx.input_poll_task.cancel()
     except Exception as e:
         try:
             print(f"[Display] Error stopping display loop: {e}", file=sys.stderr, flush=True)
@@ -1696,10 +1707,13 @@ def run_http_server(host: str, port: int):
             start_display_loop()
             print("[Server] Display loop started", file=sys.stderr, flush=True)
 
+            warmup_task = None
             async with _streamable_session_manager.run():
                 print("[Server] Streamable HTTP session manager running", file=sys.stderr, flush=True)
 
-                # Server warmup task - marks server ready after brief delay
+                # Server warmup task - marks server ready after brief delay.
+                # Handle is retained so the lifespan can cancel it on shutdown,
+                # preventing it from flipping SERVER_READY mid-teardown.
                 async def server_warmup_task():
                     global SERVER_READY, SERVER_STARTUP_TIME
                     SERVER_STARTUP_TIME = datetime.now()
@@ -1711,11 +1725,14 @@ def run_http_server(host: str, port: int):
                             print("[Server] Cleared restart lockfile", file=sys.stderr, flush=True)
                     except Exception:
                         pass
-                    await asyncio.sleep(2.0)
+                    try:
+                        await asyncio.sleep(2.0)
+                    except asyncio.CancelledError:
+                        return  # Shutdown started during warmup — don't flip ready
                     SERVER_READY = True
                     print("[Server] Warmup complete - server ready", file=sys.stderr, flush=True)
 
-                asyncio.create_task(server_warmup_task())
+                warmup_task = asyncio.create_task(server_warmup_task())
 
                 print(f"MCP server running at http://{host}:{port}", file=sys.stderr, flush=True)
                 print(f"  Streamable HTTP: http://{host}:{port}/mcp/", file=sys.stderr, flush=True)
@@ -1724,6 +1741,14 @@ def run_http_server(host: str, port: int):
 
             # Cleanup after uvicorn shuts down
             print("[Server] Streamable HTTP session manager shut down", file=sys.stderr, flush=True)
+
+            # Cancel warmup task if it's still sleeping
+            if warmup_task is not None and not warmup_task.done():
+                warmup_task.cancel()
+                try:
+                    await warmup_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
             # Await bridge close here (async context) — sleep()'s fire-and-forget
             # can't reliably close it when the loop is about to stop.

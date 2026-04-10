@@ -54,6 +54,7 @@ class ServerContext:
 
     # Display loop
     display_update_task: Any = None  # asyncio.Task
+    input_poll_task: Any = None  # asyncio.Task
 
     # Input / joystick
     joystick_enabled: bool = False

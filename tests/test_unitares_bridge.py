@@ -318,16 +318,19 @@ async def test_check_availability_staleness_recheck():
     """Test that availability is rechecked after 5 minutes."""
     # Use an unreachable URL so the recheck actually fails
     bridge = UnitaresBridge(unitares_url="http://127.0.0.1:19999/mcp")
-    bridge._available = True
-    import time
-    # Recent check — should return True without rechecking
-    bridge._last_availability_check = time.time()
-    assert await bridge.check_availability() is True
+    try:
+        bridge._available = True
+        import time
+        # Recent check — should return True without rechecking
+        bridge._last_availability_check = time.time()
+        assert await bridge.check_availability() is True
 
-    # Stale check (6 min ago) — should fall through to recheck (and fail, no server)
-    bridge._last_availability_check = time.time() - 360
-    result = await bridge.check_availability()
-    assert result is False
+        # Stale check (6 min ago) — should fall through to recheck (and fail, no server)
+        bridge._last_availability_check = time.time() - 360
+        result = await bridge.check_availability()
+        assert result is False
+    finally:
+        await bridge.close()
 
 
 @pytest.mark.asyncio
