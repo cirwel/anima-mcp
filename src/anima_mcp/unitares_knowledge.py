@@ -171,6 +171,19 @@ async def share_insight_to_unitares(
         return None
 
 
+def _close_shared_session_if_owned(loop: asyncio.AbstractEventLoop) -> None:
+    """Close the cached aiohttp session if it belongs to the given loop."""
+    global _http_session, _session_loop
+    if _session_loop is not loop:
+        return
+    try:
+        if _http_session is not None and not _http_session.closed:
+            loop.run_until_complete(_http_session.close())
+    finally:
+        _http_session = None
+        _session_loop = None
+
+
 def share_insight_sync(
     insight: str,
     discovery_type: str = "insight",
@@ -200,6 +213,7 @@ def share_insight_sync(
                     )
                 )
             finally:
+                _close_shared_session_if_owned(loop)
                 # Drain pending callbacks (aiohttp connector cleanup)
                 loop.run_until_complete(asyncio.sleep(0))
                 loop.close()
