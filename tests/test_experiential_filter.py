@@ -383,13 +383,19 @@ class TestIntegrationSenseSelf:
 
     def test_neutral_salience_no_change(self, normal_readings):
         """Salience all at 1.0 should produce identical results to no salience."""
+        import anima_mcp.computational_neural as cn
+
         cal = NervousSystemCalibration()
 
+        # sense_self() mutates the global neural EMA state on every call.
+        # Reset between comparisons so neutral salience is measured from the
+        # same initial neural state rather than from sequential drift.
+        cn._sensor = None
         anima_none = sense_self(normal_readings, cal)
+        cn._sensor = None
         salience = {dim: 1.0 for dim in DIMENSIONS}
         anima_neutral = sense_self(normal_readings, cal, salience_weights=salience)
 
-        # Tolerance accounts for neural sensor EMA drift between consecutive calls
         assert abs(anima_none.warmth - anima_neutral.warmth) < 0.05
         assert abs(anima_none.clarity - anima_neutral.clarity) < 0.05
         assert abs(anima_none.stability - anima_neutral.stability) < 0.05
