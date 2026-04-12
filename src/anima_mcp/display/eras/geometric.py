@@ -47,6 +47,10 @@ class GeometricEra:
     name = "geometric"
     description = "Complete geometric forms — circles, spirals, arcs, patterns (Jan 2026)"
 
+    # Completion tuning: each stamp is a big commitment — tires faster, needs fewer marks
+    fatigue_rate = 2.0  # 2x base fatigue (whole shapes are exhausting)
+    min_marks_for_completion = 3  # 3 shapes can be a complete drawing
+
     def create_state(self) -> GeometricState:
         return GeometricState()
 
@@ -407,6 +411,7 @@ class GeometricEra:
         presence: float,
         coherence: float,
         clarity: float = 0.5,
+        canvas=None,
     ) -> Tuple[float, float, float]:
         """Jump to new position after each shape.
 

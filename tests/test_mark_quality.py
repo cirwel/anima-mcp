@@ -1,0 +1,277 @@
+"""Tests for mark quality improvements across eras."""
+
+import random
+from anima_mcp.display.drawing_engine import CanvasState
+from anima_mcp.display.eras.gestural import GesturalEra, GesturalState
+
+
+class TestGesturalBrushWidth:
+    """Gestural marks should use energy-modulated brush width."""
+
+    def test_stroke_high_energy_wider_than_1px(self):
+        """A high-energy stroke should place pixels in adjacent rows (width > 1)."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "stroke"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
+
+        # With energy 0.9, brush radius should be ~2px.
+        # A horizontal stroke at y=120 should have pixels at y=119, 120, 121.
+        ys = {y for (x, y) in canvas.pixels}
+        assert len(ys) > 1, f"High-energy stroke should span multiple rows, got ys={ys}"
+
+    def test_stroke_low_energy_narrow(self):
+        """A low-energy stroke should stay 1px wide."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "stroke"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.15, (255, 0, 0))
+
+        # Low energy: brush_radius=1 -> single pixel row
+        ys = {y for (x, y) in canvas.pixels}
+        assert len(ys) <= 2, f"Low-energy stroke should be narrow, got ys={ys}"
+
+    def test_dot_high_energy_cluster(self):
+        """A high-energy dot should place 2-4 pixels, not just 1."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "dot"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
+
+        assert len(canvas.pixels) >= 2, f"High-energy dot should be multi-pixel, got {len(canvas.pixels)}"
+
+    def test_dot_low_energy_single_pixel(self):
+        """A low-energy dot is still just 1 pixel."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "dot"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.1, (255, 0, 0))
+
+        assert len(canvas.pixels) <= 2, f"Low-energy dot should be 1-2px, got {len(canvas.pixels)}"
+
+
+from anima_mcp.display.eras.field import FieldEra
+from anima_mcp.display.eras.pointillist import PointillistEra
+
+
+class TestFieldBrushWidth:
+    """Field era flow marks should use brush width."""
+
+    def test_flow_dash_high_energy_wider(self):
+        """High-energy flow_dash should be wider than 1px."""
+        random.seed(42)
+        era = FieldEra()
+        state = era.create_state()
+        state.gesture = "flow_dash"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
+
+        # Flow dash with high energy: should produce more pixels than just a 1px line
+        assert len(canvas.pixels) > 6, f"High-energy flow_dash should be thick, got {len(canvas.pixels)}px"
+
+    def test_flow_dash_low_energy_thin(self):
+        """Low-energy flow_dash stays thin."""
+        random.seed(42)
+        era = FieldEra()
+        state = era.create_state()
+        state.gesture = "flow_dash"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.1, (255, 0, 0))
+
+        # Low energy: 3-6 pixels (thin line)
+        assert len(canvas.pixels) <= 6, f"Low-energy flow_dash should be thin, got {len(canvas.pixels)}px"
+
+
+class TestPointillistBrushWidth:
+    """Pointillist pair/trio should expand slightly at high energy."""
+
+    def test_pair_high_energy_extra_pixels(self):
+        """High-energy pair should place more than 2 pixels."""
+        random.seed(42)
+        era = PointillistEra()
+        state = era.create_state()
+        state.gesture = "pair"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
+
+        assert len(canvas.pixels) >= 3, f"High-energy pair should be chunky, got {len(canvas.pixels)}"
+
+    def test_single_always_1px(self):
+        """Pointillist 'single' gesture stays 1px regardless of energy."""
+        random.seed(42)
+        era = PointillistEra()
+        state = era.create_state()
+        state.gesture = "single"
+        state.gesture_remaining = 10
+        canvas = CanvasState()
+
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
+
+        assert len(canvas.pixels) == 1, f"Single should always be 1px, got {len(canvas.pixels)}"
+
+
+class TestDensityGrid:
+    """CanvasState should maintain a coarse density grid."""
+
+    def test_draw_pixel_updates_grid(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(10, 10, (255, 0, 0))
+        # Pixel (10,10) falls in cell (0,0) of 8x8 grid (30px cells)
+        assert canvas.density_grid[0][0] == 1
+
+    def test_draw_pixel_correct_cell(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(120, 120, (255, 0, 0))
+        # 120/30 = 4 -> cell (4,4)
+        assert canvas.density_grid[4][4] == 1
+
+    def test_draw_pixel_edge_cell(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(239, 239, (255, 0, 0))
+        # 239/30 = 7 -> cell (7,7)
+        assert canvas.density_grid[7][7] == 1
+
+    def test_multiple_pixels_same_cell(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(10, 10, (255, 0, 0))
+        canvas.draw_pixel(15, 15, (0, 255, 0))
+        assert canvas.density_grid[0][0] == 2
+
+    def test_overwrite_pixel_no_double_count(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(10, 10, (255, 0, 0))
+        canvas.draw_pixel(10, 10, (0, 255, 0))  # overwrite
+        assert canvas.density_grid[0][0] == 1  # still 1, not 2
+
+    def test_clear_resets_grid(self):
+        canvas = CanvasState()
+        canvas.draw_pixel(10, 10, (255, 0, 0))
+        canvas.clear()
+        assert all(canvas.density_grid[r][c] == 0 for r in range(8) for c in range(8))
+
+    def test_sparsest_cell_returns_correct(self):
+        canvas = CanvasState()
+        # Fill most cells except (3,5)
+        for i in range(8):
+            for j in range(8):
+                if (i, j) != (3, 5):
+                    for k in range(10):
+                        px = min(i * 30 + k, 239)
+                        py = min(j * 30 + k, 239)
+                        canvas.draw_pixel(px, py, (255, 255, 255))
+        cell_x, cell_y = canvas.sparsest_cell()
+        assert cell_x == 3 and cell_y == 5
+
+
+class TestSpatialAwareness:
+    """Focus jumps should bias toward sparse areas."""
+
+    def test_sparse_jump_biases_toward_empty_cell(self):
+        """_sparse_jump should land in the sparsest region more often than chance."""
+        random.seed(42)
+        era = GesturalEra()
+        canvas = CanvasState()
+
+        # Fill all cells except cell (2, 3) — at x=60-89, y=90-119
+        for gx in range(8):
+            for gy in range(8):
+                if (gx, gy) != (2, 3):
+                    for k in range(20):
+                        px = min(gx * 30 + k, 239)
+                        py = min(gy * 30 + k, 239)
+                        canvas.draw_pixel(px, py, (255, 255, 255))
+
+        sparse_hits = 0
+        trials = 200
+        for _ in range(trials):
+            jx, jy = era._sparse_jump(canvas)
+            if 60 <= jx < 90 and 90 <= jy < 120:
+                sparse_hits += 1
+
+        hit_rate = sparse_hits / trials
+        # With 50% bias toward sparsest cell, expect ~25-50%
+        assert hit_rate > 0.10, f"Sparse jump should bias toward empty cell, hit rate={hit_rate:.3f}"
+
+    def test_sparse_jump_without_canvas_still_works(self):
+        """_sparse_jump with canvas=None should fall back to random."""
+        random.seed(42)
+        era = GesturalEra()
+        jx, jy = era._sparse_jump(None)
+        assert 40 <= jx <= 200
+        assert 40 <= jy <= 200
+
+
+from anima_mcp.display.eras.geometric import GeometricEra
+
+
+class TestEraCompletionTuning:
+    """Each era should expose fatigue_rate and min_marks_for_completion."""
+
+    def test_geometric_fatigues_faster(self):
+        era = GeometricEra()
+        assert era.fatigue_rate == 2.0
+        assert era.min_marks_for_completion == 3
+
+    def test_pointillist_fatigues_slower(self):
+        era = PointillistEra()
+        assert era.fatigue_rate == 0.5
+        assert era.min_marks_for_completion == 80
+
+    def test_field_moderate_fatigue(self):
+        era = FieldEra()
+        assert era.fatigue_rate == 0.7
+        assert era.min_marks_for_completion == 30
+
+    def test_gestural_defaults(self):
+        """Gestural has no explicit attributes — engine uses defaults (1.0, 5)."""
+        era = GesturalEra()
+        assert getattr(era, 'fatigue_rate', 1.0) == 1.0
+        assert getattr(era, 'min_marks_for_completion', 5) == 5
+
+    def test_fatigue_rate_applied_in_engine(self):
+        """Engine should scale fatigue by era's fatigue_rate."""
+        from anima_mcp.display.drawing_engine import DrawingEngine
+        from conftest import make_anima
+
+        # Geometric era (fatigue_rate=2.0)
+        engine_geo = DrawingEngine()
+        engine_geo.set_era("geometric", force_immediate=True)
+        engine_geo.intent.state.engagement = 0.5
+        engine_geo.intent.state.fatigue = 0.0
+        engine_geo._update_attention(0.5, 0.3, 0.5, True)  # gesture_switch=True
+        geo_fatigue = engine_geo.intent.state.fatigue
+
+        # Pointillist era (fatigue_rate=0.5)
+        engine_pt = DrawingEngine()
+        engine_pt.set_era("pointillist", force_immediate=True)
+        engine_pt.intent.state.engagement = 0.5
+        engine_pt.intent.state.fatigue = 0.0
+        engine_pt._update_attention(0.5, 0.3, 0.5, True)
+
+        pt_fatigue = engine_pt.intent.state.fatigue
+
+        assert geo_fatigue > pt_fatigue * 2, (
+            f"Geometric fatigue ({geo_fatigue:.4f}) should be > 2x pointillist ({pt_fatigue:.4f})"
+        )

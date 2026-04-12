@@ -53,6 +53,10 @@ class FieldEra:
     name = "field"
     description = "Flow-aligned marks following invisible vector fields"
 
+    # Completion tuning: flow lines need to develop but each mark is moderate
+    fatigue_rate = 0.7  # Slightly less tiring than gestural (flow is meditative)
+    min_marks_for_completion = 30  # Need enough marks to reveal the field
+
     def create_state(self) -> FieldState:
         state = FieldState()
         state.field_seed_a = random.uniform(0, 2 * math.pi)
@@ -108,6 +112,21 @@ class FieldEra:
         # Moderate run lengths
         state.gesture_remaining = random.randint(10, 25 + int(15 * coherence))
 
+    @staticmethod
+    def _brush(canvas, cx: float, cy: float, radius: int, color: Tuple[int, int, int]):
+        """Draw a filled circle of given radius at (cx, cy)."""
+        ix, iy = int(cx), int(cy)
+        if radius <= 1:
+            if 0 <= ix < 240 and 0 <= iy < 240:
+                canvas.draw_pixel(ix, iy, color)
+            return
+        for dx in range(-radius + 1, radius):
+            for dy in range(-radius + 1, radius):
+                if dx * dx + dy * dy < radius * radius:
+                    px, py = ix + dx, iy + dy
+                    if 0 <= px < 240 and 0 <= py < 240:
+                        canvas.draw_pixel(px, py, color)
+
     def place_mark(
         self,
         state: FieldState,
@@ -123,11 +142,14 @@ class FieldEra:
         y = int(focus_y)
         gesture = state.gesture
 
+        # Brush radius: slightly less than gestural — field marks are more delicate
+        brush_radius = max(1, int(energy * 2.5))
+
         # Get field direction at this point
         field_dir = self._field_angle(state, focus_x, focus_y)
 
         if gesture == "flow_dot":
-            # Single pixel at flow point
+            # Single pixel at flow point (dots stay 1px)
             if 0 <= x < 240 and 0 <= y < 240:
                 canvas.draw_pixel(x, y, color)
             # Sometimes a second dot perpendicular (cross-hatch effect)
@@ -139,28 +161,23 @@ class FieldEra:
                     canvas.draw_pixel(px, py, color)
 
         elif gesture == "flow_dash":
-            # 3-6 pixel line along field direction
+            # 3-6 pixel line along field direction, with brush width
             length = random.randint(3, 6)
             for i in range(length):
-                px = int(x + math.cos(field_dir) * i)
-                py = int(y + math.sin(field_dir) * i)
-                if 0 <= px < 240 and 0 <= py < 240:
-                    canvas.draw_pixel(px, py, color)
+                cx = x + math.cos(field_dir) * i
+                cy = y + math.sin(field_dir) * i
+                self._brush(canvas, cx, cy, brush_radius, color)
 
         elif gesture == "flow_strand":
-            # 8-15 pixel curve following field, with slight drift
+            # 8-15 pixel curve following field, with brush width
             length = random.randint(8, 15)
             cx, cy = float(x), float(y)
             for i in range(length):
-                # Re-sample field direction at each step for organic curves
                 local_dir = self._field_angle(state, cx, cy)
-                # Slight random deviation for organic feel
                 local_dir += random.gauss(0, 0.15)
                 cx += math.cos(local_dir) * 1.2
                 cy += math.sin(local_dir) * 1.2
-                px, py = int(cx), int(cy)
-                if 0 <= px < 240 and 0 <= py < 240:
-                    canvas.draw_pixel(px, py, color)
+                self._brush(canvas, cx, cy, brush_radius, color)
 
     def drift_focus(
         self,
@@ -172,6 +189,7 @@ class FieldEra:
         presence: float,
         coherence: float,
         clarity: float = 0.5,
+        canvas=None,
     ) -> Tuple[float, float, float]:
         """Follow flow lines with occasional cross-field jumps.
 

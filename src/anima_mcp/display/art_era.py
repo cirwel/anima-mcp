@@ -96,11 +96,13 @@ class ArtEra(Protocol):
         presence: float,
         coherence: float,
         clarity: float = 0.5,
+        canvas=None,
     ) -> Tuple[float, float, float]:
         """Drift the focus point. Returns (new_focus_x, new_focus_y, new_direction).
 
         May mutate state (e.g., toggling locks, starting orbits).
         Must handle edge bouncing (canvas is 240x240, 20px margin).
+        canvas: optional CanvasState for spatial awareness (e.g., density grid).
         clarity: higher = tighter focus, lower = more scattered.
         """
         ...

@@ -85,3 +85,80 @@ def test_jump_preserves_commitment_decay():
     assert state.direction_commitment == 0.8, (
         f"Jump should not zero commitment, got {state.direction_commitment}"
     )
+
+
+class TestColorCoherence:
+    """Colors within a gesture run should be similar, not random."""
+
+    def test_consecutive_colors_similar_hue(self):
+        """Two colors from same gesture run should be within 40 degrees hue."""
+        import colorsys
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "stroke"
+        state.gesture_remaining = 15
+
+        color1, _ = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+        color2, _ = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+
+        h1 = colorsys.rgb_to_hsv(color1[0]/255, color1[1]/255, color1[2]/255)[0] * 360
+        h2 = colorsys.rgb_to_hsv(color2[0]/255, color2[1]/255, color2[2]/255)[0] * 360
+
+        hue_dist = min(abs(h1 - h2), 360 - abs(h1 - h2))
+        assert hue_dist < 40, f"Consecutive colors should be close in hue, got {hue_dist:.0f} degrees"
+
+    def test_new_gesture_run_resets_anchor(self):
+        """choose_gesture resets _run_hue so each run gets a fresh anchor."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+
+        # First run establishes a hue
+        state.gesture = "stroke"
+        state.gesture_remaining = 5
+        era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+        assert state._run_hue >= 0  # anchored
+
+        # New gesture resets it
+        era.choose_gesture(state, 0.5, 0.5, 0.5, 0.5)
+        assert state._run_hue == -1.0, "choose_gesture should reset _run_hue"
+
+    def test_vibrant_accents_occur(self):
+        """~5% of colors should be vibrant accents (full saturation, random hue)."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "stroke"
+        state.gesture_remaining = 500
+
+        vibrant_count = 0
+        for _ in range(500):
+            _, category = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+            if category == "vibrant":
+                vibrant_count += 1
+
+        rate = vibrant_count / 500
+        assert 0.02 < rate < 0.12, f"Vibrant accent rate {rate:.3f} should be ~5%"
+
+
+def test_direction_lock_probability_increased():
+    """Direction locks should occur more frequently (prob > 0.08 at high C+clarity)."""
+    random.seed(42)
+    era = GesturalEra()
+    lock_count = 0
+    trials = 2000
+
+    for _ in range(trials):
+        state = era.create_state()
+        state.direction_locked = False
+        state.direction_lock_remaining = 0
+        state.direction_commitment = 0.0
+
+        era.drift_focus(state, 120.0, 120.0, 0.0, 0.5, 0.5, 0.8, 0.8)
+        if state.direction_locked:
+            lock_count += 1
+
+    lock_rate = lock_count / trials
+    # Theoretical: 0.06 * 1.3 * 0.9 = 0.070. Must be above old rate (~0.03).
+    assert lock_rate > 0.05, f"Lock rate {lock_rate:.3f} should be > 0.05 with high C and clarity"

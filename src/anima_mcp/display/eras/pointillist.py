@@ -48,6 +48,10 @@ class PointillistEra:
     name = "pointillist"
     description = "Single-pixel dots building density, optical color mixing"
 
+    # Completion tuning: tiny dots need lots of accumulation
+    fatigue_rate = 0.5  # Half base fatigue (each dot is effortless)
+    min_marks_for_completion = 80  # Need density before a pointillist drawing is "done"
+
     def create_state(self) -> PointillistState:
         state = PointillistState()
         state.color_anchor_hue = random.uniform(0, 360)
@@ -87,12 +91,13 @@ class PointillistEra:
         energy: float,
         color: Tuple[int, int, int],
     ) -> None:
-        """Place single-pixel dots. No multi-pixel strokes."""
+        """Place dots. Singles always 1px; pairs/trios bloom at high energy."""
         x = int(focus_x)
         y = int(focus_y)
         gesture = state.gesture
 
         if gesture == "single":
+            # Always 1px — pointillist purity
             if 0 <= x < 240 and 0 <= y < 240:
                 canvas.draw_pixel(x, y, color)
 
@@ -104,6 +109,13 @@ class PointillistEra:
             px, py = x + dx, y + dy
             if 0 <= px < 240 and 0 <= py < 240:
                 canvas.draw_pixel(px, py, color)
+            # High energy: each dot blooms to a neighbor
+            if energy > 0.6:
+                for bx, by in [(x, y), (px, py)]:
+                    ndx, ndy = random.choice([(1, 0), (0, 1), (-1, 0), (0, -1)])
+                    nx, ny = bx + ndx, by + ndy
+                    if 0 <= nx < 240 and 0 <= ny < 240:
+                        canvas.draw_pixel(nx, ny, color)
 
         elif gesture == "trio":
             # Three pixels in an L-shape
@@ -118,6 +130,13 @@ class PointillistEra:
             px2, py2 = px1 + dx2, py1 + dy2
             if 0 <= px2 < 240 and 0 <= py2 < 240:
                 canvas.draw_pixel(px2, py2, color)
+            # High energy: extra pixel at each position
+            if energy > 0.6:
+                for bx, by in [(x, y), (px1, py1), (px2, py2)]:
+                    ndx, ndy = random.choice([(1, 0), (0, 1), (-1, 0), (0, -1)])
+                    nx, ny = bx + ndx, by + ndy
+                    if 0 <= nx < 240 and 0 <= ny < 240:
+                        canvas.draw_pixel(nx, ny, color)
 
     def drift_focus(
         self,
@@ -129,6 +148,7 @@ class PointillistEra:
         presence: float,
         coherence: float,
         clarity: float = 0.5,
+        canvas=None,
     ) -> Tuple[float, float, float]:
         """Tight movement within density zones, jumps between zones.
 

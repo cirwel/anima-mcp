@@ -88,12 +88,21 @@ class CanvasState:
     _cached_image: object = None  # Cached PIL Image of all pixels
     _new_pixels: list = field(default_factory=list)  # Pixels added since last render
 
+    # Spatial density grid — 8x8 cells (30px each) for spatial awareness
+    density_grid: List[List[int]] = field(default_factory=lambda: [[0] * 8 for _ in range(8)])
+
     def draw_pixel(self, x: int, y: int, color: Tuple[int, int, int]):
         """Draw a pixel at position."""
         if 0 <= x < self.width and 0 <= y < self.height:
+            is_new = (x, y) not in self.pixels
             self.pixels[(x, y)] = color
             self._new_pixels.append((x, y, color))  # Track for incremental render
             self._dirty = True
+            # Update density grid (only for new pixels, not overwrites)
+            if is_new:
+                gx = min(x // 30, 7)
+                gy = min(y // 30, 7)
+                self.density_grid[gx][gy] += 1
             # Remember recent locations (keep last 20)
             self.recent_locations.append((x, y))
             if len(self.recent_locations) > 20:
@@ -123,6 +132,7 @@ class CanvasState:
         self._dirty = True
         self._cached_image = None
         self._new_pixels.clear()
+        self.density_grid = [[0] * 8 for _ in range(8)]
         # Clear pending era switch (will be applied by canvas_clear caller)
         self.pending_era_switch = None
         # Pause drawing for 5 seconds after manual clear so user sees empty canvas
@@ -174,6 +184,17 @@ class CanvasState:
         # Weighted combination: coverage 40%, balance 30%, coherence 30%
         satisfaction = 0.4 * coverage + 0.3 * balance + 0.3 * coherence
         return min(1.0, max(0.0, satisfaction))
+
+    def sparsest_cell(self) -> Tuple[int, int]:
+        """Return (grid_x, grid_y) of the cell with fewest pixels."""
+        min_count = float('inf')
+        min_cell = (0, 0)
+        for gx in range(8):
+            for gy in range(8):
+                if self.density_grid[gx][gy] < min_count:
+                    min_count = self.density_grid[gx][gy]
+                    min_cell = (gx, gy)
+        return min_cell
 
     def mark_satisfied(self):
         """Mark that Lumen feels satisfied with current drawing."""
@@ -922,7 +943,8 @@ class DrawingEngine:
 
         new_fx, new_fy, new_dir = self.active_era.drift_focus(
             era_state, self.intent.focus_x, self.intent.focus_y,
-            self.intent.direction, stability, presence, C, clarity)
+            self.intent.direction, stability, presence, C, clarity,
+            canvas=self.canvas)
         self.intent.focus_x = new_fx
         self.intent.focus_y = new_fy
         self.intent.direction = new_dir
@@ -1078,10 +1100,13 @@ class DrawingEngine:
         state.engagement += 0.05 * (target - state.engagement)
         state.engagement = max(0.0, min(1.0, state.engagement))
 
-        # Fatigue: rate depends on engagement — engaged work tires you less
+        # Fatigue: rate depends on engagement and era character
+        # Eras expose fatigue_rate (default 1.0): geometric=2.0 (stamps exhaust),
+        # pointillist=0.5 (dots are effortless), field=0.7 (flow is meditative)
+        era_fatigue_rate = getattr(self.active_era, 'fatigue_rate', 1.0)
         if gesture_switch:
-            state.fatigue += 0.006
-        base_fatigue = 0.0004 + 0.0008 * (1.0 - state.engagement)  # 0.0004-0.0012
+            state.fatigue += 0.006 * era_fatigue_rate
+        base_fatigue = (0.0004 + 0.0008 * (1.0 - state.engagement)) * era_fatigue_rate
         state.fatigue = min(1.0, state.fatigue + base_fatigue)
         # Second wind: slight recovery during coherent engagement
         if C > 0.6 and state.engagement > 0.5:
@@ -1666,7 +1691,9 @@ class DrawingEngine:
                 return "saved_and_cleared"
 
         # === PRIORITY 2: Narrative complete (multiple paths: coherence+attention, composition+curiosity, or fatigue) ===
-        if state.narrative_complete(self.canvas) and pixel_count >= 200 and self.intent.mark_count >= 5:
+        # Eras expose min_marks_for_completion (default 5): pointillist=80, field=30, geometric=3
+        era_min_marks = getattr(self.active_era, 'min_marks_for_completion', 5)
+        if state.narrative_complete(self.canvas) and pixel_count >= 200 and self.intent.mark_count >= era_min_marks:
             C = state.coherence()
             satisfaction = self.canvas.compositional_satisfaction()
             print(f"[Canvas] Narrative complete -- saving ({pixel_count}px, {self.intent.mark_count} marks, C={C:.2f}, sat={satisfaction:.2f}, arc={state.arc_phase}, curio={state.curiosity:.2f}, engage={state.engagement:.2f}, fatigue={state.fatigue:.2f})", file=sys.stderr, flush=True)
