@@ -54,11 +54,11 @@ from anima_mcp.display.eras.field import FieldEra
 from anima_mcp.display.eras.pointillist import PointillistEra
 
 
-class TestFieldBrushWidth:
-    """Field era flow marks should use brush width."""
+class TestFieldSinglePixel:
+    """Field era marks are single-pixel for fine detail."""
 
-    def test_flow_dash_high_energy_wider(self):
-        """High-energy flow_dash should be wider than 1px."""
+    def test_flow_dash_is_single_pixel_wide(self):
+        """flow_dash should be a thin 1px line along the field."""
         random.seed(42)
         era = FieldEra()
         state = era.create_state()
@@ -68,29 +68,15 @@ class TestFieldBrushWidth:
 
         era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
 
-        # Flow dash with high energy: should produce more pixels than just a 1px line
-        assert len(canvas.pixels) > 6, f"High-energy flow_dash should be thick, got {len(canvas.pixels)}px"
-
-    def test_flow_dash_low_energy_thin(self):
-        """Low-energy flow_dash stays thin."""
-        random.seed(42)
-        era = FieldEra()
-        state = era.create_state()
-        state.gesture = "flow_dash"
-        state.gesture_remaining = 10
-        canvas = CanvasState()
-
-        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.1, (255, 0, 0))
-
-        # Low energy: 3-6 pixels (thin line)
-        assert len(canvas.pixels) <= 6, f"Low-energy flow_dash should be thin, got {len(canvas.pixels)}px"
+        # 3-6 pixels in a line
+        assert len(canvas.pixels) <= 6, f"flow_dash should be thin, got {len(canvas.pixels)}px"
 
 
-class TestPointillistBrushWidth:
-    """Pointillist pair/trio should expand slightly at high energy."""
+class TestPointillistSinglePixel:
+    """Pointillist marks are strictly single-pixel dots."""
 
-    def test_pair_high_energy_extra_pixels(self):
-        """High-energy pair should place more than 2 pixels."""
+    def test_pair_is_exactly_2px(self):
+        """Pair gesture places exactly 2 pixels regardless of energy."""
         random.seed(42)
         era = PointillistEra()
         state = era.create_state()
@@ -100,7 +86,7 @@ class TestPointillistBrushWidth:
 
         era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
 
-        assert len(canvas.pixels) >= 3, f"High-energy pair should be chunky, got {len(canvas.pixels)}"
+        assert len(canvas.pixels) == 2, f"Pair should be exactly 2px, got {len(canvas.pixels)}"
 
     def test_single_always_1px(self):
         """Pointillist 'single' gesture stays 1px regardless of energy."""

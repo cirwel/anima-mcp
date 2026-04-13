@@ -142,14 +142,11 @@ class FieldEra:
         y = int(focus_y)
         gesture = state.gesture
 
-        # Brush radius: slightly less than gestural — field marks are more delicate
-        brush_radius = max(1, int(energy * 2.5))
-
         # Get field direction at this point
         field_dir = self._field_angle(state, focus_x, focus_y)
 
         if gesture == "flow_dot":
-            # Single pixel at flow point (dots stay 1px)
+            # Single pixel at flow point
             if 0 <= x < 240 and 0 <= y < 240:
                 canvas.draw_pixel(x, y, color)
             # Sometimes a second dot perpendicular (cross-hatch effect)
@@ -161,15 +158,16 @@ class FieldEra:
                     canvas.draw_pixel(px, py, color)
 
         elif gesture == "flow_dash":
-            # 3-6 pixel line along field direction, with brush width
+            # 3-6 pixel line along field direction
             length = random.randint(3, 6)
             for i in range(length):
-                cx = x + math.cos(field_dir) * i
-                cy = y + math.sin(field_dir) * i
-                self._brush(canvas, cx, cy, brush_radius, color)
+                px = int(x + math.cos(field_dir) * i)
+                py = int(y + math.sin(field_dir) * i)
+                if 0 <= px < 240 and 0 <= py < 240:
+                    canvas.draw_pixel(px, py, color)
 
         elif gesture == "flow_strand":
-            # 8-15 pixel curve following field, with brush width
+            # 8-15 pixel curve following field
             length = random.randint(8, 15)
             cx, cy = float(x), float(y)
             for i in range(length):
@@ -177,7 +175,9 @@ class FieldEra:
                 local_dir += random.gauss(0, 0.15)
                 cx += math.cos(local_dir) * 1.2
                 cy += math.sin(local_dir) * 1.2
-                self._brush(canvas, cx, cy, brush_radius, color)
+                px, py = int(cx), int(cy)
+                if 0 <= px < 240 and 0 <= py < 240:
+                    canvas.draw_pixel(px, py, color)
 
     def drift_focus(
         self,
