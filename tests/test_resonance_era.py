@@ -313,6 +313,28 @@ class TestDriftFocus:
 # ---------------------------------------------------------------------------
 
 
+class TestPresenceDensity:
+    def test_high_presence_draws_more_pixels(self):
+        era = ResonanceEra()
+
+        random.seed(42)
+        state_low = era.create_state()
+        state_low.gesture = "sediment"
+        era.generate_color(state_low, warmth=0.5, clarity=0.5, stability=0.5, presence=0.1)
+        canvas_low = FakeCanvas()
+        era.place_mark(state_low, canvas_low, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+
+        random.seed(42)
+        state_high = era.create_state()
+        state_high.gesture = "sediment"
+        era.generate_color(state_high, warmth=0.5, clarity=0.5, stability=0.5, presence=0.9)
+        canvas_high = FakeCanvas()
+        era.place_mark(state_high, canvas_high, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+
+        assert len(canvas_high.pixels) > len(canvas_low.pixels), \
+            f"High presence ({len(canvas_high.pixels)}px) should > low ({len(canvas_low.pixels)}px)"
+
+
 class TestAnimaDrivenField:
     def test_deposit_uses_anima_blend(self):
         era = ResonanceEra()

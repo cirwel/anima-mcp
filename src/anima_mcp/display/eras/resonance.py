@@ -216,43 +216,52 @@ class ResonanceEra:
                         canvas.draw_pixel(px, py, color)
 
     def place_mark(self, state, canvas, focus_x, focus_y, direction, energy, color):
+        mark_count = 1 + int(state._cached_presence * 3)
         scale = 0.5 + energy
-        x = int(focus_x)
-        y = int(focus_y)
 
-        if state.gesture == "sediment":
-            radius = max(1, int(1 + energy * 2))
-            ox = random.randint(-1, 1)
-            oy = random.randint(-1, 1)
-            self._brush(canvas, x + ox, y + oy, radius, color)
+        for m in range(mark_count):
+            if m == 0:
+                mx, my = focus_x, focus_y
+            else:
+                mx = focus_x + random.uniform(-4, 4)
+                my = focus_y + random.uniform(-4, 4)
 
-        elif state.gesture == "flow":
-            grad_angle = (
-                math.atan2(state._grad_gy, state._grad_gx)
-                if (state._grad_gx != 0 or state._grad_gy != 0)
-                else direction
-            )
-            length = int(random.randint(3, 7) * scale)
-            angle = grad_angle
-            cx, cy = float(x), float(y)
-            brush_r = max(1, int(energy * 2))
-            for i in range(length):
-                angle += random.gauss(0, 0.2)
-                cx += math.cos(angle) * 1.2
-                cy += math.sin(angle) * 1.2
-                self._brush(canvas, cx, cy, brush_r, color)
+            x, y = int(mx), int(my)
+            gesture = state.gesture
 
-        elif state.gesture == "scratch":
-            grad_angle = math.atan2(state._grad_gy, state._grad_gx)
-            cross_angle = grad_angle + math.pi / 2
-            length = int(random.randint(8, 16) * scale)
-            cx, cy = float(x), float(y)
-            for i in range(length):
-                cx += math.cos(cross_angle)
-                cy += math.sin(cross_angle)
-                ix, iy = int(cx), int(cy)
-                if 0 <= ix < 240 and 0 <= iy < 240:
-                    canvas.draw_pixel(ix, iy, color)
+            if gesture == "sediment":
+                radius = max(1, int(1 + energy * 2))
+                ox = random.randint(-1, 1)
+                oy = random.randint(-1, 1)
+                self._brush(canvas, x + ox, y + oy, radius, color)
+
+            elif gesture == "flow":
+                grad_angle = (
+                    math.atan2(state._grad_gy, state._grad_gx)
+                    if (state._grad_gx != 0 or state._grad_gy != 0)
+                    else direction
+                )
+                length = int(random.randint(3, 7) * scale)
+                angle = grad_angle
+                cx, cy = float(x), float(y)
+                brush_r = max(1, int(energy * 2))
+                for i in range(length):
+                    angle += random.gauss(0, 0.2)
+                    cx += math.cos(angle) * 1.2
+                    cy += math.sin(angle) * 1.2
+                    self._brush(canvas, cx, cy, brush_r, color)
+
+            elif gesture == "scratch":
+                grad_angle = math.atan2(state._grad_gy, state._grad_gx)
+                cross_angle = grad_angle + math.pi / 2
+                length = int(random.randint(8, 16) * scale)
+                cx, cy = float(x), float(y)
+                for i in range(length):
+                    cx += math.cos(cross_angle)
+                    cy += math.sin(cross_angle)
+                    ix, iy = int(cx), int(cy)
+                    if 0 <= ix < 240 and 0 <= iy < 240:
+                        canvas.draw_pixel(ix, iy, color)
 
         # Deposit using anima blend
         deposit_val = (state._cached_warmth * DEPOSIT_W_WARMTH +
