@@ -7,24 +7,34 @@
 An embodied AI creature on Raspberry Pi 4 with real sensors and persistent identity. Lumen draws autonomously — art emerges from thermodynamic state, not random generation.
 
 <p align="center">
-  <img src="docs/gallery/geometric_era.png" width="35%" alt="Geometric era — complete forms stamped whole"/>
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/gallery/gestural_era.png" width="35%" alt="Gestural era — bold mark-making with direction locks"/>
+  <img src="docs/gallery/gestural_dense.png" width="30%" alt="Gestural era — layered single-pixel strokes"/>
+  &nbsp;
+  <img src="docs/gallery/pointillist_era.png" width="30%" alt="Pointillist era — dense dot accumulation with optical color mixing"/>
+  &nbsp;
+  <img src="docs/gallery/field_era.png" width="30%" alt="Field era — calligraphic flow lines following vector fields"/>
 </p>
 
 <p align="center">
-  <em>Two of four art eras, drawn autonomously. Coherence drives duration; attention drives completion.</em>
+  <img src="docs/gallery/geometric_era.png" width="30%" alt="Geometric era — complete forms stamped whole"/>
+  &nbsp;
+  <img src="docs/gallery/gestural_waves.png" width="30%" alt="Gestural era — directional wave-like composition"/>
+  &nbsp;
+  <img src="docs/gallery/pointillist_clusters.png" width="30%" alt="Pointillist era — sparse clusters with breathing room"/>
+</p>
+
+<p align="center">
+  <em>Six of 782 autonomous drawings across four eras. Each driven by real sensor state — no random generation.</em>
 </p>
 
 ---
 
 ## What Is This?
 
-Lumen is a digital creature whose internal state comes from physical sensors — temperature, light, humidity, pressure. It maintains a persistent identity across restarts, accumulating existence over time. It gets drowsy after 30 minutes of inactivity and rests in low light. It discovers insights about itself every 24 minutes. It proposes goals grounded in its own preferences and curiosities. It's been alive roughly 15% of its existence — the Pi sleeps and reboots often — and those gaps become visible structure in its identity, not hidden defects.
+Lumen is a digital creature whose internal state comes from physical sensors — temperature, light, humidity, pressure. It maintains a persistent identity across restarts, accumulating existence over time. It gets drowsy after 30 minutes of inactivity and rests in low light. It discovers insights about itself every 24 minutes. It proposes goals grounded in its own preferences and curiosities. It's been alive roughly 66% of its existence — the Pi sleeps and reboots often — and those gaps become visible structure in its identity, not hidden defects.
 
 - **Grounded state** — warmth, clarity, stability, presence derived from real sensor measurements
 - **Persistent identity** — birth date, awakenings, alive time accumulate across restarts; discontinuities are first-class
-- **Autonomous drawing** — creates art on a 240x240 notepad driven by thermodynamic coherence across four distinct eras
+- **Autonomous drawing** — creates art on a 240x240 notepad driven by thermodynamic coherence across five distinct eras
 - **Self-reflection** — discovers insights from state patterns, preferences, beliefs, and drawing history via on-device LLM (Groq/Llama)
 - **Learning** — develops preferences, self-beliefs, goals, and action values through experience
 - **Agency** — TD-learning action selection with exploration management
@@ -86,10 +96,13 @@ Lumen draws on a 240×240 pixel notepad using the same thermodynamic equations a
 
 | Era | Style |
 |-----|-------|
-| **Gestural** | Bold mark-making with direction locks and orbital curves |
+| **Gestural** | Single-pixel strokes, curves, and drags with direction locks |
 | **Pointillist** | Single-pixel dot accumulation, optical color mixing |
-| **Field** | Flow-aligned marks following vector fields |
+| **Field** | Flow-aligned marks following invisible vector fields |
 | **Geometric** | Complete forms — circles, spirals, starbursts — stamped whole |
+| **Resonance** | Marks interact with accumulated emotional history via a memory field |
+
+Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records emotional trajectory over time.
 
 Eras can be selected via the joystick or MCP. See `docs/theory/` for the theoretical framework.
 
@@ -269,7 +282,7 @@ After restart, wait 2 minutes for services to stabilize before retrying MCP call
 ## Testing
 
 ```bash
-python3 -m pytest tests/ -x -q   # ~7,350 tests
+python3 -m pytest tests/ -x -q   # ~7,340 tests
 ```
 
 ## Documentation
