@@ -1,7 +1,8 @@
 """Tests for resonance era — memory field core."""
+import math
 import numpy as np
 from anima_mcp.display.eras.resonance import (
-    _deposit, _decay, _diffuse, _gradient_at, FIELD_SIZE, DECAY_RATE,
+    _deposit, _decay, _diffuse, _gradient_at, FIELD_SIZE, CELL_SIZE, DECAY_RATE,
 )
 
 
@@ -263,3 +264,44 @@ class TestPlaceMark:
         era.place_mark(state, canvas, 5.0, 5.0, 0.0, 0.8, (255, 255, 255))
         for (x, y) in canvas.pixels:
             assert 0 <= x < 240 and 0 <= y < 240
+
+
+# ---------------------------------------------------------------------------
+# drift_focus tests
+# ---------------------------------------------------------------------------
+
+
+class TestDriftFocus:
+    def test_drift_stays_in_bounds(self):
+        random.seed(42)
+        era = ResonanceEra()
+        state = era.create_state()
+        fx, fy, d = 200.0, 200.0, 0.5
+        for _ in range(100):
+            fx, fy, d = era.drift_focus(state, fx, fy, d, 0.5, 0.5, 0.5, 0.5)
+            assert 0 <= fx <= 240 and 0 <= fy <= 240, f"Focus escaped: ({fx}, {fy})"
+
+    def test_drift_with_gradient_influences_direction(self):
+        random.seed(42)
+        era = ResonanceEra()
+        state = era.create_state()
+        # Create gradient pointing right (positive x)
+        for i in range(FIELD_SIZE):
+            state.field[i, :] = float(i) / FIELD_SIZE
+        fx, fy = 120.0, 120.0
+        d = math.pi / 2  # Initially pointing up
+        positions = []
+        for _ in range(50):
+            fx, fy, d = era.drift_focus(state, fx, fy, d, 0.5, 0.5, 0.5, 0.5, canvas=None)
+            positions.append(fx)
+        avg_x = sum(positions) / len(positions)
+        assert avg_x > 120.0, f"Expected rightward drift, avg_x={avg_x:.1f}"
+
+    def test_drift_updates_focus_cell(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        fx, fy, d = era.drift_focus(state, 60.0, 60.0, 0.0, 0.5, 0.5, 0.5, 0.5)
+        expected_cx = min(max(0, int(fx) // CELL_SIZE), FIELD_SIZE - 1)
+        expected_cy = min(max(0, int(fy) // CELL_SIZE), FIELD_SIZE - 1)
+        assert state._focus_cx == expected_cx
+        assert state._focus_cy == expected_cy

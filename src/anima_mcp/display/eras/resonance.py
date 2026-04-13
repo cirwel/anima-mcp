@@ -264,6 +264,67 @@ class ResonanceEra:
         sigma = (DIFFUSION_SIGMA_MIN + DIFFUSION_SIGMA_MAX) / 2
         state.field = _diffuse(state.field, sigma=sigma)
 
+    def drift_focus(
+        self, state, focus_x, focus_y, direction, stability, presence,
+        coherence, clarity=0.5, canvas=None,
+    ):
+        """Gradient-influenced focus drift."""
+        # 1. Sample gradient at current focus cell
+        norm_grad = _normalized_gradient(state)
+
+        # 2. Gradient-driven drift
+        if norm_grad < GRADIENT_LOW:
+            # Low gradient: gentle random walk
+            direction += random.gauss(0, 0.15 + (1 - clarity) * 0.15)
+        elif norm_grad < GRADIENT_HIGH:
+            # Medium gradient: pull toward gradient direction
+            grad_angle = math.atan2(state._grad_gy, state._grad_gx)
+            diff = (grad_angle - direction + math.pi) % (2 * math.pi) - math.pi
+            direction += diff * 0.3
+        else:
+            # High gradient: drift perpendicular to gradient (cross the scar)
+            grad_angle = math.atan2(state._grad_gy, state._grad_gx)
+            cross_angle = grad_angle + math.pi / 2
+            diff = (cross_angle - direction + math.pi) % (2 * math.pi) - math.pi
+            direction += diff * 0.4
+
+        # 3. Step
+        step = 3 + random.random() * 5
+        focus_x += math.cos(direction) * step
+        focus_y += math.sin(direction) * step
+
+        # 4. Soft bounce off edges (20px margin)
+        margin = 20
+        if focus_x < margin:
+            direction = random.uniform(-math.pi / 4, math.pi / 4)
+            focus_x = float(margin)
+        elif focus_x > 240 - margin:
+            direction = random.uniform(3 * math.pi / 4, 5 * math.pi / 4)
+            focus_x = float(240 - margin)
+        if focus_y < margin:
+            direction = random.uniform(math.pi / 4, 3 * math.pi / 4)
+            focus_y = float(margin)
+        elif focus_y > 240 - margin:
+            direction = random.uniform(-3 * math.pi / 4, -math.pi / 4)
+            focus_y = float(240 - margin)
+
+        # 5. Sparse jump (low probability)
+        jump_prob = 0.02 * (1 - 0.4 * coherence) * (1 - 0.4 * clarity)
+        if random.random() < jump_prob:
+            if canvas is not None:
+                sx, sy = canvas.sparsest_cell()
+                focus_x, focus_y = float(sx), float(sy)
+            else:
+                focus_x = random.uniform(40, 200)
+                focus_y = random.uniform(40, 200)
+
+        # 6. Update focus cell coordinates on state
+        state._focus_cx = min(max(0, int(focus_x) // CELL_SIZE), FIELD_SIZE - 1)
+        state._focus_cy = min(max(0, int(focus_y) // CELL_SIZE), FIELD_SIZE - 1)
+
+        # 7. Return
+        return (focus_x, focus_y, direction)
+
     def generate_color(
         self,
         state: ResonanceState,
