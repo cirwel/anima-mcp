@@ -378,6 +378,31 @@ class TestAnimaDrivenField:
 import json
 
 
+class TestStabilityRegularity:
+    def test_low_stability_produces_varied_marks(self):
+        era = ResonanceEra()
+
+        random.seed(42)
+        state_s = era.create_state()
+        state_s.gesture = "flow"
+        state_s._grad_gx = 1.0
+        era.generate_color(state_s, warmth=0.5, clarity=0.5, stability=0.9, presence=0.5)
+        canvas_s = FakeCanvas()
+        era.place_mark(state_s, canvas_s, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+        pixels_stable = set(canvas_s.pixels.keys())
+
+        random.seed(42)
+        state_u = era.create_state()
+        state_u.gesture = "flow"
+        state_u._grad_gx = 1.0
+        era.generate_color(state_u, warmth=0.5, clarity=0.5, stability=0.1, presence=0.5)
+        canvas_u = FakeCanvas()
+        era.place_mark(state_u, canvas_u, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+        pixels_unstable = set(canvas_u.pixels.keys())
+
+        assert pixels_stable != pixels_unstable, "Stability should affect mark placement"
+
+
 class TestFieldPersistence:
     def test_field_serializes_to_list(self):
         state = ResonanceState()

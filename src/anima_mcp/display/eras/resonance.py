@@ -245,8 +245,9 @@ class ResonanceEra:
                 angle = grad_angle
                 cx, cy = float(x), float(y)
                 brush_r = max(1, int(energy * 2))
+                wobble = 0.1 + (1.0 - state._cached_stability) * 0.4
                 for i in range(length):
-                    angle += random.gauss(0, 0.2)
+                    angle += random.gauss(0, wobble)
                     cx += math.cos(angle) * 1.2
                     cy += math.sin(angle) * 1.2
                     self._brush(canvas, cx, cy, brush_r, color)
@@ -256,9 +257,10 @@ class ResonanceEra:
                 cross_angle = grad_angle + math.pi / 2
                 length = int(random.randint(8, 16) * scale)
                 cx, cy = float(x), float(y)
+                jitter = (1.0 - state._cached_stability) * 0.8
                 for i in range(length):
-                    cx += math.cos(cross_angle)
-                    cy += math.sin(cross_angle)
+                    cx += math.cos(cross_angle) + random.gauss(0, jitter)
+                    cy += math.sin(cross_angle) + random.gauss(0, jitter)
                     ix, iy = int(cx), int(cy)
                     if 0 <= ix < 240 and 0 <= iy < 240:
                         canvas.draw_pixel(ix, iy, color)
