@@ -80,3 +80,50 @@ class TestGradient:
         field[0, 0] = 1.0
         _gradient_at(field, 0, 0)
         _gradient_at(field, FIELD_SIZE - 1, FIELD_SIZE - 1)
+
+
+# ---------------------------------------------------------------------------
+# ResonanceState + ResonanceEra tests
+# ---------------------------------------------------------------------------
+from anima_mcp.display.eras.resonance import ResonanceEra, ResonanceState
+
+
+class TestResonanceState:
+    def test_create_state_has_zeroed_field(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        assert state.field.shape == (FIELD_SIZE, FIELD_SIZE)
+        assert state.field.sum() == 0.0
+
+    def test_intentionality_range(self):
+        state = ResonanceState()
+        state.gesture_remaining = 0
+        assert 0.0 <= state.intentionality() <= 1.0
+        state.gesture_remaining = 20
+        assert state.intentionality() > 0.1
+
+    def test_gestures_vocabulary(self):
+        state = ResonanceState()
+        assert "sediment" in state.gestures()
+        assert "flow" in state.gestures()
+        assert "scratch" in state.gestures()
+
+
+class TestChooseGesture:
+    def test_low_gradient_selects_sediment(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        # Field all zeros -> zero gradient -> sediment
+        era.choose_gesture(state, clarity=0.5, stability=0.5, presence=0.5, coherence=0.5)
+        assert state.gesture == "sediment"
+        assert state.gesture_remaining > 0
+
+    def test_high_gradient_selects_scratch(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        # Sharp edge: one cell high, neighbors zero
+        state.field[24, 24] = 5.0
+        state._focus_cx = 25
+        state._focus_cy = 24
+        era.choose_gesture(state, clarity=0.5, stability=0.5, presence=0.5, coherence=0.5)
+        assert state.gesture == "scratch"

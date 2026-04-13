@@ -10,7 +10,8 @@ Pure NumPy operations — no scipy dependency.
 
 import math
 import random
-from typing import Tuple
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import numpy as np
 
@@ -111,3 +112,87 @@ def _gradient_at(
     mag = math.sqrt(gx * gx + gy * gy)
 
     return gx, gy, mag
+
+
+# ---------------------------------------------------------------------------
+# Era state
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ResonanceState(EraState):
+    """Resonance era state — carries the memory field."""
+
+    field: np.ndarray = None  # initialized in __post_init__
+    cycle_count: int = 0
+    _grad_gx: float = 0.0
+    _grad_gy: float = 0.0
+    _grad_mag: float = 0.0
+    _focus_cx: int = 24  # Current focus cell coordinates
+    _focus_cy: int = 24
+
+    def __post_init__(self):
+        if self.field is None:
+            self.field = np.zeros((FIELD_SIZE, FIELD_SIZE), dtype=np.float32)
+
+    def intentionality(self) -> float:
+        """Gradient magnitude + gesture commitment."""
+        base = 0.1
+        base += min(0.4, self._grad_mag * 2.0)  # gradient contribution
+        if self.gesture_remaining > 0:
+            base += min(0.3, self.gesture_remaining / 20.0 * 0.3)
+        return min(1.0, base)
+
+    def gestures(self) -> List[str]:
+        return ["sediment", "flow", "scratch"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalized_gradient(state: ResonanceState) -> float:
+    """Gradient magnitude normalized to field max. Returns 0 if field empty."""
+    field_max = state.field.max()
+    if field_max < 1e-6:
+        return 0.0
+    gx, gy, mag = _gradient_at(state.field, state._focus_cx, state._focus_cy)
+    state._grad_gx = gx
+    state._grad_gy = gy
+    state._grad_mag = mag
+    return min(1.0, mag / field_max) if field_max > 1e-6 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Era class (partial — create_state + choose_gesture)
+# ---------------------------------------------------------------------------
+
+
+class ResonanceEra:
+    """Resonance era — marks respond to emotional memory."""
+
+    name = "resonance"
+    description = "Marks respond to emotional memory: sediment, flow, and scratches"
+    min_drawings = 50
+
+    def create_state(self) -> ResonanceState:
+        return ResonanceState()
+
+    def choose_gesture(
+        self,
+        state: ResonanceState,
+        clarity: float,
+        stability: float,
+        presence: float,
+        coherence: float,
+    ) -> None:
+        """Select gesture based on memory-field gradient at focus."""
+        norm_grad = _normalized_gradient(state)
+        if norm_grad < GRADIENT_LOW:
+            state.gesture = "sediment"
+        elif norm_grad < GRADIENT_HIGH:
+            state.gesture = "flow"
+        else:
+            state.gesture = "scratch"
+        state.gesture_remaining = random.randint(10, 25 + int(15 * coherence))
