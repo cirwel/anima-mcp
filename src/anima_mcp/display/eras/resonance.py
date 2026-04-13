@@ -329,8 +329,9 @@ class ResonanceEra:
         jump_prob = 0.02 * (1 - 0.4 * coherence) * (1 - 0.4 * clarity)
         if random.random() < jump_prob:
             if canvas is not None:
-                sx, sy = canvas.sparsest_cell()
-                focus_x, focus_y = float(sx), float(sy)
+                gx, gy = canvas.sparsest_cell()
+                focus_x = max(float(margin), min(float(240 - margin), gx * 30 + random.uniform(5, 25)))
+                focus_y = max(float(margin), min(float(240 - margin), gy * 30 + random.uniform(5, 25)))
             else:
                 focus_x = random.uniform(40, 200)
                 focus_y = random.uniform(40, 200)
