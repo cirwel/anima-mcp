@@ -61,7 +61,10 @@ def choose_next_era(current: str, drawings_saved: int) -> str:
     if not auto_rotate:
         return current
 
-    candidates = list(_ERAS.keys())
+    candidates = [
+        name for name, era in _ERAS.items()
+        if getattr(era, 'min_drawings', 0) <= drawings_saved
+    ]
     if len(candidates) <= 1:
         return candidates[0] if candidates else "gestural"
 
@@ -79,3 +82,6 @@ register_era(GesturalEra())
 register_era(PointillistEra())
 register_era(FieldEra())
 register_era(GeometricEra())
+
+from .resonance import ResonanceEra  # noqa: E402
+register_era(ResonanceEra())

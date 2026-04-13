@@ -15,12 +15,12 @@ from anima_mcp.display.eras import (
 class TestRegistryPopulation:
     """Eras self-register on import."""
 
-    def test_four_eras_registered(self):
-        assert len(_ERAS) == 4
+    def test_five_eras_registered(self):
+        assert len(_ERAS) == 5
 
     def test_expected_era_names(self):
         names = set(_ERAS.keys())
-        assert names == {"gestural", "pointillist", "field", "geometric"}
+        assert names == {"gestural", "pointillist", "field", "geometric", "resonance"}
 
 
 class TestGetEra:
@@ -56,7 +56,7 @@ class TestListEras:
     def test_returns_list(self):
         result = list_eras()
         assert isinstance(result, list)
-        assert len(result) == 4
+        assert len(result) == 5
 
     def test_all_era_info_matches(self):
         names = list_eras()
@@ -140,3 +140,54 @@ class TestRegisterEra:
         finally:
             _ERAS.clear()
             _ERAS.update(saved_eras)
+
+
+class TestMaturityGating:
+    def test_era_with_min_drawings_excluded_when_below(self):
+        original = eras_module.auto_rotate
+        saved_eras = dict(_ERAS)
+        try:
+            eras_module.auto_rotate = True
+            gated = type("GatedEra", (), {"name": "gated", "description": "test", "min_drawings": 50})()
+            register_era(gated)
+            results = set()
+            for _ in range(100):
+                results.add(choose_next_era("gestural", drawings_saved=10))
+            assert "gated" not in results
+        finally:
+            eras_module.auto_rotate = original
+            _ERAS.clear()
+            _ERAS.update(saved_eras)
+
+    def test_era_with_min_drawings_included_when_above(self):
+        original = eras_module.auto_rotate
+        saved_eras = dict(_ERAS)
+        try:
+            eras_module.auto_rotate = True
+            gated = type("GatedEra", (), {"name": "gated", "description": "test", "min_drawings": 50})()
+            register_era(gated)
+            results = set()
+            for _ in range(100):
+                results.add(choose_next_era("gestural", drawings_saved=60))
+            assert "gated" in results
+        finally:
+            eras_module.auto_rotate = original
+            _ERAS.clear()
+            _ERAS.update(saved_eras)
+
+    def test_era_without_min_drawings_always_available(self):
+        original = eras_module.auto_rotate
+        try:
+            eras_module.auto_rotate = True
+            results = set()
+            for _ in range(100):
+                results.add(choose_next_era("gestural", drawings_saved=0))
+            assert len(results) > 1
+        finally:
+            eras_module.auto_rotate = original
+
+    def test_resonance_registered(self):
+        assert "resonance" in _ERAS
+        era = _ERAS["resonance"]
+        assert era.name == "resonance"
+        assert getattr(era, 'min_drawings', 0) == 50
