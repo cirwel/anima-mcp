@@ -251,6 +251,7 @@ class TestPlaceMark:
         state.gesture = "sediment"
         canvas = FakeCanvas()
         assert state.field.sum() == 0.0
+        era.generate_color(state, warmth=0.8, clarity=0.6, stability=0.5, presence=0.7)
         era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
         assert state.field.sum() > 0.0
 
@@ -305,3 +306,45 @@ class TestDriftFocus:
         expected_cy = min(max(0, int(fy) // CELL_SIZE), FIELD_SIZE - 1)
         assert state._focus_cx == expected_cx
         assert state._focus_cy == expected_cy
+
+
+# ---------------------------------------------------------------------------
+# Anima-driven field tests
+# ---------------------------------------------------------------------------
+
+
+class TestAnimaDrivenField:
+    def test_deposit_uses_anima_blend(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        era.generate_color(state, warmth=0.8, clarity=0.6, stability=0.5, presence=0.7)
+        canvas = FakeCanvas()
+        state.gesture = "sediment"
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
+        # Anima blend deposit: 0.8*0.5 + 0.7*0.3 + 0.6*0.2 = 0.73
+        # After decay (0.995) + diffusion (sigma=1.25), center cell retains ~16.6%
+        # Old hardcoded 0.5 deposit would yield ~0.083; anima blend 0.73 yields ~0.121
+        cell_val = state.field[24, 24]
+        assert cell_val > 0.1, f"Expected anima-driven deposit > 0.1, got {cell_val:.3f}"
+        # Verify it's meaningfully larger than old hardcoded 0.5 would produce (~0.083)
+        assert cell_val > 0.083 * 1.3, f"Anima blend should exceed old hardcoded deposit, got {cell_val:.3f}"
+
+    def test_high_stability_slow_diffusion(self):
+        era = ResonanceEra()
+        state_stable = era.create_state()
+        state_stable.field[24, 24] = 1.0
+        era.generate_color(state_stable, warmth=0.5, clarity=0.5, stability=0.9, presence=0.5)
+        canvas = FakeCanvas()
+        state_stable.gesture = "sediment"
+        era.place_mark(state_stable, canvas, 0.0, 0.0, 0.0, 0.5, (255, 0, 0))
+        peak_stable = state_stable.field[24, 24]
+
+        state_unstable = era.create_state()
+        state_unstable.field[24, 24] = 1.0
+        era.generate_color(state_unstable, warmth=0.5, clarity=0.5, stability=0.1, presence=0.5)
+        canvas2 = FakeCanvas()
+        state_unstable.gesture = "sediment"
+        era.place_mark(state_unstable, canvas2, 0.0, 0.0, 0.0, 0.5, (255, 0, 0))
+        peak_unstable = state_unstable.field[24, 24]
+
+        assert peak_stable > peak_unstable, "High stability should preserve peak (less diffusion)"

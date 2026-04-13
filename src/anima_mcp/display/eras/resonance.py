@@ -130,6 +130,10 @@ class ResonanceState(EraState):
     _grad_mag: float = 0.0
     _focus_cx: int = 24  # Current focus cell coordinates
     _focus_cy: int = 24
+    _cached_warmth: float = 0.5
+    _cached_clarity: float = 0.5
+    _cached_stability: float = 0.5
+    _cached_presence: float = 0.5
 
     def __post_init__(self):
         if self.field is None:
@@ -250,18 +254,20 @@ class ResonanceEra:
                 if 0 <= ix < 240 and 0 <= iy < 240:
                     canvas.draw_pixel(ix, iy, color)
 
-        # Deposit to memory field
-        deposit_val = 0.5
+        # Deposit using anima blend
+        deposit_val = (state._cached_warmth * DEPOSIT_W_WARMTH +
+                       state._cached_presence * DEPOSIT_W_PRESENCE +
+                       state._cached_clarity * DEPOSIT_W_CLARITY)
         _deposit(state.field, int(focus_x), int(focus_y), deposit_val)
 
         # Update focus cell
         state._focus_cx = min(int(focus_x) // CELL_SIZE, FIELD_SIZE - 1)
         state._focus_cy = min(int(focus_y) // CELL_SIZE, FIELD_SIZE - 1)
 
-        # Decay + diffuse
+        # Decay + stability-driven diffusion
         state.cycle_count += 1
         _decay(state.field)
-        sigma = (DIFFUSION_SIGMA_MIN + DIFFUSION_SIGMA_MAX) / 2
+        sigma = DIFFUSION_SIGMA_MIN + (1.0 - state._cached_stability) * (DIFFUSION_SIGMA_MAX - DIFFUSION_SIGMA_MIN)
         state.field = _diffuse(state.field, sigma=sigma)
 
     def drift_focus(
@@ -341,6 +347,12 @@ class ResonanceEra:
         amber, and the light regime applies final shifts.
         """
         import colorsys
+
+        # Cache anima values for use by place_mark (called next in the cycle)
+        state._cached_warmth = warmth
+        state._cached_clarity = clarity
+        state._cached_stability = stability
+        state._cached_presence = presence
 
         # Base hue: 220° at warmth=0 (cool blue), 40° at warmth=1 (warm amber)
         hue_deg = 220.0 - warmth * 180.0
