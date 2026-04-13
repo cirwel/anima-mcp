@@ -6,10 +6,10 @@ from anima_mcp.display.eras.gestural import GesturalEra, GesturalState
 
 
 class TestGesturalBrushWidth:
-    """Gestural marks should use energy-modulated brush width."""
+    """Gestural strokes, curves, drags are single-pixel for fine detail."""
 
-    def test_stroke_high_energy_wider_than_1px(self):
-        """A high-energy stroke should place pixels in adjacent rows (width > 1)."""
+    def test_stroke_is_single_pixel_wide(self):
+        """Strokes should be 1px wide regardless of energy (fine-grained character)."""
         random.seed(42)
         era = GesturalEra()
         state = era.create_state()
@@ -17,27 +17,11 @@ class TestGesturalBrushWidth:
         state.gesture_remaining = 10
         canvas = CanvasState()
 
+        # Horizontal stroke at y=120
         era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.9, (255, 0, 0))
 
-        # With energy 0.9, brush radius should be ~2px.
-        # A horizontal stroke at y=120 should have pixels at y=119, 120, 121.
         ys = {y for (x, y) in canvas.pixels}
-        assert len(ys) > 1, f"High-energy stroke should span multiple rows, got ys={ys}"
-
-    def test_stroke_low_energy_narrow(self):
-        """A low-energy stroke should stay 1px wide."""
-        random.seed(42)
-        era = GesturalEra()
-        state = era.create_state()
-        state.gesture = "stroke"
-        state.gesture_remaining = 10
-        canvas = CanvasState()
-
-        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.15, (255, 0, 0))
-
-        # Low energy: brush_radius=1 -> single pixel row
-        ys = {y for (x, y) in canvas.pixels}
-        assert len(ys) <= 2, f"Low-energy stroke should be narrow, got ys={ys}"
+        assert len(ys) <= 2, f"Stroke should be 1px wide, got ys={ys}"
 
     def test_dot_high_energy_cluster(self):
         """A high-energy dot should place 2-4 pixels, not just 1."""

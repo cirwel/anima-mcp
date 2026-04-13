@@ -89,9 +89,6 @@ class GesturalEra:
         # energy 1.0 -> scale 1.5 (bold), energy 0.1 -> scale 0.6 (delicate)
         scale = 0.5 + energy
 
-        # Brush radius: 1px at low energy, 2-3px at high energy
-        brush_radius = max(1, int(energy * 3))
-
         if gesture == "dot":
             if energy > 0.5:
                 # Multi-pixel dot cluster (cross/diamond pattern)
@@ -108,9 +105,10 @@ class GesturalEra:
         elif gesture == "stroke":
             length = int(random.randint(2, 6) * scale)
             for i in range(length):
-                cx = x + math.cos(direction) * i
-                cy = y + math.sin(direction) * i
-                self._brush(canvas, cx, cy, brush_radius, color)
+                px = int(x + math.cos(direction) * i)
+                py = int(y + math.sin(direction) * i)
+                if 0 <= px < 240 and 0 <= py < 240:
+                    canvas.draw_pixel(px, py, color)
 
         elif gesture == "curve":
             length = int(random.randint(3, 8) * scale)
@@ -121,11 +119,13 @@ class GesturalEra:
                 angle += random.gauss(0, 0.3)
                 cx += math.cos(angle) * step_size
                 cy += math.sin(angle) * step_size
-                self._brush(canvas, cx, cy, brush_radius, color)
+                px, py = int(cx), int(cy)
+                if 0 <= px < 240 and 0 <= py < 240:
+                    canvas.draw_pixel(px, py, color)
 
         elif gesture == "cluster":
             count = int(random.randint(2, 5) * scale)
-            spread = int(2 * scale) + brush_radius
+            spread = int(2 * scale)
             for _ in range(count):
                 px = x + random.randint(-spread, spread)
                 py = y + random.randint(-spread, spread)
@@ -136,9 +136,10 @@ class GesturalEra:
             length = int(random.randint(8, 15) * scale)
             angle = direction + random.gauss(0, 0.1)
             for i in range(length):
-                cx = x + math.cos(angle) * i
-                cy = y + math.sin(angle) * i
-                self._brush(canvas, cx, cy, brush_radius, color)
+                px = int(x + math.cos(angle) * i)
+                py = int(y + math.sin(angle) * i)
+                if 0 <= px < 240 and 0 <= py < 240:
+                    canvas.draw_pixel(px, py, color)
 
     @staticmethod
     def _brush(canvas, cx: float, cy: float, radius: int, color: Tuple[int, int, int]):
