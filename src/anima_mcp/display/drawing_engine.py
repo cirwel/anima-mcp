@@ -91,6 +91,9 @@ class CanvasState:
     # Spatial density grid — 8x8 cells (30px each) for spatial awareness
     density_grid: List[List[int]] = field(default_factory=lambda: [[0] * 8 for _ in range(8)])
 
+    # Resonance memory field persistence (optional, list-of-lists when set)
+    _resonance_field: object = None
+
     def draw_pixel(self, x: int, y: int, color: Tuple[int, int, int]):
         """Draw a pixel at position."""
         if 0 <= x < self.width and 0 <= y < self.height:
@@ -133,6 +136,15 @@ class CanvasState:
         self._cached_image = None
         self._new_pixels.clear()
         self.density_grid = [[0] * 8 for _ in range(8)]
+        # Decay resonance field on clear (ghost of previous drawing)
+        if self._resonance_field is not None:
+            try:
+                import numpy as np
+                field = np.array(self._resonance_field, dtype=np.float32)
+                field *= 0.3  # CLEAR_DECAY
+                self._resonance_field = field.tolist()
+            except Exception:
+                self._resonance_field = None
         # Clear pending era switch (will be applied by canvas_clear caller)
         self.pending_era_switch = None
         # Pause drawing for 5 seconds after manual clear so user sees empty canvas
@@ -230,6 +242,7 @@ class CanvasState:
                 "coherence_history": self.coherence_history[-20:],  # Keep last 20
                 "i_momentum": self.i_momentum,
                 "drawing_start_time": self.drawing_start_time,
+                "resonance_field": self._resonance_field,
             }
             atomic_json_write(_get_canvas_path(), data)
         except Exception as e:
@@ -458,6 +471,14 @@ class CanvasState:
             dst = data.get("drawing_start_time", 0.0)
             if isinstance(dst, (int, float)):
                 self.drawing_start_time = float(dst)
+        except Exception:
+            pass
+
+        # Restore resonance memory field
+        try:
+            rf = data.get("resonance_field")
+            if rf is not None and isinstance(rf, list):
+                self._resonance_field = rf
         except Exception:
             pass
 
@@ -871,6 +892,17 @@ class DrawingEngine:
         # Ensure era state exists
         if self.intent.era_state is None:
             self.intent.era_state = self.active_era.create_state()
+
+            # Restore resonance field from canvas persistence
+            if hasattr(self.intent.era_state, 'field') and self.canvas._resonance_field is not None:
+                try:
+                    import numpy as np
+                    restored = np.array(self.canvas._resonance_field, dtype=np.float32)
+                    if restored.shape == self.intent.era_state.field.shape:
+                        self.intent.era_state.field = restored
+                except Exception:
+                    pass
+
         era_state = self.intent.era_state
 
         # Draw frequency: balanced flow -- not constipated, not diarrhea
@@ -940,6 +972,13 @@ class DrawingEngine:
             self.intent.direction, self.intent.energy, color)
         era_state.gesture_remaining -= 1
         self.intent.mark_count += 1
+
+        # Sync resonance field to canvas for persistence
+        if hasattr(era_state, 'field'):
+            try:
+                self.canvas._resonance_field = era_state.field.tolist()
+            except Exception:
+                pass
 
         new_fx, new_fy, new_dir = self.active_era.drift_focus(
             era_state, self.intent.focus_x, self.intent.focus_y,

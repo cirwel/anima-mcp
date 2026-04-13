@@ -370,3 +370,28 @@ class TestAnimaDrivenField:
         peak_unstable = state_unstable.field[24, 24]
 
         assert peak_stable > peak_unstable, "High stability should preserve peak (less diffusion)"
+
+
+# ---------------------------------------------------------------------------
+# Field persistence tests
+# ---------------------------------------------------------------------------
+import json
+
+
+class TestFieldPersistence:
+    def test_field_serializes_to_list(self):
+        state = ResonanceState()
+        state.field[10, 10] = 0.75
+        field_data = state.field.tolist()
+        assert isinstance(field_data, list)
+        assert len(field_data) == FIELD_SIZE
+        assert len(field_data[0]) == FIELD_SIZE
+        restored = np.array(json.loads(json.dumps(field_data)), dtype=np.float32)
+        assert abs(restored[10, 10] - 0.75) < 0.001
+
+    def test_field_restores_from_list(self):
+        state = ResonanceState()
+        field_data = [[0.0] * FIELD_SIZE for _ in range(FIELD_SIZE)]
+        field_data[5][5] = 0.42
+        state.field = np.array(field_data, dtype=np.float32)
+        assert abs(state.field[5, 5] - 0.42) < 0.001
