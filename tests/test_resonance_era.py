@@ -191,3 +191,75 @@ class TestGenerateColor:
         state2 = era.create_state()
         color_dark, _ = era.generate_color(state2, 0.5, 0.5, 0.5, 0.5, light_regime="dark")
         assert color_dim != color_dark
+
+
+# ---------------------------------------------------------------------------
+# place_mark tests
+# ---------------------------------------------------------------------------
+import random
+
+
+class FakeCanvas:
+    def __init__(self):
+        self.pixels = {}
+
+    def draw_pixel(self, x, y, color):
+        if 0 <= x < 240 and 0 <= y < 240:
+            self.pixels[(x, y)] = color
+
+
+class TestPlaceMark:
+    def test_sediment_draws_pixels(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        state.gesture = "sediment"
+        canvas = FakeCanvas()
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
+        assert len(canvas.pixels) > 0
+
+    def test_flow_draws_pixels(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        state.gesture = "flow"
+        state._grad_gx = 1.0
+        state._grad_gy = 0.0
+        canvas = FakeCanvas()
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
+        assert len(canvas.pixels) > 0
+
+    def test_scratch_draws_elongated_mark(self):
+        random.seed(42)
+        era = ResonanceEra()
+        state_s = era.create_state()
+        state_s.gesture = "sediment"
+        canvas_s = FakeCanvas()
+        era.place_mark(state_s, canvas_s, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+
+        random.seed(42)
+        state_x = era.create_state()
+        state_x.gesture = "scratch"
+        state_x._grad_gx = 0.0
+        state_x._grad_gy = 1.0
+        canvas_x = FakeCanvas()
+        era.place_mark(state_x, canvas_x, 120.0, 120.0, 0.0, 0.5, (255, 0, 0))
+        assert len(canvas_x.pixels) >= len(canvas_s.pixels)
+
+    def test_place_mark_deposits_to_field(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        state.gesture = "sediment"
+        canvas = FakeCanvas()
+        assert state.field.sum() == 0.0
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
+        assert state.field.sum() > 0.0
+
+    def test_marks_stay_within_canvas(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        state.gesture = "scratch"
+        state._grad_gx = 1.0
+        state._grad_gy = 0.0
+        canvas = FakeCanvas()
+        era.place_mark(state, canvas, 5.0, 5.0, 0.0, 0.8, (255, 255, 255))
+        for (x, y) in canvas.pixels:
+            assert 0 <= x < 240 and 0 <= y < 240

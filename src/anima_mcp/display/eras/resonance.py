@@ -197,6 +197,73 @@ class ResonanceEra:
             state.gesture = "scratch"
         state.gesture_remaining = random.randint(10, 25 + int(15 * coherence))
 
+    @staticmethod
+    def _brush(canvas, cx, cy, radius, color):
+        ix, iy = int(cx), int(cy)
+        if radius <= 1:
+            if 0 <= ix < 240 and 0 <= iy < 240:
+                canvas.draw_pixel(ix, iy, color)
+            return
+        for dx in range(-radius + 1, radius):
+            for dy in range(-radius + 1, radius):
+                if dx * dx + dy * dy < radius * radius:
+                    px, py = ix + dx, iy + dy
+                    if 0 <= px < 240 and 0 <= py < 240:
+                        canvas.draw_pixel(px, py, color)
+
+    def place_mark(self, state, canvas, focus_x, focus_y, direction, energy, color):
+        scale = 0.5 + energy
+        x = int(focus_x)
+        y = int(focus_y)
+
+        if state.gesture == "sediment":
+            radius = max(1, int(1 + energy * 2))
+            ox = random.randint(-1, 1)
+            oy = random.randint(-1, 1)
+            self._brush(canvas, x + ox, y + oy, radius, color)
+
+        elif state.gesture == "flow":
+            grad_angle = (
+                math.atan2(state._grad_gy, state._grad_gx)
+                if (state._grad_gx != 0 or state._grad_gy != 0)
+                else direction
+            )
+            length = int(random.randint(3, 7) * scale)
+            angle = grad_angle
+            cx, cy = float(x), float(y)
+            brush_r = max(1, int(energy * 2))
+            for i in range(length):
+                angle += random.gauss(0, 0.2)
+                cx += math.cos(angle) * 1.2
+                cy += math.sin(angle) * 1.2
+                self._brush(canvas, cx, cy, brush_r, color)
+
+        elif state.gesture == "scratch":
+            grad_angle = math.atan2(state._grad_gy, state._grad_gx)
+            cross_angle = grad_angle + math.pi / 2
+            length = int(random.randint(8, 16) * scale)
+            cx, cy = float(x), float(y)
+            for i in range(length):
+                cx += math.cos(cross_angle)
+                cy += math.sin(cross_angle)
+                ix, iy = int(cx), int(cy)
+                if 0 <= ix < 240 and 0 <= iy < 240:
+                    canvas.draw_pixel(ix, iy, color)
+
+        # Deposit to memory field
+        deposit_val = 0.5
+        _deposit(state.field, int(focus_x), int(focus_y), deposit_val)
+
+        # Update focus cell
+        state._focus_cx = min(int(focus_x) // CELL_SIZE, FIELD_SIZE - 1)
+        state._focus_cy = min(int(focus_y) // CELL_SIZE, FIELD_SIZE - 1)
+
+        # Decay + diffuse
+        state.cycle_count += 1
+        _decay(state.field)
+        sigma = (DIFFUSION_SIGMA_MIN + DIFFUSION_SIGMA_MAX) / 2
+        state.field = _diffuse(state.field, sigma=sigma)
+
     def generate_color(
         self,
         state: ResonanceState,
