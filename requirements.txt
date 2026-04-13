@@ -9,6 +9,7 @@ pyyaml>=6.0,<7.0
 
 # Data handling
 psutil>=5.9.0,<6.0.0        # System resource monitoring
+numpy>=1.24.0,<3.0.0        # Memory field operations (resonance era)
 
 # Image processing (for display rendering, even on Mac)
 Pillow>=10.0.0,<13.0.0
