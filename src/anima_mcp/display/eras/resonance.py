@@ -196,3 +196,65 @@ class ResonanceEra:
         else:
             state.gesture = "scratch"
         state.gesture_remaining = random.randint(10, 25 + int(15 * coherence))
+
+    def generate_color(
+        self,
+        state: ResonanceState,
+        warmth: float,
+        clarity: float,
+        stability: float,
+        presence: float,
+        light_regime: str = "dim",
+    ) -> Tuple[Tuple[int, int, int], str]:
+        """Generate an RGB color and hue category from anima dimensions.
+
+        Base hue sweeps from cool blue (220deg) at warmth=0 to warm amber
+        (40deg) at warmth=1.  High-field zones bias the hue further toward
+        amber, and the light regime applies final shifts.
+        """
+        import colorsys
+
+        # Base hue: 220° at warmth=0 (cool blue), 40° at warmth=1 (warm amber)
+        hue_deg = 220.0 - warmth * 180.0
+
+        # Field-driven warmth bias: marks in high-field zones shift toward amber
+        field_max = state.field.max()
+        if field_max > 1e-6:
+            field_val = state.field[state._focus_cx, state._focus_cy]
+            norm_field = field_val / field_max
+            if norm_field > FIELD_HIGH_THRESHOLD:
+                hue_deg -= (
+                    WARMTH_BIAS_DEGREES
+                    * (norm_field - FIELD_HIGH_THRESHOLD)
+                    / (1.0 - FIELD_HIGH_THRESHOLD)
+                )
+
+        # Light regime shifts
+        if light_regime == "dark":
+            hue_deg += 30.0
+            sat_mod = -0.1
+            val_mod = -0.1
+        elif light_regime == "bright":
+            hue_deg -= 15.0
+            sat_mod = 0.1
+            val_mod = 0.05
+        else:
+            sat_mod = 0.0
+            val_mod = 0.0
+
+        hue_deg = hue_deg % 360.0
+        hue = hue_deg / 360.0
+        saturation = max(0.1, min(1.0, 0.3 + clarity * 0.6 + sat_mod))
+        brightness = max(0.2, min(1.0, 0.4 + stability * 0.5 + val_mod))
+
+        rgb = colorsys.hsv_to_rgb(hue, saturation, brightness)
+        color = (int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
+
+        if hue_deg < 60 or hue_deg > 300:
+            hue_category = "warm"
+        elif hue_deg < 180:
+            hue_category = "cool"
+        else:
+            hue_category = "neutral"
+
+        return color, hue_category

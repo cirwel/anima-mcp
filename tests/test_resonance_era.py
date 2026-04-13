@@ -127,3 +127,67 @@ class TestChooseGesture:
         state._focus_cy = 24
         era.choose_gesture(state, clarity=0.5, stability=0.5, presence=0.5, coherence=0.5)
         assert state.gesture == "scratch"
+
+
+# ---------------------------------------------------------------------------
+# generate_color tests
+# ---------------------------------------------------------------------------
+import colorsys
+
+
+class TestGenerateColor:
+    def test_high_warmth_produces_warm_hue(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color, category = era.generate_color(state, warmth=0.9, clarity=0.7, stability=0.7, presence=0.7)
+        h, s, v = colorsys.rgb_to_hsv(color[0]/255, color[1]/255, color[2]/255)
+        hue_deg = h * 360
+        assert hue_deg < 100 or hue_deg > 340, f"High warmth hue {hue_deg:.0f} should be warm"
+
+    def test_low_warmth_produces_cool_hue(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color, category = era.generate_color(state, warmth=0.1, clarity=0.7, stability=0.7, presence=0.7)
+        h, s, v = colorsys.rgb_to_hsv(color[0]/255, color[1]/255, color[2]/255)
+        hue_deg = h * 360
+        assert 150 < hue_deg < 270, f"Low warmth hue {hue_deg:.0f} should be cool"
+
+    def test_high_clarity_produces_vivid_color(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color, _ = era.generate_color(state, warmth=0.5, clarity=0.9, stability=0.5, presence=0.5)
+        _, s, _ = colorsys.rgb_to_hsv(color[0]/255, color[1]/255, color[2]/255)
+        assert s > 0.6, f"High clarity should produce saturation > 0.6, got {s:.2f}"
+
+    def test_low_clarity_produces_washed_color(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color, _ = era.generate_color(state, warmth=0.5, clarity=0.1, stability=0.5, presence=0.5)
+        _, s, _ = colorsys.rgb_to_hsv(color[0]/255, color[1]/255, color[2]/255)
+        assert s < 0.6, f"Low clarity should produce saturation < 0.6, got {s:.2f}"
+
+    def test_field_warmth_bias(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color_cold, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
+        h_cold = colorsys.rgb_to_hsv(color_cold[0]/255, color_cold[1]/255, color_cold[2]/255)[0] * 360
+        state.field[state._focus_cx, state._focus_cy] = 5.0
+        color_hot, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
+        h_hot = colorsys.rgb_to_hsv(color_hot[0]/255, color_hot[1]/255, color_hot[2]/255)[0] * 360
+        assert h_cold != h_hot, "Field warmth bias should shift hue"
+
+    def test_returns_valid_rgb_and_category(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color, cat = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+        assert len(color) == 3
+        assert all(0 <= c <= 255 for c in color)
+        assert cat in ("warm", "cool", "neutral")
+
+    def test_light_regime_shifts(self):
+        era = ResonanceEra()
+        state = era.create_state()
+        color_dim, _ = era.generate_color(state, 0.5, 0.5, 0.5, 0.5, light_regime="dim")
+        state2 = era.create_state()
+        color_dark, _ = era.generate_color(state2, 0.5, 0.5, 0.5, 0.5, light_regime="dark")
+        assert color_dim != color_dark
