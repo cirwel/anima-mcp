@@ -112,21 +112,6 @@ class FieldEra:
         # Moderate run lengths
         state.gesture_remaining = random.randint(10, 25 + int(15 * coherence))
 
-    @staticmethod
-    def _brush(canvas, cx: float, cy: float, radius: int, color: Tuple[int, int, int]):
-        """Draw a filled circle of given radius at (cx, cy)."""
-        ix, iy = int(cx), int(cy)
-        if radius <= 1:
-            if 0 <= ix < 240 and 0 <= iy < 240:
-                canvas.draw_pixel(ix, iy, color)
-            return
-        for dx in range(-radius + 1, radius):
-            for dy in range(-radius + 1, radius):
-                if dx * dx + dy * dy < radius * radius:
-                    px, py = ix + dx, iy + dy
-                    if 0 <= px < 240 and 0 <= py < 240:
-                        canvas.draw_pixel(px, py, color)
-
     def place_mark(
         self,
         state: FieldState,
