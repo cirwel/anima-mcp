@@ -87,45 +87,11 @@ def test_jump_preserves_commitment_decay():
     )
 
 
-class TestColorCoherence:
-    """Colors within a gesture run should be similar, not random."""
+class TestColorGeneration:
+    """Color system uses vibrant palette + HSV with presence-driven vibrant rate."""
 
-    def test_consecutive_colors_similar_hue(self):
-        """Two colors from same gesture run should be within 40 degrees hue."""
-        import colorsys
-        random.seed(42)
-        era = GesturalEra()
-        state = era.create_state()
-        state.gesture = "stroke"
-        state.gesture_remaining = 15
-
-        color1, _ = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
-        color2, _ = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
-
-        h1 = colorsys.rgb_to_hsv(color1[0]/255, color1[1]/255, color1[2]/255)[0] * 360
-        h2 = colorsys.rgb_to_hsv(color2[0]/255, color2[1]/255, color2[2]/255)[0] * 360
-
-        hue_dist = min(abs(h1 - h2), 360 - abs(h1 - h2))
-        assert hue_dist < 40, f"Consecutive colors should be close in hue, got {hue_dist:.0f} degrees"
-
-    def test_new_gesture_run_resets_anchor(self):
-        """choose_gesture resets _run_hue so each run gets a fresh anchor."""
-        random.seed(42)
-        era = GesturalEra()
-        state = era.create_state()
-
-        # First run establishes a hue
-        state.gesture = "stroke"
-        state.gesture_remaining = 5
-        era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
-        assert state._run_hue >= 0  # anchored
-
-        # New gesture resets it
-        era.choose_gesture(state, 0.5, 0.5, 0.5, 0.5)
-        assert state._run_hue == -1.0, "choose_gesture should reset _run_hue"
-
-    def test_vibrant_accents_occur(self):
-        """~5% of colors should be vibrant accents (full saturation, random hue)."""
+    def test_vibrant_colors_occur_at_high_presence(self):
+        """High presence should produce vibrant colors ~30% of the time."""
         random.seed(42)
         era = GesturalEra()
         state = era.create_state()
@@ -134,12 +100,29 @@ class TestColorCoherence:
 
         vibrant_count = 0
         for _ in range(500):
-            _, category = era.generate_color(state, 0.5, 0.5, 0.5, 0.5)
+            _, category = era.generate_color(state, 0.5, 0.5, 0.5, 1.0)  # high presence
             if category == "vibrant":
                 vibrant_count += 1
 
         rate = vibrant_count / 500
-        assert 0.02 < rate < 0.12, f"Vibrant accent rate {rate:.3f} should be ~5%"
+        assert 0.15 < rate < 0.45, f"Vibrant rate at high presence {rate:.3f} should be ~30%"
+
+    def test_vibrant_colors_rare_at_low_presence(self):
+        """Low presence should produce vibrant colors ~15% of the time."""
+        random.seed(42)
+        era = GesturalEra()
+        state = era.create_state()
+        state.gesture = "stroke"
+        state.gesture_remaining = 500
+
+        vibrant_count = 0
+        for _ in range(500):
+            _, category = era.generate_color(state, 0.5, 0.5, 0.5, 0.0)  # low presence
+            if category == "vibrant":
+                vibrant_count += 1
+
+        rate = vibrant_count / 500
+        assert 0.05 < rate < 0.25, f"Vibrant rate at low presence {rate:.3f} should be ~15%"
 
 
 def test_direction_lock_probability_increased():

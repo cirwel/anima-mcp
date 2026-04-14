@@ -155,44 +155,6 @@ class TestDensityGrid:
         assert cell_x == 3 and cell_y == 5
 
 
-class TestSpatialAwareness:
-    """Focus jumps should bias toward sparse areas."""
-
-    def test_sparse_jump_biases_toward_empty_cell(self):
-        """_sparse_jump should land in the sparsest region more often than chance."""
-        random.seed(42)
-        era = GesturalEra()
-        canvas = CanvasState()
-
-        # Fill all cells except cell (2, 3) — at x=60-89, y=90-119
-        for gx in range(8):
-            for gy in range(8):
-                if (gx, gy) != (2, 3):
-                    for k in range(20):
-                        px = min(gx * 30 + k, 239)
-                        py = min(gy * 30 + k, 239)
-                        canvas.draw_pixel(px, py, (255, 255, 255))
-
-        sparse_hits = 0
-        trials = 200
-        for _ in range(trials):
-            jx, jy = era._sparse_jump(canvas)
-            if 60 <= jx < 90 and 90 <= jy < 120:
-                sparse_hits += 1
-
-        hit_rate = sparse_hits / trials
-        # With 50% bias toward sparsest cell, expect ~25-50%
-        assert hit_rate > 0.10, f"Sparse jump should bias toward empty cell, hit rate={hit_rate:.3f}"
-
-    def test_sparse_jump_without_canvas_still_works(self):
-        """_sparse_jump with canvas=None should fall back to random."""
-        random.seed(42)
-        era = GesturalEra()
-        jx, jy = era._sparse_jump(None)
-        assert 40 <= jx <= 200
-        assert 40 <= jy <= 200
-
-
 from anima_mcp.display.eras.geometric import GeometricEra
 
 

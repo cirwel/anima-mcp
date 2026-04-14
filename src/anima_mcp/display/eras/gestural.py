@@ -24,8 +24,6 @@ class GesturalState(EraState):
     direction_locked: bool = False
     direction_lock_remaining: int = 0
     direction_commitment: float = 0.0  # Smooth signal: ramps during locks, decays after
-    # Color coherence — hue anchors per gesture run, drifts slightly per mark
-    _run_hue: float = -1.0  # -1 means unset; set on first color of gesture run
 
     def intentionality(self) -> float:
         """Proprioceptive I_signal for EISV.
@@ -63,8 +61,6 @@ class GesturalEra:
         state.gesture = random.choice(state.gestures())
         # Coherence extends runs: low C -> 15-30, high C -> 15-45
         state.gesture_remaining = random.randint(15, 30 + int(15 * coherence))
-        # New gesture run gets fresh color anchor
-        state._run_hue = -1.0
 
     def place_mark(
         self,
@@ -141,30 +137,6 @@ class GesturalEra:
                 if 0 <= px < 240 and 0 <= py < 240:
                     canvas.draw_pixel(px, py, color)
 
-    @staticmethod
-    def _brush(canvas, cx: float, cy: float, radius: int, color: Tuple[int, int, int]):
-        """Draw a filled circle of given radius at (cx, cy)."""
-        ix, iy = int(cx), int(cy)
-        if radius <= 1:
-            if 0 <= ix < 240 and 0 <= iy < 240:
-                canvas.draw_pixel(ix, iy, color)
-            return
-        for dx in range(-radius + 1, radius):
-            for dy in range(-radius + 1, radius):
-                if dx * dx + dy * dy < radius * radius:
-                    px, py = ix + dx, iy + dy
-                    if 0 <= px < 240 and 0 <= py < 240:
-                        canvas.draw_pixel(px, py, color)
-
-    def _sparse_jump(self, canvas) -> Tuple[float, float]:
-        """Jump biased toward sparse canvas areas. 50% sparse-biased, 50% random."""
-        if canvas is not None and random.random() < 0.5:
-            gx, gy = canvas.sparsest_cell()
-            x = gx * 30 + random.uniform(5, 25)
-            y = gy * 30 + random.uniform(5, 25)
-            return max(40.0, min(200.0, x)), max(40.0, min(200.0, y))
-        return random.uniform(40, 200), random.uniform(40, 200)
-
     def drift_focus(
         self,
         state: GesturalState,
@@ -181,7 +153,6 @@ class GesturalEra:
 
         clarity modulates direction wobble and jump probability:
         high clarity = steadier direction, fewer jumps (focused strokes).
-        canvas: if provided, focus jumps bias toward sparse areas.
         """
         C = coherence
 
@@ -230,7 +201,8 @@ class GesturalEra:
         # Focus jump — coherence and clarity reduce jumps
         jump_prob = 0.03 * (1.0 - 0.4 * C) * (1.0 - 0.4 * clarity)
         if random.random() < jump_prob:
-            focus_x, focus_y = self._sparse_jump(canvas)
+            focus_x = random.uniform(40, 200)
+            focus_y = random.uniform(40, 200)
             direction = random.uniform(0, 2 * math.pi)
             state.direction_locked = False
             state.direction_lock_remaining = 0
@@ -247,29 +219,38 @@ class GesturalEra:
         presence: float,
         light_regime: str = "dim",
     ) -> Tuple[Tuple[int, int, int], str]:
-        """Color with per-run coherence. Hue anchors at gesture start, drifts per mark.
+        """Generate a color for the current mark. Full palette, state-influenced not restricted.
 
-        5% chance of a vibrant accent — full-sat random hue that bypasses the
-        run anchor. Acts as punctuation, not palette shift.
+        light_regime modulates palette: dark → cooler/deeper, bright → warmer/vivid.
         """
-        import colorsys
+        VIBRANT_COLORS = [
+            (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+            (255, 0, 255), (0, 255, 255), (255, 128, 0), (255, 64, 64),
+            (255, 192, 203), (255, 215, 0), (0, 191, 255), (138, 43, 226),
+            (75, 0, 130), (0, 128, 128), (139, 69, 19), (34, 139, 34),
+            (210, 180, 140), (255, 182, 193), (173, 216, 230), (144, 238, 144),
+            (255, 255, 224), (221, 160, 221), (128, 0, 0), (0, 100, 0),
+            (25, 25, 112), (128, 0, 128),
+        ]
 
-        # Vibrant accent: 5% chance of a full-sat surprise at a random hue
-        if random.random() < 0.05:
-            accent_hue = random.random()
-            rgb = colorsys.hsv_to_rgb(accent_hue, 1.0, 0.8 + random.random() * 0.2)
-            color = tuple(int(c * 255) for c in rgb)
+        use_vibrant = random.random() < (0.15 + presence * 0.15)
+        if use_vibrant:
+            color = random.choice(VIBRANT_COLORS)
+            if stability < 0.5 and random.random() < 0.3:
+                color = tuple(int(c * (0.6 + stability * 0.4)) for c in color)
+            # Light regime: dim vibrants in dark, boost in bright
+            if light_regime == "dark":
+                color = tuple(int(c * 0.7) for c in color)
+            elif light_regime == "bright":
+                color = tuple(min(255, int(c * 1.15)) for c in color)
             return color, "vibrant"
 
-        # Anchor hue at start of gesture run; drift +/-5 degrees per mark
-        if state._run_hue < 0:
-            state._run_hue = (warmth * 360.0 + random.random() * 180.0) % 360.0
-        else:
-            state._run_hue = (state._run_hue + random.gauss(0, 5.0)) % 360.0
+        import colorsys
 
-        hue = state._run_hue
+        hue_base = warmth * 360.0
+        hue = (hue_base + random.random() * 180.0) % 360.0
 
-        # Light regime shifts
+        # Light regime shifts: dark → cooler hues, lower sat; bright → warmer, higher sat
         if light_regime == "dark":
             hue = (hue + 30) % 360.0
             sat_mod = -0.1
@@ -282,9 +263,8 @@ class GesturalEra:
             sat_mod = 0.0
             val_mod = 0.0
 
-        saturation = max(0.1, min(1.0, 0.3 + clarity * 0.7 + random.gauss(0, 0.1) + sat_mod))
-        brightness = max(0.2, min(1.0, 0.4 + stability * 0.6 + random.gauss(0, 0.1) + val_mod))
-
+        saturation = max(0.1, min(1.0, 0.3 + clarity * 0.7 + (random.random() - 0.5) * 0.4 + sat_mod))
+        brightness = max(0.2, min(1.0, 0.4 + stability * 0.6 + (random.random() - 0.5) * 0.3 + val_mod))
         rgb = colorsys.hsv_to_rgb(hue / 360.0, saturation, brightness)
         color = tuple(int(c * 255) for c in rgb)
 
