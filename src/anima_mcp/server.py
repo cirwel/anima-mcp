@@ -1646,7 +1646,7 @@ def run_http_server(host: str, port: int):
             from mcp.server.auth.routes import build_resource_metadata_url
             resource_metadata_url = build_resource_metadata_url(mcp.settings.auth.resource_server_url)
 
-            # Require OAuth only for external (Cloudflare tunnel) requests.
+            # Hosts that require OAuth (Cloudflare tunnel).
             # Local and Tailscale clients (Cursor, Claude Code) skip auth.
             _EXTERNAL_HOSTS = {"lumen.cirwel.org"}
             _auth_protected = _AuthMW(
@@ -1669,11 +1669,27 @@ def run_http_server(host: str, port: int):
                         await _auth_protected(scope, receive, send)
                         return
                 await streamable_mcp_asgi(scope, receive, send)
+            # Gate OAuth routes so they only respond to external hosts.
+            # Local/Tailscale clients must not see protected-resource metadata,
+            # otherwise the SDK tries OAuth and fails on origin mismatch.
+            _gated_oauth_routes = []
+            for _oauth_route in _oauth_auth_routes:
+                _orig_endpoint = _oauth_route.endpoint
+                async def _host_gated_oauth(request, _ep=_orig_endpoint):
+                    headers = dict(request.scope.get("headers", []))
+                    host = headers.get(b"host", b"").decode().split(":")[0]
+                    if host not in _EXTERNAL_HOSTS:
+                        return JSONResponse({"error": "not found"}, status_code=404)
+                    return await _ep(request)
+                _gated_oauth_routes.append(
+                    Route(_oauth_route.path, _host_gated_oauth, methods=_oauth_route.methods)
+                )
         else:
             mcp_endpoint = streamable_mcp_asgi
+            _gated_oauth_routes = []
 
         all_routes = [
-            *_oauth_auth_routes,
+            *_gated_oauth_routes,
             Mount("/mcp", app=mcp_endpoint),
             Mount("/static", app=StaticFiles(directory=str(_static_dir)), name="static"),
             Route("/health", health_check, methods=["GET"]),
