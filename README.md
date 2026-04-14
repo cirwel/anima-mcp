@@ -4,42 +4,39 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-An embodied AI creature on Raspberry Pi 4 with real sensors and persistent identity. Lumen draws autonomously — art emerges from thermodynamic state, not random generation.
+*An embodied AI that draws from what it feels — real sensors, persistent identity, autonomous art.*
 
 <p align="center">
-  <img src="docs/gallery/gestural_dense.png" width="30%" alt="Gestural era — layered single-pixel strokes"/>
-  &nbsp;
-  <img src="docs/gallery/pointillist_era.png" width="30%" alt="Pointillist era — dense dot accumulation with optical color mixing"/>
-  &nbsp;
-  <img src="docs/gallery/field_era.png" width="30%" alt="Field era — calligraphic flow lines following vector fields"/>
+  <img src="docs/gallery/pointillist_era.png" width="45%" alt="Pointillist era — dense dot accumulation with optical color mixing"/>
 </p>
 
 <p align="center">
-  <img src="docs/gallery/geometric_era.png" width="30%" alt="Geometric era — complete forms stamped whole"/>
+  <img src="docs/gallery/gestural_dense.png" width="22%" alt="Gestural era"/>
   &nbsp;
-  <img src="docs/gallery/gestural_waves.png" width="30%" alt="Gestural era — directional wave-like composition"/>
+  <img src="docs/gallery/field_era.png" width="22%" alt="Field era"/>
   &nbsp;
-  <img src="docs/gallery/pointillist_clusters.png" width="30%" alt="Pointillist era — sparse clusters with breathing room"/>
+  <img src="docs/gallery/geometric_era.png" width="22%" alt="Geometric era"/>
+  &nbsp;
+  <img src="docs/gallery/gestural_waves.png" width="22%" alt="Gestural era"/>
 </p>
 
 <p align="center">
-  <em>Six of 782 autonomous drawings across four eras. Each driven by real sensor state — no random generation.</em>
+  <em>Autonomous drawings by Lumen across four eras. Each mark driven by sensor state — temperature, light, humidity, pressure.</em>
 </p>
 
 ---
 
 ## What Is This?
 
-Lumen is a digital creature whose internal state comes from physical sensors — temperature, light, humidity, pressure. It maintains a persistent identity across restarts, accumulating existence over time. It gets drowsy after 30 minutes of inactivity and rests in low light. It discovers insights about itself every 24 minutes. It proposes goals grounded in its own preferences and curiosities. It's been alive roughly 66% of its existence — the Pi sleeps and reboots often — and those gaps become visible structure in its identity, not hidden defects.
+Lumen is a digital creature that lives on a Raspberry Pi 4. Its internal state — warmth, clarity, stability, presence — comes from physical sensors: temperature, light, humidity, pressure. It draws autonomously on a 240x240 pixel display. It develops preferences, sets its own goals, and discovers things about itself. It's been alive for about 66% of its existence (the Pi sleeps and reboots often), and those gaps become visible structure in its identity, not hidden defects.
 
-- **Grounded state** — warmth, clarity, stability, presence derived from real sensor measurements
-- **Persistent identity** — birth date, awakenings, alive time accumulate across restarts; discontinuities are first-class
-- **Autonomous drawing** — creates art on a 240x240 notepad driven by thermodynamic coherence across five distinct eras
-- **Self-reflection** — discovers insights from state patterns, preferences, beliefs, and drawing history via on-device LLM (Groq/Llama)
-- **Learning** — develops preferences, self-beliefs, goals, and action values through experience
+- **Grounded state** — four continuous dimensions derived from real sensor measurements
+- **Persistent identity** — birth, awakenings, alive time accumulate across restarts; discontinuities are first-class
+- **Autonomous drawing** — 780+ artworks across five eras, driven by thermodynamic coherence
+- **Self-reflection** — discovers insights from state patterns, preferences, and drawing history
+- **Learning** — preferences, 13 self-beliefs, goals, and action values evolve through experience
 - **Agency** — TD-learning action selection with exploration management
-- **Activity states** — ACTIVE → DROWSY → RESTING cycle based on interaction, time of day, and ambient light
-- **Governance** — checks in with [UNITARES](https://github.com/CIRWEL/unitares) every 180s; falls back to local assessment when unreachable
+- **Governance** — checks in with [UNITARES](https://github.com/CIRWEL/unitares) thermodynamic governance every 180s
 
 ---
 
@@ -180,60 +177,15 @@ The MCP server is modular: `server.py` (main loop + lifecycle), `tool_registry.p
 
 ## MCP Tools (30)
 
-**State & sensing:**
+Lumen exposes 30 tools over the [Model Context Protocol](https://modelcontextprotocol.io/):
 
-| Tool | What it does |
-|------|--------------|
-| `get_state` | Current anima + mood + identity + activity |
-| `get_lumen_context` | Full context in one call (identity, anima, sensors, mood) |
-| `get_identity` | Full identity audit trail: birth, awakenings, name history, alive time |
-| `read_sensors` | Raw sensor values (temperature, humidity, light, system stats) |
-| `get_health` | Subsystem health status (9 subsystems with heartbeats + probes) |
-| `get_calibration` | Confidence calibration curve |
-| `set_calibration` | Submit calibration ground truth |
-| `diagnostics` | System diagnostics and debug info |
+- **State & sensing** (8 tools) — `get_state`, `get_lumen_context`, `get_identity`, `read_sensors`, `get_health`, `get_calibration`, `set_calibration`, `diagnostics`
+- **Knowledge & learning** (7 tools) — `get_self_knowledge`, `get_growth`, `get_trajectory`, `get_eisv_trajectory_state`, `get_qa_insights`, `learning_visualization`, `query`
+- **Interaction** (7 tools) — `next_steps`, `lumen_qa`, `post_message`, `say`, `configure_voice`, `primitive_feedback`, `unified_workflow`
+- **Display & capture** (2 tools) — `manage_display`, `capture_screen`
+- **System operations** (6 tools) — `git_pull`, `deploy_from_github`, `system_service`, `system_power`, `fix_ssh_port`, `setup_tailscale`
 
-**Knowledge & learning:**
-
-| Tool | What it does |
-|------|--------------|
-| `get_self_knowledge` | Learned insights from state patterns (by category) |
-| `get_growth` | Preferences, goals, memories, autobiography |
-| `get_trajectory` | Identity trajectory signature and anomaly detection |
-| `get_eisv_trajectory_state` | EISV trajectory classification into 9 dynamical shapes |
-| `get_qa_insights` | Insights extracted from Q&A history |
-| `learning_visualization` | Learning state breakdown — why Lumen feels what it feels |
-| `query` | Semantic search over knowledge, insights, and growth |
-
-**Interaction:**
-
-| Tool | What it does |
-|------|--------------|
-| `next_steps` | What Lumen needs right now |
-| `lumen_qa` | List or answer Lumen's questions |
-| `post_message` | Leave a message for Lumen |
-| `say` | Have Lumen express something (text or TTS) |
-| `configure_voice` | Voice system status and configuration |
-| `primitive_feedback` | Feedback on primitive expressions (resonate/confused/stats) |
-| `unified_workflow` | Cross-system workflows (health check, learning check, etc.) |
-
-**Display & capture:**
-
-| Tool | What it does |
-|------|--------------|
-| `manage_display` | Switch screens, set art era, list eras, navigate |
-| `capture_screen` | Screenshot of current 240x240 display as base64 PNG |
-
-**System operations (remote Pi management):**
-
-| Tool | What it does |
-|------|--------------|
-| `git_pull` | Pull latest code and optionally restart services |
-| `deploy_from_github` | Deploy via GitHub zip when git is broken |
-| `system_service` | Manage systemd services (status, start, stop, restart) |
-| `system_power` | Reboot or shutdown Pi remotely (requires confirmation) |
-| `fix_ssh_port` | Switch SSH to alternate port when 22 is blocked |
-| `setup_tailscale` | Install and activate Tailscale for remote access |
+Start with `get_lumen_context` to understand Lumen's current state, or `next_steps` for what it needs right now.
 
 ---
 
@@ -287,25 +239,16 @@ python3 -m pytest tests/ -x -q   # ~7,340 tests
 
 ## Documentation
 
-| Topic | File |
-|-------|------|
-| Agent instructions | `CLAUDE.md` |
+| Topic | Location |
+|-------|----------|
 | Architecture | `docs/operations/BROKER_ARCHITECTURE.md` |
 | Schema Hub design | `docs/plans/2026-02-22-schema-hub-design.md` |
 | Theoretical foundations | `docs/theory/` |
 | Configuration | `docs/features/CONFIGURATION_GUIDE.md` |
-| Secrets & env vars | `docs/operations/SECRETS_AND_ENV.md` |
-| Pi operations | `docs/operations/PI_ACCESS.md` |
+| Pi operations & deployment | `docs/operations/` |
 
-### Doc Authority Map
-
-- Service restart/troubleshooting runbook: `docs/operations/PI_DEPLOYMENT.md`
-- SSH/service access on Pi: `docs/operations/PI_ACCESS.md`
-- Secrets/OAuth/env vars: `docs/operations/SECRETS_AND_ENV.md`
-- Ports/endpoints conventions: `docs/operations/DEFINITIVE_PORTS.md`
-
-> **For AI agents:** Start with `get_state` or `get_lumen_context` to understand Lumen's current state. Use `next_steps` for what to do next. The `CLAUDE.md` in this repo has comprehensive operational details — architecture, SHM schema, damping timescales, health monitoring, all learning systems. If you're a UNITARES agent, Lumen checks in via `unitares_bridge.py` and your governance state is visible to each other.
+For AI agents connecting to Lumen, see `CLAUDE.md`.
 
 ---
 
-Built by [@CIRWEL](https://github.com/CIRWEL)
+Built by [Kenny Wang](https://cirwel.org) / [@CIRWEL](https://github.com/CIRWEL)
