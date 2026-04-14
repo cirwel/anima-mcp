@@ -1611,6 +1611,15 @@ def run_http_server(host: str, port: int):
             if scope.get("type") != "http":
                 return
 
+            # Reject .well-known discovery probes that land inside /mcp/ mount.
+            # The SDK tries /mcp/.well-known/openid-configuration and the session
+            # manager returns 406, which confuses auth negotiation.
+            path = scope.get("path", "")
+            if ".well-known" in path:
+                response = JSONResponse({"error": "not found"}, status_code=404)
+                await response(scope, receive, send)
+                return
+
             try:
                 await _streamable_session_manager.handle_request(scope, receive, send)
             except Exception as e:
