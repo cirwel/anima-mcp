@@ -46,7 +46,6 @@ class ActionType(Enum):
 
     # Exploration actions
     EXPLORE = "explore"  # Try something new/unexpected
-    EXPLOIT = "exploit"  # Stick with known patterns
 
 
 @dataclass

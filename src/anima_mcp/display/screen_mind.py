@@ -947,6 +947,8 @@ class MindMixin:
                 "observe": COLORS.SOFT_BLUE,
                 "rest": DIM,
                 "draw": COLORS.SOFT_CORAL,
+                "adjust_sensitivity": COLORS.SOFT_YELLOW,
+                "request_reflection": COLORS.SOFT_CYAN,
             }
 
             draw.text((10, y), "last action", fill=DIM, font=f_micro)
