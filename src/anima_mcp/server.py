@@ -1620,6 +1620,15 @@ def run_http_server(host: str, port: int):
                 await response(scope, receive, send)
                 return
 
+            # Stash X-Anima-Admin header for destructive-handler gate (admin_auth).
+            from .admin_auth import set_admin_header
+            admin_value: str | None = None
+            for name, value in scope.get("headers", []):
+                if name == b"x-anima-admin":
+                    admin_value = value.decode("latin-1")
+                    break
+            set_admin_header(admin_value)
+
             try:
                 await _streamable_session_manager.handle_request(scope, receive, send)
             except Exception as e:

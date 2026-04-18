@@ -12,6 +12,8 @@ from pathlib import Path
 
 from mcp.types import TextContent
 
+from ..admin_auth import require_admin
+
 
 RESTART_LOCKFILE = Path("/tmp/anima-restarting")
 RESTART_WAIT_SECONDS = 120  # Callers must wait this long before retrying
@@ -111,6 +113,8 @@ async def handle_git_pull(arguments: dict) -> list[TextContent]:
     Pull latest code from git and optionally restart.
     Enables remote deployments via MCP without SSH.
     """
+    if err := require_admin():
+        return err
     restart = arguments.get("restart", False)
     stash = arguments.get("stash", False)  # Stash local changes before pull
     force = arguments.get("force", False)  # Hard reset to remote (DANGER: loses local changes)
@@ -261,6 +265,8 @@ async def handle_system_service(arguments: dict) -> list[TextContent]:
     Manage system services (systemctl).
     Enables remote control of rpi-connect, anima, and other services.
     """
+    if err := require_admin():
+        return err
     service = arguments.get("service")
     action = arguments.get("action", "status")
 
@@ -364,6 +370,8 @@ async def handle_fix_ssh_port(arguments: dict) -> list[TextContent]:
     Call via HTTP when SSH times out: avoids need for keyboard/monitor.
     Use port=22 to remove alternate port lines and restore default (22).
     """
+    if err := require_admin():
+        return err
     port = arguments.get("port", 2222)
     if port not in (22, 2222, 22222):
         pi_host = _pi_ssh_host()
@@ -466,6 +474,8 @@ async def handle_deploy_from_github(arguments: dict) -> list[TextContent]:
     Deploy latest code from GitHub via zip download. No git required.
     Use when git_pull fails (no .git) or to force-refresh from main.
     """
+    if err := require_admin():
+        return err
     import urllib.request
     import zipfile
     import shutil
@@ -522,6 +532,8 @@ async def handle_setup_tailscale(arguments: dict) -> list[TextContent]:
     Call via HTTP when SSH unavailable. Requires auth_key for headless.
     Get key: https://login.tailscale.com/admin/settings/keys
     """
+    if err := require_admin():
+        return err
     auth_key = arguments.get("auth_key", "").strip()
     if not auth_key:
         return [TextContent(type="text", text=json.dumps({
@@ -597,6 +609,8 @@ async def handle_system_power(arguments: dict) -> list[TextContent]:
     Reboot or shutdown the Pi remotely.
     Useful for recovery when services are stuck.
     """
+    if err := require_admin():
+        return err
     action = arguments.get("action", "status")
     confirm = arguments.get("confirm", False)
 
