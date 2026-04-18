@@ -9,6 +9,7 @@ This module contains:
 import json
 import os
 import sys
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.transport_security import TransportSecuritySettings
@@ -639,7 +640,12 @@ def get_fastmcp() -> "FastMCP":
 
             oauth_secret = os.environ.get("ANIMA_OAUTH_SECRET")
             auto_approve = os.environ.get("ANIMA_OAUTH_AUTO_APPROVE", "true").lower() in ("true", "1", "yes")
-            oauth_provider = AnimaOAuthProvider(secret=oauth_secret, auto_approve=auto_approve)
+            oauth_db_path = os.environ.get("ANIMA_OAUTH_DB_PATH", str(Path.home() / ".anima" / "oauth.db"))
+            oauth_provider = AnimaOAuthProvider(
+                secret=oauth_secret,
+                auto_approve=auto_approve,
+                db_path=oauth_db_path,
+            )
             auth_settings = AuthSettings(
                 issuer_url=oauth_issuer_url,
                 resource_server_url=oauth_issuer_url,
