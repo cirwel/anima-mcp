@@ -18,6 +18,19 @@ from ..admin_auth import require_admin
 RESTART_LOCKFILE = Path("/tmp/anima-restarting")
 RESTART_WAIT_SECONDS = 120  # Callers must wait this long before retrying
 
+# Hold strong refs to background tasks so they can't be GC'd mid-sleep.
+# Python's create_task() only stores a weak ref in the loop — without this
+# the task may be collected before _delayed_restart() fires the subprocess,
+# silently turning restart=true into a no-op.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_delayed_restart() -> None:
+    """Schedule _delayed_restart() with a strong reference retained."""
+    task = asyncio.create_task(_delayed_restart())
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 def _pi_ssh_host() -> str:
     """Return Pi host/IP for user-facing SSH instructions."""
@@ -167,7 +180,7 @@ async def handle_git_pull(arguments: dict) -> list[TextContent]:
                     "This response confirms the restart was scheduled successfully. "
                     "Any 'fetch failed' or timeout after this is expected — the server is restarting."
                 )
-                asyncio.create_task(_delayed_restart())
+                _spawn_delayed_restart()
             return [TextContent(type="text", text=json.dumps(output, indent=2))]
         except Exception as e:
             return [TextContent(type="text", text=json.dumps({
@@ -244,7 +257,7 @@ async def handle_git_pull(arguments: dict) -> list[TextContent]:
                     "This response confirms the restart was scheduled successfully. "
                     "Any 'fetch failed' or timeout after this is expected — the server is restarting."
                 )
-                asyncio.create_task(_delayed_restart())
+                _spawn_delayed_restart()
             else:
                 output["note"] = "Changes pulled. Use restart=true to apply, or manually restart."
 
@@ -516,7 +529,7 @@ async def handle_deploy_from_github(arguments: dict) -> list[TextContent]:
                 "This response confirms the restart was scheduled successfully. "
                 "Any 'fetch failed' or timeout after this is expected — the server is restarting."
             )
-            asyncio.create_task(_delayed_restart())
+            _spawn_delayed_restart()
         return [TextContent(type="text", text=json.dumps(output, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps({
