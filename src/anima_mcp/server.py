@@ -1546,6 +1546,12 @@ def run_http_server(host: str, port: int):
             print("[Server] Install mcp[cli] to get FastMCP support", file=sys.stderr, flush=True)
             raise SystemExit(1)
 
+        # Apply runtime patches for upstream MCP SDK bugs before any MCP
+        # session is created. Currently: swallow ClosedResourceError raised
+        # when a client disconnects mid-response (MCP 1.26.0).
+        from .mcp_patches import apply_all_patches
+        apply_all_patches()
+
         # Get the FastMCP server instance (creates and registers tools if needed)
         mcp = get_fastmcp()
         if mcp is None:
