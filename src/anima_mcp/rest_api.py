@@ -253,7 +253,7 @@ async def rest_state(request):
             "ambient_temp": readings.ambient_temp_c or 0,
             "light": readings.light_lux or 0,
             "humidity": readings.humidity_pct or 0,
-            "pressure": readings.pressure_hpa or 0,
+            "pressure": readings.pressure_hpa,
             "cpu_percent": readings.cpu_percent or 0,
             "memory_percent": readings.memory_percent or 0,
             "disk_percent": readings.disk_percent or 0,
@@ -691,7 +691,7 @@ async def rest_layers(request):
             "ambient_temp_c": readings.ambient_temp_c or 0,
             "humidity_pct": readings.humidity_pct or 0,
             "light_lux": readings.light_lux or 0,
-            "pressure_hpa": readings.pressure_hpa or 0,
+            "pressure_hpa": readings.pressure_hpa,
         }
 
         # Neural bands
