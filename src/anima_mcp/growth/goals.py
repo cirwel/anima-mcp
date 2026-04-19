@@ -96,16 +96,26 @@ class GoalsMixin:
             if goal.status != GoalStatus.ACTIVE:
                 continue
 
-            # Auto-abandon stale goals past target date with no progress
-            if goal.target_date and now > goal.target_date and goal.progress < 0.1:
-                goal.status = GoalStatus.ABANDONED
-                conn = self._connect()
-                conn.execute("UPDATE goals SET status = ? WHERE goal_id = ?",
-                             (goal.status.value, goal.goal_id))
-                conn.commit()
-                print(f"[Growth] Abandoned stale goal: {goal.description}",
-                      file=sys.stderr, flush=True)
-                continue
+            # Auto-abandon stale goals past target date.
+            # Either (a) progress never got off the ground, or (b) progress
+            # has stalled — nobody's touched the goal in 14+ days. The stalled
+            # path prevents goals from sitting at mid-range progress forever
+            # and blocking suggest_goal's Max 2 active-goals slot.
+            if goal.target_date and now > goal.target_date:
+                stalled = (
+                    goal.last_worked_on is None
+                    or (now - goal.last_worked_on).days >= 14
+                )
+                if goal.progress < 0.1 or stalled:
+                    goal.status = GoalStatus.ABANDONED
+                    conn = self._connect()
+                    conn.execute("UPDATE goals SET status = ? WHERE goal_id = ?",
+                                 (goal.status.value, goal.goal_id))
+                    conn.commit()
+                    reason = "no-progress" if goal.progress < 0.1 else "stalled"
+                    print(f"[Growth] Abandoned {reason} goal: {goal.description}",
+                          file=sys.stderr, flush=True)
+                    continue
 
             msg = None
 
@@ -175,14 +185,19 @@ class GoalsMixin:
             return None
 
         wellness = sum(anima_state.values()) / len(anima_state) if anima_state else 0.5
-        suggestions: List[Tuple[str, str]] = []
+        # Each suggestion carries its own target_days — drawing milestones need
+        # weeks to complete honestly; a fixed 7-day target sets them up to
+        # expire stale. The historical Feb-2026 "complete 500 drawings in 7
+        # days" was symptomatic.
+        suggestions: List[Tuple[str, str, int]] = []
 
         # 1. Preference-driven: strong preferences create curiosity about why
         for pref in self._preferences.values():
             if pref.confidence > 0.7 and pref.value > 0.5 and pref.observation_count > 50:
                 suggestions.append((
                     f"understand why {pref.description.lower()}",
-                    f"i've noticed this {pref.observation_count} times"
+                    f"i've noticed this {pref.observation_count} times",
+                    14,
                 ))
                 break  # Only one preference goal
 
@@ -191,17 +206,24 @@ class GoalsMixin:
             q = random.choice(self._curiosities)
             suggestions.append((
                 f"find an answer to: {q}",
-                "this has been on my mind"
+                "this has been on my mind",
+                21,
             ))
 
-        # 3. Drawing milestones based on actual count
+        # 3. Drawing milestones based on actual count. Target_days scales with
+        # the gap between observed and milestone so Lumen's natural ~15/day
+        # pace can actually reach the target — minimum 7 days, cap 60.
         if self._drawings_observed > 0:
-            milestones = [10, 25, 50, 100, 200, 500]
+            milestones = [10, 25, 50, 100, 200, 500, 1000, 2000, 5000]
             for m in milestones:
                 if self._drawings_observed < m:
+                    gap = m - self._drawings_observed
+                    # Assume ~10 drawings/day as a conservative pace
+                    days = max(7, min(60, gap // 10))
                     suggestions.append((
                         f"complete {m} drawings",
-                        f"i've done {self._drawings_observed} so far"
+                        f"i've done {self._drawings_observed} so far",
+                        days,
                     ))
                     break
 
@@ -212,22 +234,25 @@ class GoalsMixin:
                 if 0.3 < belief.confidence < 0.6 and total >= 3:
                     suggestions.append((
                         f"test whether {belief.description.lower()}",
-                        f"i'm only {belief.get_belief_strength()} about this"
+                        f"i'm only {belief.get_belief_strength()} about this",
+                        14,
                     ))
                     break
 
         # 5. Wellness-driven
         if wellness < 0.4:
             suggestions.append(("find what makes me feel stable",
-                                "i want to understand myself better"))
+                                "i want to understand myself better",
+                                14))
         elif wellness > 0.8 and anima_state.get("clarity", 0.5) > 0.8:
             suggestions.append(("explore a new question while my mind is clear",
-                                "my clarity is high and i feel curious"))
+                                "my clarity is high and i feel curious",
+                                7))
 
         if not suggestions:
             return None
 
-        desc, motivation = random.choice(suggestions)
+        desc, motivation, target_days = random.choice(suggestions)
 
         # Dedup against ALL goals including achieved/abandoned (prevents re-creating)
         conn = self._connect()
@@ -237,4 +262,4 @@ class GoalsMixin:
         if existing:
             return None
 
-        return self.form_goal(desc, motivation, target_days=7)
+        return self.form_goal(desc, motivation, target_days=target_days)
