@@ -92,6 +92,8 @@ case "$RESULT" in
             log "INTEGRITY FAILURE: $REST"
             cp "$DB" "${DB}.corrupted.$(date +%Y%m%d_%H%M)"
             log "Corrupted DB saved for analysis"
+        elif [ "$WAL_BEFORE" = "$WAL_AFTER" ]; then
+            log "Run: WAL=${WAL_BEFORE} hour=${HOUR} (no action)"
         fi
         ;;
     CORRUPT:*)
