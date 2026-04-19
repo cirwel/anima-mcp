@@ -395,10 +395,10 @@
             if (!p) return '';
             const c = 'var(--accent-physical)';
             const content = `<div class="metrics-grid">
-                ${metricBar('temp', p.ambient_temp_c, 50, c, `${p.ambient_temp_c.toFixed(1)}\u00b0C`)}
-                ${metricBar('humidity', p.humidity_pct, 100, c, `${p.humidity_pct.toFixed(0)}%`)}
-                ${metricBar('light', p.light_lux, 5000, c, `${Math.round(p.light_lux)} lux`)}
-                ${metricBar('pressure', p.pressure_hpa, 1013, c, `${p.pressure_hpa.toFixed(0)} hPa`)}
+                ${p.ambient_temp_c != null ? metricBar('temp', p.ambient_temp_c, 50, c, `${p.ambient_temp_c.toFixed(1)}\u00b0C`) : ''}
+                ${p.humidity_pct != null ? metricBar('humidity', p.humidity_pct, 100, c, `${p.humidity_pct.toFixed(0)}%`) : ''}
+                ${p.light_lux != null ? metricBar('light', p.light_lux, 5000, c, `${Math.round(p.light_lux)} lux`) : ''}
+                ${p.pressure_hpa != null ? metricBar('pressure', p.pressure_hpa, 1013, c, `${p.pressure_hpa.toFixed(0)} hPa`) : ''}
             </div>`;
             return layerCard('\u25ce', 'Physical Sensors', 'exteroception', 'var(--accent-physical)', content);
         }
