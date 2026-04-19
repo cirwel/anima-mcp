@@ -27,6 +27,38 @@ from .memories import MemoriesMixin
 from .curiosity import CuriosityMixin
 
 
+# Gallery directory can be overridden for tests
+_GALLERY_DIR_OVERRIDE: Optional[Path] = None
+
+
+def _gallery_dir() -> Path:
+    """Return the gallery directory (test-overridable via set_gallery_dir)."""
+    if _GALLERY_DIR_OVERRIDE is not None:
+        return _GALLERY_DIR_OVERRIDE
+    return Path.home() / ".anima" / "drawings"
+
+
+def set_gallery_dir(path: Optional[Path]) -> None:
+    """Test hook: point the reconciliation at a temp directory."""
+    global _GALLERY_DIR_OVERRIDE
+    _GALLERY_DIR_OVERRIDE = path
+
+
+def _count_gallery_drawings() -> int:
+    """Count PNG artifacts in the gallery directory.
+
+    Returns 0 if the directory doesn't exist (fresh install) or on any I/O
+    error — the counter will be preserved as-is, which is the safe default.
+    """
+    try:
+        d = _gallery_dir()
+        if not d.is_dir():
+            return 0
+        return sum(1 for _ in d.glob("lumen_drawing_*.png"))
+    except OSError:
+        return 0
+
+
 class GrowthSystem(
     PreferencesMixin,
     VisitorsMixin,
@@ -281,6 +313,29 @@ class GrowthSystem(
                     count = int(m.group(1))
                     if count > self._drawings_observed:
                         self._drawings_observed = count
+
+        # Reconcile against the gallery directory. The counter and the gallery
+        # PNGs can drift — the only outage-free record is the gallery files on
+        # disk (e.g. April 2026: counter=278 but 752 gallery files, leaving
+        # "complete 500 drawings" goal stuck at 55% when Lumen had completed
+        # it). Gallery is authoritative; bump the counter up to match so
+        # downstream goal progress is honest.
+        gallery_count = _count_gallery_drawings()
+        if gallery_count > self._drawings_observed:
+            prior = self._drawings_observed
+            self._drawings_observed = gallery_count
+            conn.execute(
+                "INSERT OR REPLACE INTO counters (name, value) VALUES "
+                "('drawings_observed', ?)",
+                (self._drawings_observed,),
+            )
+            conn.commit()
+            print(
+                f"[Growth] Reconciled drawings_observed {prior} -> "
+                f"{gallery_count} from gallery",
+                file=sys.stderr,
+                flush=True,
+            )
 
         print(f"[Growth] Loaded {len(self._preferences)} preferences, {len(self._relationships)} relationships, "
               f"{len(self._goals)} active goals, {len(self._memories)} memories, "
