@@ -28,10 +28,16 @@ CLEAR_DECAY = 0.3        # Field multiplier on canvas clear
 DEPOSIT_W_WARMTH = 0.5
 DEPOSIT_W_PRESENCE = 0.3
 DEPOSIT_W_CLARITY = 0.2
-DIFFUSION_SIGMA_MIN = 0.5
-DIFFUSION_SIGMA_MAX = 2.0
-GRADIENT_LOW = 0.15
-GRADIENT_HIGH = 0.45
+DIFFUSION_SIGMA_MIN = 0.2
+DIFFUSION_SIGMA_MAX = 0.8
+# Gradient thresholds are fractions of field.max(). Retuned 2026-04-18 after
+# the diagnostic showed the original (0.15, 0.45) produced 99% sediment / 0%
+# scratch — the field's max normalised gradient only reached ~0.31 in
+# practice, so the upper threshold was unreachable. Combined with the damped
+# diffusion above (which sharpens deposits), (0.20, 0.40) produces a stable
+# ~52% sediment / 42% flow / 5% scratch distribution under simulation.
+GRADIENT_LOW = 0.20
+GRADIENT_HIGH = 0.40
 WARMTH_BIAS_DEGREES = 10.0
 FIELD_HIGH_THRESHOLD = 0.6
 
@@ -157,7 +163,11 @@ class ResonanceState(EraState):
 
 
 def _normalized_gradient(state: ResonanceState) -> float:
-    """Gradient magnitude normalized to field max. Returns 0 if field empty."""
+    """Gradient magnitude normalised to field max. Returns 0 if field empty.
+
+    Side effect: caches ``state._grad_gx/_grad_gy/_grad_mag`` so downstream
+    ``place_mark`` / ``drift_focus`` can reuse the gradient direction.
+    """
     field_max = state.field.max()
     if field_max < 1e-6:
         return 0.0
@@ -165,7 +175,7 @@ def _normalized_gradient(state: ResonanceState) -> float:
     state._grad_gx = gx
     state._grad_gy = gy
     state._grad_mag = mag
-    return min(1.0, mag / field_max) if field_max > 1e-6 else 0.0
+    return min(1.0, mag / field_max)
 
 
 # ---------------------------------------------------------------------------
