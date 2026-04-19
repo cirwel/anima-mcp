@@ -2,7 +2,10 @@
 import math
 import numpy as np
 from anima_mcp.display.eras.resonance import (
-    _deposit, _decay, _diffuse, _gradient_at, FIELD_SIZE, CELL_SIZE, DECAY_RATE,
+    _deposit, _decay, _diffuse, _gradient_at, _normalized_gradient,
+    FIELD_SIZE, CELL_SIZE, DECAY_RATE,
+    DIFFUSION_SIGMA_MIN, DIFFUSION_SIGMA_MAX,
+    GRADIENT_LOW, GRADIENT_HIGH,
 )
 
 
@@ -283,20 +286,39 @@ class TestDriftFocus:
             assert 0 <= fx <= 240 and 0 <= fy <= 240, f"Focus escaped: ({fx}, {fy})"
 
     def test_drift_with_gradient_influences_direction(self):
+        # Sharp step field — a half-plane of high values meeting zero —
+        # produces a wall of large (normalised) gradients along the
+        # boundary, so focus reliably encounters mid/high modes during
+        # drift. Smoother fields (the original test's uniform gradient,
+        # or Gaussian bumps) never get past GRADIENT_LOW.
         random.seed(42)
         era = ResonanceEra()
         state = era.create_state()
-        # Create gradient pointing right (positive x)
-        for i in range(FIELD_SIZE):
-            state.field[i, :] = float(i) / FIELD_SIZE
-        fx, fy = 120.0, 120.0
-        d = math.pi / 2  # Initially pointing up
-        positions = []
+        state.field[:, :24] = 1.0  # left half hot, right half cold
+
+        start_dir = math.pi / 2
+        fx, fy, d = 122.0, 120.0, start_dir  # start near the boundary
+        dirs_with_grad = []
         for _ in range(50):
             fx, fy, d = era.drift_focus(state, fx, fy, d, 0.5, 0.5, 0.5, 0.5, canvas=None)
-            positions.append(fx)
-        avg_x = sum(positions) / len(positions)
-        assert avg_x > 120.0, f"Expected rightward drift, avg_x={avg_x:.1f}"
+            dirs_with_grad.append(d)
+
+        # Control: empty field, same seed → gradient-driven branches never fire
+        random.seed(42)
+        state_empty = era.create_state()
+        fx, fy, d = 122.0, 120.0, start_dir
+        dirs_empty = []
+        for _ in range(50):
+            fx, fy, d = era.drift_focus(state_empty, fx, fy, d, 0.5, 0.5, 0.5, 0.5, canvas=None)
+            dirs_empty.append(d)
+
+        divergence = sum(
+            abs((a - b + math.pi) % (2 * math.pi) - math.pi)
+            for a, b in zip(dirs_with_grad, dirs_empty)
+        )
+        assert divergence > 1.0, (
+            f"Gradient should influence drift; divergence={divergence:.2f}"
+        )
 
     def test_drift_updates_focus_cell(self):
         era = ResonanceEra()
@@ -401,6 +423,106 @@ class TestStabilityRegularity:
         pixels_unstable = set(canvas_u.pixels.keys())
 
         assert pixels_stable != pixels_unstable, "Stability should affect mark placement"
+
+
+class TestDampedDiffusion:
+    """After the 2026-04-18 diagnostic, sigma was damped so deposits can
+    actually build gradient structure instead of being smoothed away each
+    cycle."""
+
+    def test_sigma_range_is_damped(self):
+        assert DIFFUSION_SIGMA_MIN <= 0.25, (
+            f"DIFFUSION_SIGMA_MIN={DIFFUSION_SIGMA_MIN} — too aggressive; "
+            f"regression to pre-2026-04-18 values would re-collapse gestures."
+        )
+        assert DIFFUSION_SIGMA_MAX <= 0.9, (
+            f"DIFFUSION_SIGMA_MAX={DIFFUSION_SIGMA_MAX} — too aggressive."
+        )
+
+    def test_deposit_persists_after_one_cycle(self):
+        """A single deposit at mid-stability should retain a readable peak
+        after one place_mark cycle. With the old sigma=1.25 the peak was
+        smeared away; damped diffusion keeps the structure."""
+        era = ResonanceEra()
+        state = era.create_state()
+        era.generate_color(state, warmth=0.8, clarity=0.6, stability=0.5, presence=0.7)
+        state.gesture = "sediment"
+        canvas = FakeCanvas()
+        era.place_mark(state, canvas, 120.0, 120.0, 0.0, 0.5, (255, 128, 0))
+        # At stability 0.5, sigma ≈ (0.2 + 0.6) / 2 = 0.5, kernel is gentle.
+        # Anima blend deposit ≈ 0.73; after decay + mild diffusion the center
+        # should still hold >25% of the deposit.
+        assert state.field[24, 24] > 0.18, (
+            f"Peak collapsed to {state.field[24, 24]:.3f} — diffusion too strong"
+        )
+
+
+class TestRetunedGradientThresholds:
+    """The 2026-04-18 diagnostic showed the old (0.15, 0.45) produced 99%
+    sediment / 0% scratch on a live canvas — the field's max normalised
+    gradient only reached ~0.31. Retuned (0.20, 0.40) combined with damped
+    diffusion gives a ~52/42/5 sediment/flow/scratch distribution."""
+
+    def test_thresholds_are_retuned(self):
+        assert GRADIENT_LOW <= 0.22, (
+            f"GRADIENT_LOW={GRADIENT_LOW} — regression; values ≥0.15 made flow "
+            f"marks nearly unreachable under damped diffusion."
+        )
+        assert GRADIENT_HIGH <= 0.42, (
+            f"GRADIENT_HIGH={GRADIENT_HIGH} — scratches need to be reachable; "
+            f"observed field max-normalised gradient peaked ~0.38 post-damping."
+        )
+        assert GRADIENT_LOW < GRADIENT_HIGH
+
+    def test_empty_field_returns_zero(self):
+        state = ResonanceState()
+        assert _normalized_gradient(state) == 0.0
+
+    def test_focus_on_sharp_edge_exceeds_high_threshold(self):
+        state = ResonanceState()
+        state.field[24, 24] = 5.0
+        state._focus_cx = 25
+        state._focus_cy = 24
+        assert _normalized_gradient(state) >= GRADIENT_HIGH
+
+    def test_focus_in_calm_zone_below_low_threshold(self):
+        state = ResonanceState()
+        state.field[2, 2] = 5.0
+        state._focus_cx = 40
+        state._focus_cy = 40
+        assert _normalized_gradient(state) < GRADIENT_LOW
+
+    def test_all_three_gestures_reachable_under_simulation(self):
+        """End-to-end smoke test: over many cycles with varying anima, all
+        three gestures must fire. Before the fix this produced 99% sediment
+        and 0% scratch."""
+        import random as _random
+        _random.seed(0)
+        era = ResonanceEra()
+        state = era.create_state()
+        fx, fy, d = 120.0, 120.0, 0.5
+        gc = {"sediment": 0, "flow": 0, "scratch": 0}
+
+        class _FC:
+            def draw_pixel(self, x, y, c):
+                pass
+            def sparsest_cell(self):
+                return (0, 0)
+
+        canvas = _FC()
+        for i in range(500):
+            w = 0.5 + 0.2 * math.sin(i / 80)
+            c = 0.6 + 0.1 * math.sin(i / 50)
+            era.generate_color(state, w, c, 0.7, 0.6)
+            era.choose_gesture(state, c, 0.7, 0.6, coherence=0.5)
+            gc[state.gesture] += 1
+            era.place_mark(state, canvas, fx, fy, d, 0.5, (255, 128, 0))
+            fx, fy, d = era.drift_focus(state, fx, fy, d, 0.7, 0.6, 0.5, c, canvas)
+
+        total = sum(gc.values())
+        assert gc["sediment"] > total * 0.20, f"sediment share too low: {gc}"
+        assert gc["flow"] > total * 0.15, f"flow share too low: {gc}"
+        assert gc["scratch"] > 0, f"scratch never fired: {gc}"
 
 
 class TestFieldPersistence:
