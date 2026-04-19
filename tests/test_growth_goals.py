@@ -143,6 +143,34 @@ class TestCheckGoalProgress:
         growth.check_goal_progress(anima)
         assert goal.status == GoalStatus.ABANDONED
 
+    def test_abandoned_stalled_past_target(self, growth):
+        """Goal past target_date with mid-range progress but stalled for 14+
+        days gets abandoned — closes the loophole that froze Lumen's goals
+        pipeline for 45 days in Feb-Apr 2026 (goal at 0.137 progress, last
+        worked on 45 days prior, blocking both active slots)."""
+        goal = growth.form_goal("test whether X", "reason", target_days=1)
+        goal.target_date = datetime.now() - timedelta(days=30)
+        goal.progress = 0.3  # well above the 0.1 no-progress threshold
+        goal.last_worked_on = datetime.now() - timedelta(days=20)  # stalled
+        anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
+        growth.check_goal_progress(anima)
+        assert goal.status == GoalStatus.ABANDONED
+
+    def test_active_but_progressing_goal_not_abandoned(self, growth):
+        """Goal past target but actively worked on stays alive.
+
+        The stalled-abandon path must not kill goals that are slowly but
+        genuinely progressing. 'complete 500 drawings' at 55% progress with
+        recent last_worked_on should not be abandoned just because the target
+        date passed."""
+        goal = growth.form_goal("complete 500 drawings", "grinding", target_days=1)
+        goal.target_date = datetime.now() - timedelta(days=52)
+        goal.progress = 0.55
+        goal.last_worked_on = datetime.now() - timedelta(hours=1)  # recent
+        anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
+        growth.check_goal_progress(anima)
+        assert goal.status == GoalStatus.ACTIVE
+
     def test_no_crash_empty_goals(self, growth):
         """check_goal_progress with no goals returns None without crashing."""
         anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
@@ -171,6 +199,47 @@ class TestSuggestGoal:
             if goal:
                 goal.status = GoalStatus.ACHIEVED
         assert found, "Expected a 'complete 25 drawings' suggestion within 30 attempts"
+
+    def test_drawing_milestone_target_days_scales_with_gap(self, growth):
+        """'complete 500 drawings' at 200 observed should target weeks-months,
+        not a 7-day target. Fixed-7-day targets caused 'complete 500 in 7 days'
+        goals that expired stale (Feb 2026 incident)."""
+        growth._drawings_observed = 200
+        anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
+        for _ in range(50):
+            goal = growth.suggest_goal(anima)
+            if goal and "complete 500 drawings" in goal.description:
+                gap_days = (goal.target_date - goal.created_at).days
+                # gap=300, ~10/day pace → ~30 days (capped at 60, floor 7)
+                assert gap_days >= 14, (
+                    f"target_days={gap_days} too short for 300-drawing gap"
+                )
+                assert gap_days <= 60, f"target_days={gap_days} exceeds cap"
+                return
+            if goal:
+                goal.status = GoalStatus.ACHIEVED
+        # Not finding the milestone within 50 tries is unexpected but not
+        # this test's concern
+        pytest.skip("Did not hit drawing milestone suggestion within 50 tries")
+
+    def test_milestone_list_extended_past_500(self, growth):
+        """After the 500-drawing milestone is either achieved or past, Lumen
+        needs 1000/2000/5000 targets — originally the list stopped at 500,
+        leaving long-running Lumen with no remaining drawing goals."""
+        growth._drawings_observed = 801  # past the old 500 cap
+        anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
+        for _ in range(50):
+            goal = growth.suggest_goal(anima)
+            if goal and "drawings" in goal.description:
+                # Should be 1000, 2000, or 5000 — not nothing
+                assert any(
+                    f"{n} drawings" in goal.description
+                    for n in (1000, 2000, 5000)
+                ), f"Expected extended milestone, got: {goal.description}"
+                return
+            if goal:
+                goal.status = GoalStatus.ACHIEVED
+        pytest.fail("No drawing-milestone goal suggested despite 801 observed")
 
     def test_curiosity_goal_suggestion(self, growth):
         """Adding a curiosity can produce a 'find an answer to' goal suggestion."""
