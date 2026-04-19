@@ -192,6 +192,26 @@ class PiSensors(SensorBackend):
             file=sys.stderr, flush=True,
         )
 
+        # Bus-wedge detection: if >=2 sensors have hit the failure threshold,
+        # the I2C bus itself is likely stuck (e.g. transient glitch from a
+        # cable pull). Re-creating individual sensor handles against a wedged
+        # bus is futile -- drop the bus handle and all sensor handles so the
+        # re-init path below rebuilds from scratch.
+        bus_failing = sum(
+            1 for count in self._failure_counts.values()
+            if count >= self._REINIT_FAILURE_THRESHOLD
+        )
+        if bus_failing >= 2 and self._i2c is not None:
+            print(
+                f"[PiSensors] {bus_failing} sensors failing simultaneously -- "
+                f"bus appears wedged, recreating I2C handle",
+                file=sys.stderr, flush=True,
+            )
+            self._i2c = None
+            self._aht = None
+            self._light_sensor = None
+            self._bmp280 = None
+
         if self._i2c is None:
             # I2C bus itself is gone -- try to re-create it first
             def init_i2c():
