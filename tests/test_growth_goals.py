@@ -13,10 +13,12 @@ Covers:
 
 import pytest
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime as real_datetime
 
 from anima_mcp.growth import GrowthSystem, GoalStatus, Goal
+from anima_mcp.growth.base import set_gallery_dir
 
 
 @pytest.fixture
@@ -24,6 +26,135 @@ def growth(tmp_path):
     """Create GrowthSystem with temp database."""
     gs = GrowthSystem(db_path=str(tmp_path / "test_growth.db"))
     return gs
+
+
+@pytest.fixture
+def empty_gallery(tmp_path):
+    """Point the gallery reconciler at an empty temp dir for the test."""
+    gallery = tmp_path / "drawings"
+    gallery.mkdir()
+    set_gallery_dir(gallery)
+    yield gallery
+    set_gallery_dir(None)
+
+
+def _make_png(gallery: Path, name: str) -> None:
+    """Create a fake gallery PNG (content doesn't matter — we count files)."""
+    (gallery / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+
+class TestDrawingsCounterReconciliation:
+    """The counter can drift behind the gallery on disk (observed on Lumen:
+    counter=278, gallery=752 — causing 'complete 500 drawings' goal to be
+    stuck at 55% when it should have auto-completed long ago). The startup
+    reconciliation fixes this by bumping the counter up to the gallery count
+    when gallery > counter."""
+
+    def test_counter_bumped_to_gallery_count_on_reload(self, tmp_path, empty_gallery):
+        # Seed: counter=10, gallery has 25 PNGs
+        db_path = str(tmp_path / "reconcile.db")
+        gs1 = GrowthSystem(db_path=db_path)
+        gs1._drawings_observed = 10
+        conn = gs1._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO counters (name, value) VALUES "
+            "('drawings_observed', 10)"
+        )
+        conn.commit()
+        gs1.close()
+
+        for i in range(25):
+            _make_png(empty_gallery, f"lumen_drawing_2026{i:03d}.png")
+
+        # Reload — reconciliation should bump counter to 25
+        gs2 = GrowthSystem(db_path=db_path)
+        assert gs2._drawings_observed == 25, (
+            "Counter must be reconciled to the gallery count on startup"
+        )
+        # Persisted too
+        conn2 = gs2._connect()
+        row = conn2.execute(
+            "SELECT value FROM counters WHERE name='drawings_observed'"
+        ).fetchone()
+        assert row["value"] == 25
+        gs2.close()
+
+    def test_counter_NOT_decremented_when_gallery_smaller(
+        self, tmp_path, empty_gallery
+    ):
+        """Gallery can legitimately be smaller than the counter — e.g. user
+        deleted old PNGs for disk space. The counter is monotonic; never
+        reduce it based on gallery shrinkage."""
+        db_path = str(tmp_path / "reconcile.db")
+        gs1 = GrowthSystem(db_path=db_path)
+        conn = gs1._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO counters (name, value) VALUES "
+            "('drawings_observed', 100)"
+        )
+        conn.commit()
+        gs1.close()
+
+        # Only 5 files in gallery — counter should NOT drop to 5
+        for i in range(5):
+            _make_png(empty_gallery, f"lumen_drawing_small_{i}.png")
+
+        gs2 = GrowthSystem(db_path=db_path)
+        assert gs2._drawings_observed == 100
+
+    def test_missing_gallery_dir_leaves_counter_alone(self, tmp_path):
+        """Fresh install or moved HOME — gallery dir may not exist. Reconcile
+        should be a no-op, not crash."""
+        set_gallery_dir(tmp_path / "nonexistent_drawings")
+        try:
+            db_path = str(tmp_path / "reconcile.db")
+            gs1 = GrowthSystem(db_path=db_path)
+            conn = gs1._connect()
+            conn.execute(
+                "INSERT OR REPLACE INTO counters (name, value) VALUES "
+                "('drawings_observed', 42)"
+            )
+            conn.commit()
+            gs1.close()
+
+            gs2 = GrowthSystem(db_path=db_path)
+            assert gs2._drawings_observed == 42
+        finally:
+            set_gallery_dir(None)
+
+    def test_reconcile_unblocks_goal_progress(self, tmp_path, empty_gallery):
+        """End-to-end: a 'complete 500 drawings' goal that's stuck at
+        low progress should jump to completed once the counter reconciles
+        against a large gallery."""
+        db_path = str(tmp_path / "reconcile.db")
+        gs1 = GrowthSystem(db_path=db_path)
+        # Force counter low + create the goal
+        gs1._drawings_observed = 100
+        conn = gs1._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO counters (name, value) VALUES "
+            "('drawings_observed', 100)"
+        )
+        conn.commit()
+        gs1.form_goal("complete 500 drawings", "milestone", target_days=30)
+        gs1.close()
+
+        # Seed the gallery with 600 PNGs (past the 500 target)
+        for i in range(600):
+            _make_png(empty_gallery, f"lumen_drawing_seed_{i}.png")
+
+        # Reload — counter reconciles to 600, then goal check should complete it
+        gs2 = GrowthSystem(db_path=db_path)
+        assert gs2._drawings_observed == 600
+
+        anima = {"warmth": 0.6, "clarity": 0.6, "stability": 0.6, "presence": 0.6}
+        msg = gs2.check_goal_progress(anima)
+        # Should auto-complete the drawing goal
+        assert msg is not None and "did it" in msg.lower(), (
+            f"Expected goal completion message, got: {msg}"
+        )
+        goal = next(iter(gs2._goals.values()))
+        assert goal.status == GoalStatus.ACHIEVED
 
 
 # ==================== Goal Formation ====================
