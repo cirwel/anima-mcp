@@ -338,6 +338,52 @@ class TestRestStateAndLayers:
         assert response.status_code == 500
         assert "Unable to read sensor data" in json.loads(response.body)["error"]
 
+    async def test_rest_state_preserves_null_pressure(self, monkeypatch):
+        monkeypatch.setattr(rest_api, "_check_rest_auth", lambda _req: True)
+        anima = SimpleNamespace(warmth=0.4, clarity=0.5, stability=0.6, presence=0.7, feeling=lambda: {"mood": "calm"})
+        readings = SimpleNamespace(
+            cpu_temp_c=50, ambient_temp_c=22, light_lux=100, humidity_pct=40,
+            pressure_hpa=None,
+            cpu_percent=15, memory_percent=35, disk_percent=55, timestamp="now",
+        )
+        identity = SimpleNamespace(name="Lumen", total_awakenings=3, total_alive_seconds=3600,
+                                   alive_ratio=lambda: 0.5, age_seconds=lambda: 7200)
+        store = SimpleNamespace(get_identity=lambda: identity, get_session_alive_seconds=lambda: 600)
+        activity = SimpleNamespace(get_status=lambda: {"level": "active"}, get_sleep_summary=lambda: {"sessions": 1})
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
+        with patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_store", return_value=store), \
+             patch("anima_mcp.accessors._get_last_governance_decision", return_value={"action": "proceed", "source": "unitares"}), \
+             patch("anima_mcp.accessors._get_activity", return_value=activity), \
+             patch("anima_mcp.rest_api.extract_neural_bands", return_value={"beta": 0.2}), \
+             patch("anima_mcp.rest_api.anima_to_eisv", return_value=eisv):
+            response = await rest_api.rest_state(_make_request(path="/state"))
+            data = json.loads(response.body)
+        assert data["pressure"] is None, "offline BMP280 must surface as null, not 0 hPa"
+
+    async def test_rest_layers_preserves_null_pressure(self):
+        anima = SimpleNamespace(warmth=0.4, clarity=0.5, stability=0.6, presence=0.7, feeling=lambda: {"mood": "steady"})
+        readings = SimpleNamespace(
+            ambient_temp_c=22, humidity_pct=40, light_lux=100,
+            pressure_hpa=None,
+            cpu_temp_c=50, cpu_percent=20, memory_percent=30, disk_percent=40,
+        )
+        identity = SimpleNamespace(name="Lumen", total_awakenings=2, total_alive_seconds=1800,
+                                   alive_ratio=lambda: 0.5, age_seconds=lambda: 3600)
+        store = SimpleNamespace(get_identity=lambda: identity, get_session_alive_seconds=lambda: 120)
+        hub = SimpleNamespace(schema_history=[], history_size=0, last_trajectory=None, last_gap_delta=None)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.4})
+        with patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_store", return_value=store), \
+             patch("anima_mcp.accessors._get_last_governance_decision", return_value={}), \
+             patch("anima_mcp.accessors._get_activity", return_value=None), \
+             patch("anima_mcp.accessors._get_schema_hub", return_value=hub), \
+             patch("anima_mcp.rest_api.extract_neural_bands", return_value={"alpha": 0.3}), \
+             patch("anima_mcp.rest_api.anima_to_eisv", return_value=eisv):
+            response = await rest_api.rest_layers(_make_request(path="/layers"))
+            data = json.loads(response.body)
+        assert data["physical"]["pressure_hpa"] is None, "offline BMP280 must surface as null, not 0 hPa"
+
 
 @pytest.mark.asyncio
 class TestRestHandlerDelegates:
