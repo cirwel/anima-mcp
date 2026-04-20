@@ -5,8 +5,10 @@ __pycache__/
 *.so
 .Python
 .pytest_cache/
+.venv
 .venv/
 venv/
+.unitares/
 ENV/
 *.egg-info/
 dist/
