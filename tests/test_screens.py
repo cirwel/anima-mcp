@@ -856,3 +856,36 @@ class TestScreenRendererRenderDispatch:
         governance = {"action": "proceed"}
         screen_renderer.render(face_state=face_state, governance=governance)
         assert screen_renderer._state.governance_paused is False
+
+
+class TestSlowRenderPhaseBreakdown:
+    """Slow renders (>500ms) should log a phase breakdown so outliers
+    reveal whether the hotspot is lock_wait / pre / mode / post / flush."""
+
+    @pytest.fixture
+    def face_state(self):
+        return FaceState(
+            eyes=EyeState.NORMAL,
+            mouth=MouthState.NEUTRAL,
+            tint=(100, 100, 200),
+            eye_openness=0.7,
+        )
+
+    def test_slow_render_logs_phase_breakdown(self, screen_renderer, face_state, capsys):
+        # Force flush to exceed the 500ms threshold so the log fires
+        def slow_flush():
+            time.sleep(0.6)
+
+        screen_renderer._display.flush = slow_flush
+        screen_renderer.render(face_state=face_state)
+
+        captured = capsys.readouterr()
+        assert "Slow render:" in captured.err
+        # Phase labels must appear in the breakdown
+        for label in ("lock_wait=", "pre=", "mode=", "post=", "flush="):
+            assert label in captured.err, f"missing phase '{label}' in: {captured.err}"
+
+    def test_fast_render_emits_no_slow_log(self, screen_renderer, face_state, capsys):
+        screen_renderer.render(face_state=face_state)
+        captured = capsys.readouterr()
+        assert "Slow render:" not in captured.err

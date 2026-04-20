@@ -1312,6 +1312,60 @@ class TestCanvasSaveAtomicPNG:
         assert tmp_files == []
 
 
+class TestCanvasSaveSensorFallback:
+    """canvas_save should pull fresh readings when _last_readings is unset,
+    instead of feeding growth silent defaults (0 lux, 22 C, 50% humidity)."""
+
+    def test_fresh_sensor_read_when_last_readings_missing(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        engine = DrawingEngine()
+        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        engine.last_anima = make_anima()
+        # Explicitly no prior render push
+        engine._last_readings = None
+
+        fresh = MagicMock(light_lux=42.0, ambient_temp_c=19.5, humidity_pct=55.0)
+        fake_sensors = MagicMock()
+        fake_sensors.read.return_value = fresh
+
+        growth_mock = MagicMock()
+        growth_mock.observe_drawing.return_value = None
+
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("anima_mcp.accessors._get_sensors", return_value=fake_sensors), \
+             patch("anima_mcp.growth.get_growth_system", return_value=growth_mock):
+            engine.canvas_save()
+
+        fake_sensors.read.assert_called_once()
+        growth_mock.observe_drawing.assert_called_once()
+        env = growth_mock.observe_drawing.call_args.kwargs["environment"]
+        assert env["light_lux"] == 42.0
+        assert env["temp_c"] == 19.5
+        assert env["humidity_pct"] == 55.0
+
+    def test_skip_growth_when_fresh_read_also_fails(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        engine = DrawingEngine()
+        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        engine.last_anima = make_anima()
+        engine._last_readings = None
+
+        fake_sensors = MagicMock()
+        fake_sensors.read.side_effect = RuntimeError("sensor bus down")
+
+        growth_mock = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("anima_mcp.accessors._get_sensors", return_value=fake_sensors), \
+             patch("anima_mcp.growth.get_growth_system", return_value=growth_mock):
+            engine.canvas_save()
+
+        # Should NOT call growth with defaults when readings are unavailable
+        growth_mock.observe_drawing.assert_not_called()
+
+
 class TestDrawingEISVAlias:
     """Test that DrawingEISV is an alias for DrawingState."""
 

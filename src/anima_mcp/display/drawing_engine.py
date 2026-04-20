@@ -1512,9 +1512,17 @@ class DrawingEngine:
             try:
                 anima = self.last_anima
                 readings = getattr(self, '_last_readings', None)
-                if anima:
-                    if not readings:
-                        print("[Growth] Warning: no sensor readings at canvas_save, using defaults", file=sys.stderr, flush=True)
+                if not readings:
+                    # Push path (screens.render) hadn't primed _last_readings yet
+                    # (e.g., manual save at boot before first render). Pull fresh
+                    # rather than feeding growth silent defaults.
+                    try:
+                        from ..accessors import _get_sensors
+                        readings = _get_sensors().read()
+                    except Exception as e:
+                        print(f"[Growth] Skipping drawing observation: no readings available ({e})", file=sys.stderr, flush=True)
+                        readings = None
+                if anima and readings:
                     from ..growth import get_growth_system
                     anima_state = {
                         "warmth": anima.warmth,
@@ -1523,9 +1531,9 @@ class DrawingEngine:
                         "presence": anima.presence,
                     }
                     environment = {
-                        "light_lux": (readings.light_lux or 0.0) if readings else 0.0,
-                        "temp_c": (readings.ambient_temp_c or 22) if readings else 22,
-                        "humidity_pct": (readings.humidity_pct or 50) if readings else 50,
+                        "light_lux": readings.light_lux or 0.0,
+                        "temp_c": readings.ambient_temp_c or 22,
+                        "humidity_pct": readings.humidity_pct or 50,
                     }
                     phase = self.canvas.drawing_phase or "resting"
                     growth = get_growth_system()
@@ -1554,7 +1562,7 @@ class DrawingEngine:
                     except Exception as e:
                         print(f"[Growth] Drawing feedback failed: {e}",
                               file=sys.stderr, flush=True)
-                else:
+                elif not anima:
                     print("[Growth] Warning: no anima at canvas_save, skipping growth notify", file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[Notepad] Growth notify failed: {e}", file=sys.stderr, flush=True)

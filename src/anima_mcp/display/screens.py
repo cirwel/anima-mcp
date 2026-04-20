@@ -931,9 +931,11 @@ class ScreenRenderer(HomeMixin, InfoMixin, MindMixin, MessagesMixin, ArtMixin):
         """Render current screen based on mode."""
         import time
         render_start = time.time()
+        mode = self._state.mode
 
         # Use lock to prevent concurrent renders (threading issue causes blank screen)
         with self._render_lock:
+            t_locked = time.time()
             # Defer SPI push until after post-processing (single transfer per render)
             self._display._deferred = True
 
@@ -977,7 +979,7 @@ class ScreenRenderer(HomeMixin, InfoMixin, MindMixin, MessagesMixin, ArtMixin):
             # Only auto-return to FACE if explicitly requested via button
             # (Auto-return disabled to prevent getting stuck)
 
-            mode = self._state.mode
+            t_pre = time.time()
             try:
                 if mode == ScreenMode.FACE:
                     self._render_face(face_state, identity)
@@ -1045,6 +1047,7 @@ class ScreenRenderer(HomeMixin, InfoMixin, MindMixin, MessagesMixin, ArtMixin):
                     self._display.show_default()
                 except Exception:
                     pass
+            t_mode = time.time()
 
             # === Post-processing: transitions, input feedback, loading overlays ===
             try:
@@ -1085,15 +1088,24 @@ class ScreenRenderer(HomeMixin, InfoMixin, MindMixin, MessagesMixin, ArtMixin):
                     self._display.show_default()
                 except Exception:
                     pass
+            t_post = time.time()
 
             # Single SPI push — all drawing is done, flush to hardware
             self._display._deferred = False
             self._display.flush()
+            t_flush = time.time()
 
-        # Log slow renders to identify bottleneck
-        render_time = time.time() - render_start
-        if render_time > 0.5:  # Log if >500ms
-            print(f"[Screen] Slow render: {mode.value} took {render_time*1000:.0f}ms", file=sys.stderr, flush=True)
+        # Log slow renders with phase breakdown so outliers reveal the hotspot
+        render_time = t_flush - render_start
+        if render_time > 0.5:
+            phases = (
+                f"lock_wait={(t_locked-render_start)*1000:.0f}ms "
+                f"pre={(t_pre-t_locked)*1000:.0f}ms "
+                f"mode={(t_mode-t_pre)*1000:.0f}ms "
+                f"post={(t_post-t_mode)*1000:.0f}ms "
+                f"flush={(t_flush-t_post)*1000:.0f}ms"
+            )
+            print(f"[Screen] Slow render: {mode.value} took {render_time*1000:.0f}ms [{phases}]", file=sys.stderr, flush=True)
     
     
     def _wrap_text(self, text: str, font, max_width: int) -> list:
