@@ -73,6 +73,16 @@ class BrainHatInput:
     REPEAT_DELAY = 0.25  # 250ms before repeat starts
     REPEAT_RATE = 0.08  # 80ms between repeats (fast scrolling)
 
+    # Display-pin heartbeat refresh. D22 (backlight) and D24 (ST7789 reset)
+    # are shared with joystick left/right. Display init pulses them HIGH then
+    # releases to pull-up; input reclaims as INPUT PULL_UP. If the pull-up
+    # alone fails to hold a pin HIGH (MOSFET gate droop, transient low pulse,
+    # EMI), the TFT backlight or controller can get stuck off until the next
+    # broker restart. This heartbeat briefly re-asserts OUTPUT HIGH on both
+    # pins, then restores INPUT PULL_UP — imperceptible to joystick polling.
+    BACKLIGHT_REFRESH_INTERVAL = 30.0  # seconds between pulses
+    BACKLIGHT_REFRESH_PULSE = 0.010  # 10ms active-high pulse
+
     def __init__(self):
         """Initialize input handler."""
         self._joy_left = None
@@ -98,6 +108,9 @@ class BrainHatInput:
         # Hold/repeat state for directions
         self._direction_hold_start = 0.0
         self._last_repeat_time = 0.0
+
+        # Last display-pin refresh (see BACKLIGHT_REFRESH_INTERVAL)
+        self._last_backlight_refresh = 0.0
     
     def enable(self):
         """Explicitly enable input (call to activate)."""
@@ -163,6 +176,44 @@ class BrainHatInput:
         return self._enabled and self._available and (
             self._joy_up is not None or self._separate_button_pin is not None
         )
+
+    def _refresh_display_pins(self) -> None:
+        """Pulse D22/D24 OUTPUT HIGH briefly then restore INPUT PULL_UP.
+
+        Defends against backlight droop and stuck-low conditions on pins
+        shared between the display (backlight/reset) and joystick (L/R).
+        See BACKLIGHT_REFRESH_INTERVAL for rationale.
+        """
+        if not HAS_GPIO:
+            return
+        if self._joy_left is None and self._joy_right is None:
+            return
+        try:
+            if self._joy_left is not None:
+                self._joy_left.deinit()
+                self._joy_left = None
+            if self._joy_right is not None:
+                self._joy_right.deinit()
+                self._joy_right = None
+
+            d22 = digitalio.DigitalInOut(board.D22)
+            d22.direction = digitalio.Direction.OUTPUT
+            d22.value = True
+            d24 = digitalio.DigitalInOut(board.D24)
+            d24.direction = digitalio.Direction.OUTPUT
+            d24.value = True
+            time.sleep(self.BACKLIGHT_REFRESH_PULSE)
+            d22.deinit()
+            d24.deinit()
+
+            self._joy_left = digitalio.DigitalInOut(board.D22)
+            self._joy_left.direction = digitalio.Direction.INPUT
+            self._joy_left.pull = digitalio.Pull.UP
+            self._joy_right = digitalio.DigitalInOut(board.D24)
+            self._joy_right.direction = digitalio.Direction.INPUT
+            self._joy_right.pull = digitalio.Pull.UP
+        except Exception as e:
+            print(f"[BrainHatInput] Display-pin refresh failed: {e}", file=sys.stderr, flush=True)
     
     def read(self) -> Optional[InputState]:
         """Read current input state from GPIO pins with debouncing."""
@@ -171,6 +222,10 @@ class BrainHatInput:
 
         try:
             now = time.time()
+
+            if now - self._last_backlight_refresh >= self.BACKLIGHT_REFRESH_INTERVAL:
+                self._refresh_display_pins()
+                self._last_backlight_refresh = now
 
             # Read raw GPIO states (pull-up: pressed = LOW = False)
             # D22 (left) and D24 (right) may be None if display holds them
