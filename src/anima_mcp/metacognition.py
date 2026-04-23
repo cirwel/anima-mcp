@@ -171,6 +171,14 @@ class MetacognitiveMonitor:
         self._error_history: deque = deque(maxlen=history_size)
         self._reflection_history: deque = deque(maxlen=50)
 
+        # LED-stable gating for the proprioceptive light channel.
+        # When LED brightness is quiet across the window, the VEML7700 reading
+        # is dominated by ambient light rather than self-glow — so "light" can
+        # briefly re-enter surprise_sources. See observe().
+        self._led_brightness_history: deque = deque(maxlen=30)  # ~60s at 2s tick
+        self._led_stable_min_samples: int = 15
+        self._led_stable_range_threshold: float = 0.10  # tolerates normal pulse; rejects dances
+
         # State
         self._last_prediction: Optional[Prediction] = None
         self._last_reflection_time: Optional[datetime] = None
@@ -326,6 +334,13 @@ class MetacognitiveMonitor:
         for i in reversed(resolved):
             self._curiosity_log.pop(i)
 
+    def _led_is_stable(self) -> bool:
+        """LEDs have been quiet enough that the light reading is ambient-dominated."""
+        if len(self._led_brightness_history) < self._led_stable_min_samples:
+            return False
+        samples = list(self._led_brightness_history)
+        return (max(samples) - min(samples)) < self._led_stable_range_threshold
+
     def predict(self, current_time: Optional[datetime] = None,
                 led_brightness: Optional[float] = None) -> Prediction:
         """Generate prediction for next sensor reading.
@@ -418,6 +433,8 @@ class MetacognitiveMonitor:
         # Update history
         self._sensor_history.append(readings)
         self._anima_history.append(anima)
+        if readings.led_brightness is not None:
+            self._led_brightness_history.append(readings.led_brightness)
         
         # Update baselines (exponential moving average)
         alpha = 0.1
@@ -499,15 +516,17 @@ class MetacognitiveMonitor:
         # Lumen's NeoPixel LEDs, so it reads Lumen's own glow, not ambient light.
         # LED brightness changes with drawing phase and expression intensity,
         # causing huge unpredictable swings (12 lux → 3000 lux) that can never
-        # be predicted. We still track the error for the record but do NOT add
-        # it to the surprise sources — it's self-referential, not environmental.
+        # be predicted. We always include the error in the aggregate, but only
+        # tag "light" as a surprise source when the LEDs have been quiet across
+        # the recent window — then the reading is ambient-dominated and a
+        # genuine environmental change can surface.
         if prediction.light_lux is not None and readings.light_lux is not None:
             if prediction.light_lux > 0 and readings.light_lux > 0:
                 log_error = abs(math.log10(prediction.light_lux) - math.log10(readings.light_lux))
                 error.error_light = min(1.0, log_error / 3.0)  # 3 decades (1→1000 lux) = full range
-                # Include in aggregate error (affects prediction accuracy metric)
-                # but do NOT add "light" to surprise_sources — this is self-sensing.
                 errors.append(error.error_light)
+                if error.error_light > 0.2 and self._led_is_stable():
+                    sources.append("light")
         
         # Pressure error (±20 hPa range)
         if prediction.pressure_hpa is not None and readings.pressure_hpa is not None:
