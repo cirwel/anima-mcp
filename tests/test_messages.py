@@ -110,6 +110,47 @@ class TestQuestions:
         unanswered = board.get_unanswered_questions(auto_expire=False)
         assert not any(m.message_id == q.message_id for m in unanswered)
 
+    def test_answering_marks_growth_curiosity_explored(self, board, monkeypatch):
+        """When a question Lumen asked gets answered, the matching growth
+        curiosity should be marked explored — that's how "find an answer to: X"
+        goals auto-complete."""
+        calls = []
+
+        class FakeGrowth:
+            def mark_explored(self, question, notes=None):
+                calls.append((question, notes))
+
+        fake = FakeGrowth()
+        monkeypatch.setattr("anima_mcp.accessors._get_growth", lambda: fake)
+
+        q = board.add_question("Why is it so dim?", author="lumen")
+        board.add_agent_message("It's night", agent_name="human", responds_to=q.message_id)
+        assert calls == [("Why is it so dim?", "It's night")]
+
+    def test_answering_unknown_question_does_not_touch_growth(self, board, monkeypatch):
+        """If the responds_to ID doesn't match any question, we don't guess at
+        which curiosity to mark explored."""
+        calls = []
+
+        class FakeGrowth:
+            def mark_explored(self, question, notes=None):
+                calls.append((question, notes))
+
+        monkeypatch.setattr("anima_mcp.accessors._get_growth", lambda: FakeGrowth())
+
+        board.add_agent_message("answer", agent_name="human", responds_to="nonexistent-id")
+        assert calls == []
+
+    def test_answering_survives_growth_unavailable(self, board, monkeypatch):
+        """Growth singleton may not be initialized during boot; answering a
+        question must not crash the message path."""
+        monkeypatch.setattr("anima_mcp.accessors._get_growth", lambda: None)
+        q = board.add_question("Does the void answer?", author="lumen")
+        # Should not raise
+        board.add_agent_message("Yes", agent_name="human", responds_to=q.message_id)
+        unanswered = board.get_unanswered_questions(auto_expire=False)
+        assert not any(m.message_id == q.message_id for m in unanswered)
+
 
 class TestTrimming:
     def test_observations_trimmed(self, board):
