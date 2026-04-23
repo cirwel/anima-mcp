@@ -186,6 +186,88 @@ class TestObserve:
         assert mm._save_counter == 1
 
 
+# ==================== LED-stable light gating ====================
+
+class TestLightSurpriseLedGating:
+    """The VEML7700 is self-lit. 'light' only enters surprise_sources when LEDs are quiet."""
+
+    def _seed_baseline(self, mm, lux=100.0, led=0.05, ticks=20):
+        """Establish a stable light baseline with quiet LEDs."""
+        anima = make_anima()
+        for _ in range(ticks):
+            mm.predict()
+            mm.observe(make_readings(light_lux=lux, led_brightness=led), anima)
+
+    def test_light_surprise_passes_when_leds_stable(self, mm):
+        mm._led_stable_min_samples = 5  # tighten for fast test
+        self._seed_baseline(mm, lux=100.0, led=0.05, ticks=10)
+        mm.predict()
+        shock = make_readings(light_lux=1000.0, led_brightness=0.05)  # 1-decade jump, LEDs quiet
+        error = mm.observe(shock, make_anima())
+        assert error.error_light > 0.2
+        assert "light" in error.surprise_sources
+
+    def test_light_surprise_blocked_when_leds_dancing(self, mm):
+        mm._led_stable_min_samples = 5
+        anima = make_anima()
+        # Seed with LED swings between 0.05 and 0.8 — clearly unstable
+        for i in range(10):
+            led = 0.05 if i % 2 == 0 else 0.8
+            mm.predict()
+            mm.observe(make_readings(light_lux=100.0, led_brightness=led), anima)
+        mm.predict()
+        shock = make_readings(light_lux=1000.0, led_brightness=0.8)
+        error = mm.observe(shock, anima)
+        assert error.error_light > 0.2
+        assert "light" not in error.surprise_sources
+
+    def test_light_surprise_blocked_without_enough_history(self, mm):
+        # Default _led_stable_min_samples=15; only a handful of observations.
+        anima = make_anima()
+        for _ in range(3):
+            mm.predict()
+            mm.observe(make_readings(light_lux=100.0, led_brightness=0.05), anima)
+        mm.predict()
+        shock = make_readings(light_lux=1000.0, led_brightness=0.05)
+        error = mm.observe(shock, anima)
+        assert error.error_light > 0.2
+        assert "light" not in error.surprise_sources
+
+    def test_light_surprise_blocked_when_led_data_missing(self, mm):
+        mm._led_stable_min_samples = 5
+        anima = make_anima()
+        # led_brightness=None across the window — treat as unknown, stay closed
+        for _ in range(10):
+            mm.predict()
+            mm.observe(make_readings(light_lux=100.0, led_brightness=None), anima)
+        mm.predict()
+        shock = make_readings(light_lux=1000.0, led_brightness=None)
+        error = mm.observe(shock, anima)
+        assert error.error_light > 0.2
+        assert "light" not in error.surprise_sources
+
+    def test_led_is_stable_requires_min_samples(self, mm):
+        mm._led_stable_min_samples = 10
+        for _ in range(9):
+            mm._led_brightness_history.append(0.05)
+        assert mm._led_is_stable() is False
+        mm._led_brightness_history.append(0.05)
+        assert mm._led_is_stable() is True
+
+    def test_led_is_stable_checks_range_not_mean(self, mm):
+        mm._led_stable_min_samples = 5
+        mm._led_stable_range_threshold = 0.10
+        # Mean is low but range is wide — not stable
+        for v in [0.0, 0.05, 0.0, 0.20, 0.05]:
+            mm._led_brightness_history.append(v)
+        assert mm._led_is_stable() is False
+        # Reset with a tight range
+        mm._led_brightness_history.clear()
+        for v in [0.05, 0.06, 0.05, 0.07, 0.06]:
+            mm._led_brightness_history.append(v)
+        assert mm._led_is_stable() is True
+
+
 # ==================== PredictionError ====================
 
 class TestPredictionError:
