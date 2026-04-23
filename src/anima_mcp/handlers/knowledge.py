@@ -159,9 +159,12 @@ async def handle_get_growth(arguments: dict) -> list[TextContent]:
                         "progress": round(g.progress, 2),
                         "milestones": len(g.milestones),
                     })
+            from ..growth.models import GoalStatus
             result["goals"] = {
                 "active": len([g for g in growth._goals.values() if g.status.value == "active"]),
-                "achieved": len([g for g in growth._goals.values() if g.status.value == "achieved"]),
+                # _goals is active-only after load_state(), so achieved goals
+                # aren't in memory. Count from DB like get_growth_summary does.
+                "achieved": growth.count_goals_by_status(GoalStatus.ACHIEVED),
                 "current": goals[:5],
             }
 

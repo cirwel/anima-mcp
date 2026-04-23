@@ -343,6 +343,15 @@ class GrowthSystem(
 
     # ==================== Growth Summary ====================
 
+    def count_goals_by_status(self, status: GoalStatus) -> int:
+        """Count goals in the DB by status. load_state() only pulls active goals
+        into self._goals, so any counter of non-active states must hit the DB."""
+        row = self._connect().execute(
+            "SELECT COUNT(*) FROM goals WHERE status = ?",
+            (status.value,),
+        ).fetchone()
+        return row[0] if row else 0
+
     def get_growth_summary(self) -> Dict[str, Any]:
         """Get a summary of Lumen's growth."""
         # Separate by visitor type
@@ -387,12 +396,7 @@ class GrowthSystem(
             },
             "goals": {
                 "active": sum(1 for g in self._goals.values() if g.status == GoalStatus.ACTIVE),
-                # _goals is loaded active-only (see load_state), so achieved goals
-                # aren't in memory. Count them directly from the DB.
-                "achieved": self._connect().execute(
-                    "SELECT COUNT(*) FROM goals WHERE status = ?",
-                    (GoalStatus.ACHIEVED.value,),
-                ).fetchone()[0],
+                "achieved": self.count_goals_by_status(GoalStatus.ACHIEVED),
             },
             "memories": {
                 "count": len(self._memories),

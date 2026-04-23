@@ -81,10 +81,13 @@ class TestGetGrowthExtended:
             get_autobiography_summary=lambda: {"chapters": 2},
             _preferences={"p1": pref_good, "p2": pref_low},
             _relationships={"self": rel_self, "v1": rel_visitor},
-            _goals={"g1": goal_active, "g2": goal_achieved},
+            # _goals is active-only under load_state(); the achieved counter
+            # comes from count_goals_by_status hitting the DB.
+            _goals={"g1": goal_active},
             _memories=[memory],
             _curiosities=["why light?"],
             get_inactive_visitors=lambda: [("OldAgent", 9)],
+            count_goals_by_status=lambda status: 1 if status.value == "achieved" else 0,
         )
 
         with patch("anima_mcp.accessors._get_growth", return_value=growth):
