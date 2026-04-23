@@ -297,7 +297,18 @@ class MessageBoard:
                 similar = [qid for qid in all_question_ids if responds_to in qid or qid.startswith(responds_to[:4])]
                 if similar:
                     print(f"[MessageBoard] Similar question IDs: {similar[:3]}", file=sys.stderr, flush=True)
-            
+
+            # If this answer resolved a question Lumen had asked, mirror that into
+            # growth curiosities so "find an answer to: X" goals can auto-complete.
+            if question_found and question_text:
+                try:
+                    from .accessors import _get_growth
+                    growth = _get_growth()
+                    if growth:
+                        growth.mark_explored(question_text, notes=text)
+                except Exception as e:
+                    print(f"[MessageBoard] mark_explored error: {e}", file=sys.stderr, flush=True)
+
             self._save()
 
             # Compute feedback for agency learning (was this question well-formed?)

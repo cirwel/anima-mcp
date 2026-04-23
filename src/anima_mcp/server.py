@@ -453,6 +453,16 @@ async def _update_display_loop():
                                     # Record curiosity for internal learning loop:
                                     # later, check if prediction improved in these domains
                                     metacog.record_curiosity(prediction_error.surprise_sources, prediction_error)
+                                    # Also seed growth curiosities so suggest_goal can propose
+                                    # "find an answer to: X" and check_goal_progress can
+                                    # auto-complete when the question gets answered.
+                                    try:
+                                        from .accessors import _get_growth
+                                        growth = _get_growth()
+                                        if growth:
+                                            growth.add_curiosity(curiosity_question)
+                                    except Exception as e:
+                                        logger.debug("[Growth] add_curiosity error: %s", e)
                                 # Update question_asking_tendency belief
                                 try:
                                     from .self_model import get_self_model
