@@ -100,6 +100,61 @@ class TestCorrelationCalculation:
         # Should be unchanged — not enough data
         assert model._beliefs[belief_id].confidence == initial
 
+    def test_stable_input_leaves_belief_at_prior(self, model):
+        """When input variance is below CV=5% (stable HVAC-like environment),
+        we have no information to test the correlation. The belief must stay
+        at its prior — the previous behavior eroded confidence on every tick
+        and drove correlations to 0 permanently in quiet rooms (see Lumen's
+        temp_clarity_correlation at 0 supporting / 31,854 contradicting).
+        """
+        belief_id = "my_leds_affect_lux"
+
+        # Seed the belief at a specific confidence so drift is detectable.
+        model._beliefs[belief_id].confidence = 0.6
+        model._beliefs[belief_id].supporting_count = 20
+        model._beliefs[belief_id].contradicting_count = 5
+
+        # CV far below 5%: brightness hovering around 0.12 with sub-percent jitter.
+        for i in range(15):
+            model._correlation_data["led_lux"].append({
+                "timestamp": datetime.now().isoformat(),
+                "led_brightness": 0.1200 + (i % 3) * 0.00005,
+                "light_lux": 50.0 + (i % 3) * 0.01,
+            })
+
+        prior_conf = model._beliefs[belief_id].confidence
+        prior_supp = model._beliefs[belief_id].supporting_count
+        prior_contra = model._beliefs[belief_id].contradicting_count
+
+        model._test_correlation_belief(belief_id, "led_lux")
+
+        # No update — the belief stays exactly where it was.
+        assert model._beliefs[belief_id].confidence == prior_conf
+        assert model._beliefs[belief_id].supporting_count == prior_supp
+        assert model._beliefs[belief_id].contradicting_count == prior_contra
+
+        # Window should be cleared so fresh data can accumulate.
+        assert len(model._correlation_data["led_lux"]) == 0
+
+    def test_stable_input_repeated_does_not_accumulate_disconfirm(self, model):
+        """Fire the stable-input path 500 times. Confidence must not drift —
+        the whole point of this change is to stop the decay-to-zero in quiet
+        environments."""
+        belief_id = "my_leds_affect_lux"
+        model._beliefs[belief_id].confidence = 0.7
+
+        for cycle in range(500):
+            model._correlation_data["led_lux"].clear()
+            for i in range(12):
+                model._correlation_data["led_lux"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "led_brightness": 0.10,
+                    "light_lux": 100.0,
+                })
+            model._test_correlation_belief(belief_id, "led_lux")
+
+        assert model._beliefs[belief_id].confidence == 0.7
+
 
 class TestBeliefPersistence:
     """Test that beliefs survive save/load cycles."""
