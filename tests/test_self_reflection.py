@@ -224,6 +224,136 @@ class TestAnalyzePatterns:
         srs.close()
 
 
+# ==================== _analyze_conjunctive_patterns ====================
+
+
+class TestAnalyzeConjunctivePatterns:
+    """Conjunctive patterns expand the space past single-axis saturation.
+
+    Lumen accumulated 176 single-axis insights in two bursts early-on; after
+    that, re-detecting them only bumped validation counts. Conjunctive
+    patterns (two inputs jointly) open a new tier so new_insight_ids can
+    keep populating when the world has structure in pairs, not just axes.
+    """
+
+    def _rows_with_quadrant(self, clarity_in_hh: float, n: int = 60):
+        """Build synthetic rows where the (high_light, high_temp) quadrant
+        has clarity at `clarity_in_hh` and all other quadrants at 0.4.
+        Returns sqlite3.Row-like dicts the analyzer accepts.
+        """
+        import json
+        rows = []
+        for i in range(n):
+            # Cycle through quadrants evenly so median-splits land cleanly.
+            quad = i % 4
+            if quad == 0:
+                light, temp, clarity = 100, 20, 0.4
+            elif quad == 1:
+                light, temp, clarity = 100, 30, 0.4
+            elif quad == 2:
+                light, temp, clarity = 500, 20, 0.4
+            else:
+                light, temp, clarity = 500, 30, clarity_in_hh
+            rows.append({
+                "warmth": 0.5,
+                "clarity": clarity,
+                "stability": 0.5,
+                "presence": 0.5,
+                "sensors": json.dumps({
+                    "light_lux": light,
+                    "ambient_temp_c": temp,
+                    "humidity_pct": 40,
+                    "interaction_level": 0.0,
+                }),
+            })
+        return rows
+
+    def test_strong_conjunction_emits_pattern(self, srs):
+        """When the (high_light, high_temp) quadrant has clarity 0.8 vs overall
+        ~0.5, the analyzer should emit a pattern naming both conditions."""
+        rows = self._rows_with_quadrant(clarity_in_hh=0.8)
+        patterns = srs._analyze_conjunctive_patterns(rows)
+        light_temp = [
+            p for p in patterns
+            if "light" in p.condition and "temperature" in p.condition
+        ]
+        assert light_temp, f"expected a light+temperature pattern, got {patterns}"
+        p = light_temp[0]
+        assert "high light" in p.condition and "high temperature" in p.condition
+        assert "higher clarity" in p.outcome
+        assert p.correlation > 0.15
+
+    def test_no_conjunction_when_within_threshold(self, srs):
+        """Quadrant deviation of only 0.05 should not emit."""
+        rows = self._rows_with_quadrant(clarity_in_hh=0.45)  # only 0.05 above 0.4
+        patterns = srs._analyze_conjunctive_patterns(rows)
+        light_temp = [
+            p for p in patterns
+            if "light" in p.condition and "temperature" in p.condition
+        ]
+        assert light_temp == []
+
+    def test_empty_when_too_few_samples(self, srs):
+        """Fewer than 40 samples cannot form meaningful quadrants."""
+        rows = self._rows_with_quadrant(clarity_in_hh=0.8, n=20)
+        assert srs._analyze_conjunctive_patterns(rows) == []
+
+    def test_cap_at_three_patterns(self, srs):
+        """Even when many pairs show deviations, emit at most 3."""
+        import json
+        # Build rows where EVERY pair has a big high/high deviation by
+        # making clarity jump whenever any two inputs are in their upper half.
+        rows = []
+        inputs = [(100, 20, 40, 0.0), (500, 30, 70, 0.8)]
+        for i in range(80):
+            low_high = inputs[i % 2]
+            l, t, h, a = low_high
+            # All four inputs correlated — all pairs will show high/high
+            # quadrant with elevated clarity.
+            clarity = 0.8 if i % 2 == 1 else 0.4
+            rows.append({
+                "warmth": 0.5,
+                "clarity": clarity,
+                "stability": 0.5,
+                "presence": 0.5,
+                "sensors": json.dumps({
+                    "light_lux": l,
+                    "ambient_temp_c": t,
+                    "humidity_pct": h,
+                    "interaction_level": a,
+                }),
+            })
+        patterns = srs._analyze_conjunctive_patterns(rows)
+        assert len(patterns) <= 3
+
+    def test_tolerates_missing_sensor_keys(self, srs):
+        """Rows with partial sensor data shouldn't crash the analyzer."""
+        import json
+        rows = []
+        for i in range(60):
+            sensors = {"light_lux": 100 + i * 5}  # only one input available
+            rows.append({
+                "warmth": 0.5, "clarity": 0.5, "stability": 0.5, "presence": 0.5,
+                "sensors": json.dumps(sensors),
+            })
+        # Should not raise; most pairs won't have both values → empty result ok
+        patterns = srs._analyze_conjunctive_patterns(rows)
+        assert isinstance(patterns, list)
+
+    def test_insight_id_distinct_from_single_axis(self, srs):
+        """Conjunctive pattern's derived insight_id must not collide with a
+        single-axis finding — `generate_insights` builds insight_id from
+        `condition_outcome`, and the `_and_` joiner keeps them distinct."""
+        rows = self._rows_with_quadrant(clarity_in_hh=0.8)
+        patterns = srs._analyze_conjunctive_patterns(rows)
+        if not patterns:
+            pytest.skip("no conjunctive pattern emitted — covered by other test")
+        for p in patterns:
+            # The id format used by generate_insights:
+            derived_id = f"{p.condition}_{p.outcome}".replace(" ", "_").lower()
+            assert "_and_" in derived_id, f"conjunctive id should contain '_and_', got {derived_id}"
+
+
 # ==================== generate_insights ====================
 
 class TestGenerateInsights:

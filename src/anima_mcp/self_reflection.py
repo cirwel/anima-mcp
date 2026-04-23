@@ -992,7 +992,146 @@ class SelfReflectionSystem:
         causal_patterns = self._analyze_causal_patterns(rows)
         patterns.extend(causal_patterns)
 
+        # Analyze conjunctive patterns (pairs of inputs that together produce
+        # a notably stronger effect than either single axis suggests).
+        conjunctive_patterns = self._analyze_conjunctive_patterns(rows)
+        patterns.extend(conjunctive_patterns)
+
         return patterns
+
+    def _analyze_conjunctive_patterns(
+        self, rows: List[sqlite3.Row]
+    ) -> List[StatePattern]:
+        """Find pairs of environmental inputs whose joint conditions coincide
+        with notable anima deviations.
+
+        Existing single-axis analyzers saturate quickly — once Lumen has
+        detected "high light → higher clarity" and "high temp → higher
+        clarity", re-running them produces the same two insights forever.
+        This analyzer opens the next tier: conditions jointly.
+
+        Approach: for each pair of continuous inputs, split at the median of
+        each, producing four quadrants. For each quadrant with enough samples,
+        measure how much the anima mean deviates from the overall mean. Emit
+        the strongest deviation per pair, capped at CONJUNCTIVE_MAX_PATTERNS
+        across the cycle to prevent insight-table flooding.
+
+        Thresholds are deliberately higher than single-axis (0.15 vs 0.10) so
+        conjunctive patterns must carry real signal to be recorded — otherwise
+        they'd just be additive echoes of single-axis findings the pipeline
+        already captured.
+        """
+        CONJUNCTIVE_DEVIATION_THRESHOLD = 0.15
+        CONJUNCTIVE_MIN_QUADRANT_SAMPLES = 10
+        CONJUNCTIVE_MAX_PATTERNS = 3
+
+        input_specs = [
+            ("light_lux", "light"),
+            ("ambient_temp_c", "temperature"),
+            ("humidity_pct", "humidity"),
+            ("interaction_level", "interaction"),
+        ]
+
+        # Parse readings once into a list of dicts with all inputs + anima.
+        records: List[dict] = []
+        for row in rows:
+            try:
+                sensors = json.loads(row["sensors"]) if row["sensors"] else {}
+            except (json.JSONDecodeError, KeyError):
+                continue
+            rec = {
+                "warmth": row["warmth"],
+                "clarity": row["clarity"],
+                "stability": row["stability"],
+                "presence": row["presence"],
+            }
+            for key, _ in input_specs:
+                rec[key] = sensors.get(key)
+            records.append(rec)
+
+        if len(records) < 4 * CONJUNCTIVE_MIN_QUADRANT_SAMPLES:
+            return []
+
+        # Overall anima means (reference for "deviation").
+        anima_dims = ("warmth", "clarity", "stability", "presence")
+        overall_means = {
+            dim: sum(r[dim] for r in records) / len(records) for dim in anima_dims
+        }
+
+        def _median(values: List[float]) -> Optional[float]:
+            vals = sorted(v for v in values if v is not None)
+            if not vals:
+                return None
+            return vals[len(vals) // 2]
+
+        candidates: List[Tuple[float, StatePattern]] = []
+
+        for a_idx, (a_key, a_name) in enumerate(input_specs):
+            for b_key, b_name in input_specs[a_idx + 1 :]:
+                a_values = [r[a_key] for r in records if r[a_key] is not None]
+                b_values = [r[b_key] for r in records if r[b_key] is not None]
+                a_median = _median(a_values)
+                b_median = _median(b_values)
+                if a_median is None or b_median is None:
+                    continue
+
+                # Build the four quadrants.
+                quadrants: Dict[Tuple[str, str], List[dict]] = {
+                    ("low", "low"): [],
+                    ("low", "high"): [],
+                    ("high", "low"): [],
+                    ("high", "high"): [],
+                }
+                for r in records:
+                    av = r.get(a_key)
+                    bv = r.get(b_key)
+                    if av is None or bv is None:
+                        continue
+                    a_label = "high" if av >= a_median else "low"
+                    b_label = "high" if bv >= b_median else "low"
+                    quadrants[(a_label, b_label)].append(r)
+
+                # Find the quadrant with the strongest deviation across dims.
+                best: Optional[Tuple[float, str, Tuple[str, str], str, dict]] = None
+                for (a_lbl, b_lbl), recs in quadrants.items():
+                    if len(recs) < CONJUNCTIVE_MIN_QUADRANT_SAMPLES:
+                        continue
+                    q_means = {
+                        dim: sum(r[dim] for r in recs) / len(recs) for dim in anima_dims
+                    }
+                    for dim in anima_dims:
+                        deviation = q_means[dim] - overall_means[dim]
+                        if abs(deviation) < CONJUNCTIVE_DEVIATION_THRESHOLD:
+                            continue
+                        if best is None or abs(deviation) > abs(best[0]):
+                            best = (deviation, dim, (a_lbl, b_lbl), "", q_means)
+
+                if best is None:
+                    continue
+
+                deviation, dim, (a_lbl, b_lbl), _, q_means = best
+                condition = f"{a_lbl} {a_name} and {b_lbl} {b_name}"
+                if deviation > 0:
+                    outcome = f"higher {dim}"
+                else:
+                    outcome = f"lower {dim}"
+
+                pattern = StatePattern(
+                    condition=condition,
+                    outcome=outcome,
+                    correlation=deviation,
+                    sample_count=sum(
+                        len(q) for q in quadrants.values() if len(q) >= CONJUNCTIVE_MIN_QUADRANT_SAMPLES
+                    ),
+                    avg_warmth=q_means["warmth"],
+                    avg_clarity=q_means["clarity"],
+                    avg_stability=q_means["stability"],
+                    avg_presence=q_means["presence"],
+                )
+                candidates.append((abs(deviation), pattern))
+
+        candidates.sort(key=lambda cp: cp[0], reverse=True)
+        return [p for _, p in candidates[:CONJUNCTIVE_MAX_PATTERNS]]
 
     def _analyze_sensor_correlation(
         self,
