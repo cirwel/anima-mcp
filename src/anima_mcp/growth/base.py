@@ -387,7 +387,12 @@ class GrowthSystem(
             },
             "goals": {
                 "active": sum(1 for g in self._goals.values() if g.status == GoalStatus.ACTIVE),
-                "achieved": sum(1 for g in self._goals.values() if g.status == GoalStatus.ACHIEVED),
+                # _goals is loaded active-only (see load_state), so achieved goals
+                # aren't in memory. Count them directly from the DB.
+                "achieved": self._connect().execute(
+                    "SELECT COUNT(*) FROM goals WHERE status = ?",
+                    (GoalStatus.ACHIEVED.value,),
+                ).fetchone()[0],
             },
             "memories": {
                 "count": len(self._memories),

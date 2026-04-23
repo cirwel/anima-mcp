@@ -237,6 +237,32 @@ class TestUpdateGoalProgress:
         assert growth._goals[goal.goal_id].status == GoalStatus.ACHIEVED
         assert len(growth._memories) > memories_before
 
+    def test_achieved_counter_survives_reload(self, tmp_path):
+        """The achieved counter in get_growth_summary must count ACHIEVED goals
+        that exist in the DB but are no longer in memory. Without this,
+        `goals.achieved` resets to 0 on every restart (load_state only pulls
+        status='active' into _goals), even though the DB still has the records.
+        Matches the production symptom on Lumen: 2 achievements in memories,
+        achieved counter reads 0."""
+        db_path = str(tmp_path / "achieved_reload.db")
+
+        # Session 1: form two goals, achieve one, leave the other active.
+        gs1 = GrowthSystem(db_path=db_path)
+        achieved_goal = gs1.form_goal("finish this", "for glory")
+        gs1.form_goal("keep working", "ongoing")
+        gs1.update_goal_progress(achieved_goal.goal_id, 1.0)
+        assert gs1.get_growth_summary()["goals"]["achieved"] == 1
+        gs1.close()
+
+        # Session 2: simulate restart. load_state filters to status='active',
+        # so the achieved goal is no longer in _goals — but the counter must
+        # still report it by consulting the DB.
+        gs2 = GrowthSystem(db_path=db_path)
+        assert achieved_goal.goal_id not in gs2._goals  # confirms active-only load
+        summary = gs2.get_growth_summary()
+        assert summary["goals"]["achieved"] == 1
+        assert summary["goals"]["active"] == 1
+
 
 # ==================== Check Goal Progress ====================
 
