@@ -480,12 +480,17 @@ class SelfModel:
         # In stable environments, most windows show noise not signal.
         cv_x = math.sqrt(sum_sq_x / n) / (abs(mean_x) + EPSILON)
         if cv_x < 0.05:
-            # Stable input: weak evidence AGAINST the belief.
-            # Reasoning: if X truly affected Y, we'd expect co-variation even at
-            # small scales. Prolonged stability without correlation is mild
-            # disconfirmation — enough to decay beliefs toward neutral over time,
-            # but too weak to overwhelm real signal when variation does appear.
-            self._update_belief(belief_id, supports=False, strength=0.05)
+            # Stable input: no information. We used to log a weak disconfirm
+            # here (supports=False, strength=0.05) on the theory that "if X
+            # truly affected Y, we'd see co-variation even at small scales."
+            # But in stable environments (HVAC-controlled rooms, resident
+            # agents) this fires thousands of times with noise as the only
+            # input, driving confidence to zero permanently even on beliefs
+            # that might be true — there's just no data to test them.
+            # Observed on Lumen: temp_clarity_correlation at 0 supporting /
+            # 31,854 contradicting over weeks of indoor operation. Treat
+            # "no variance" as "no evidence" and leave the belief at its
+            # prior; clear the window so fresh data can accumulate.
             self._correlation_data[data_key].clear()
             return
 
