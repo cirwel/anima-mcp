@@ -25,6 +25,22 @@ from ..anima import Anima
 from ..expression_moods import ExpressionMoodTracker
 
 
+_EARNED_COMPLETION_REASONS = frozenset({"earned_coherence", "earned_composition"})
+
+
+def is_earned_completion_reason(reason: Optional[str]) -> bool:
+    """Gate for autobiographical writes tied to drawing completion.
+
+    Earned reasons only. `None` is treated as unknown and returns True so
+    legacy callers that predate the reason-plumbing keep their old behavior
+    (satisfaction-threshold gating applies instead). Pass an explicit
+    non-earned tag to suppress.
+    """
+    if reason is None:
+        return True
+    return reason in _EARNED_COMPLETION_REASONS
+
+
 def _get_drawing_bridge():
     """Get shared server bridge for drawing outcome reporting (late import to avoid circular deps)."""
     try:
@@ -83,6 +99,12 @@ class CanvasState:
     # False-start tracking (volatile - resets on restart, not persisted)
     consecutive_false_starts: int = 0
 
+    # Completion-path tag set when a drawing reaches the closing phase.
+    # Distinguishes earned completion from bail-out exits so downstream
+    # growth/memory systems can gate autobiographical writes on honest signal.
+    # See completion_reason() for the taxonomy.
+    last_completion_reason: Optional[str] = None
+
     # Render caching - avoid redrawing all pixels every frame
     _dirty: bool = True  # Set by draw_pixel(), cleared after render
     _cached_image: object = None  # Cached PIL Image of all pixels
@@ -124,6 +146,7 @@ class CanvasState:
         self.satisfaction_time = 0.0
         self.energy = 1.0
         self.mark_count = 0
+        self.last_completion_reason = None
         # Reset attention/coherence/narrative
         self.curiosity = 1.0
         self.engagement = 0.5
@@ -230,6 +253,7 @@ class CanvasState:
                 "is_satisfied": self.is_satisfied,
                 "satisfaction_time": self.satisfaction_time,
                 "drawings_saved": self.drawings_saved,
+                "last_completion_reason": self.last_completion_reason,
                 "energy": self.energy,
                 "mark_count": self.mark_count,
                 "era": self._era_name,
@@ -389,6 +413,13 @@ class CanvasState:
             saved_count = data.get("drawings_saved", 0)
             if isinstance(saved_count, int) and saved_count >= 0:
                 self.drawings_saved = saved_count
+        except Exception:
+            pass
+
+        try:
+            reason = data.get("last_completion_reason")
+            if reason is None or isinstance(reason, str):
+                self.last_completion_reason = reason
         except Exception:
             pass
 
@@ -587,51 +618,65 @@ class DrawingState:
             self.engagement < 0.3 or self.fatigue > 0.8
         )
 
-    def narrative_complete(self, canvas=None) -> bool:
-        """True when drawing has naturally completed its arc.
+    def completion_reason(self, canvas=None) -> Optional[str]:
+        """Return the tag identifying why this drawing is complete, or None.
 
-        Multiple completion paths (OR logic):
-        1. Already in closing phase (manual/explicit completion)
-        2. Coherence settled AND attention exhausted (pattern found + no energy)
-        3. High compositional satisfaction AND curiosity depleted (good composition + explored)
-        4. Extreme fatigue (emergency exit if stuck)
-        5. Stalled too long -- energy near-zero with pixels on canvas (prevents stuck drawings)
+        Tags (earned paths first so they take priority when conditions overlap):
 
-        This gives Lumen multiple ways to complete drawings naturally.
+          Earned — the drawing reached its own resolution:
+            "earned_coherence"    — coherence settled and attention exhausted
+            "earned_composition"  — compositional satisfaction > 0.7 and
+                                    curiosity < 0.2
+
+          Already_closing — prior tick transitioned; reason was captured then.
+            "already_closing"
+
+          Bail-out — a safety hatch fired because natural completion did not:
+            "bailout_fatigue"     — fatigue > 0.90
+            "bailout_stalled"     — energy near-zero and drawing > 15min
+            "bailout_hard_cap"    — 8-hour safety net
+
+        Downstream consumers (growth/memory) use `is_earned_completion_reason`
+        to gate autobiographical writes to earned paths only. This prevents
+        timeouts being promoted to "I'm pleased with this drawing" memories —
+        axiom 8 (coherence masking drift) at the data layer.
         """
-        # Path 1: Already closing
-        if self.arc_phase == "closing":
-            return True
-
-        # Path 2: Pattern found AND attention exhausted (original strict path)
+        # Earned paths take priority — if an earned condition is met on the
+        # same tick as a bail-out condition, call it earned.
         if self.coherence_settled() and self.attention_exhausted():
-            return True
+            return "earned_coherence"
 
-        # Path 3: Good composition AND curiosity depleted (new compositional path)
         if canvas is not None:
             satisfaction = canvas.compositional_satisfaction()
             if satisfaction > 0.7 and self.curiosity < 0.2:
-                return True
+                return "earned_composition"
 
-        # Path 4: Emergency exit - too fatigued to continue
+        if self.arc_phase == "closing":
+            return "already_closing"
+
         if self.fatigue > 0.90:
-            return True
+            return "bailout_fatigue"
 
-        # Path 5: Stalled -- energy is near-zero and drawing has been going for a while.
-        # Uses drawing-level time (not phase time) to avoid resets from phase oscillation.
+        # Stalled -- energy near-zero and drawing has been going for a while.
+        # Uses drawing-level time (not phase time) to avoid resets from phase
+        # oscillation.
         if canvas is not None and self.derived_energy < 0.05:
             drawing_duration = time.time() - canvas.last_clear_time
             if drawing_duration > 900 and len(canvas.pixels) >= 200:
-                return True
+                return "bailout_stalled"
 
-        # Path 6: Hard time limit -- no single drawing should run longer than 8 hours.
-        # Safety net only — natural completion should happen well before this.
+        # Hard time limit -- no single drawing should run longer than 8 hours.
+        # Safety net only.
         if canvas is not None:
             drawing_duration = time.time() - canvas.last_clear_time
             if drawing_duration > 28800 and len(canvas.pixels) >= 50:
-                return True
+                return "bailout_hard_cap"
 
-        return False
+        return None
+
+    def narrative_complete(self, canvas=None) -> bool:
+        """True when drawing has naturally completed its arc."""
+        return self.completion_reason(canvas) is not None
 
     def is_false_start(self, canvas) -> bool:
         """True when the opening phase has had enough time and marks but nothing cohered.
@@ -1225,7 +1270,14 @@ class DrawingEngine:
 
         elif current_phase == "resolving":
             # Natural completion
-            if state.narrative_complete(self.canvas):
+            reason = state.completion_reason(self.canvas)
+            if reason is not None:
+                # Capture the path that triggered completion so downstream
+                # growth/memory systems can distinguish earned from bail-out.
+                # Skip "already_closing" — only relevant mid-loop, and by
+                # definition not the originating trigger.
+                if reason != "already_closing":
+                    self.canvas.last_completion_reason = reason
                 transition_to("closing")
             # Destabilized: coherence dropped significantly (hysteresis — entered at 0.6, exit at 0.4)
             elif C < 0.4:
@@ -1537,11 +1589,19 @@ class DrawingEngine:
                     }
                     phase = self.canvas.drawing_phase or "resting"
                     growth = get_growth_system()
+                    # Reason distinguishes earned completion from bail-outs
+                    # (fatigue/stall/hard-cap) and user-triggered snapshots.
+                    # Growth uses it to gate milestone + "pleased with" memories.
+                    if manual:
+                        completion_reason = "manual_snapshot"
+                    else:
+                        completion_reason = self.canvas.last_completion_reason
                     insight = growth.observe_drawing(
                         pixel_count=len(self.canvas.pixels),
                         phase=phase,
                         anima_state=anima_state,
                         environment=environment,
+                        completion_reason=completion_reason,
                     )
                     if insight:
                         print(f"[Growth] Drawing insight: {insight}", file=sys.stderr, flush=True)
@@ -1558,6 +1618,7 @@ class DrawingEngine:
                             mark_count=self.canvas.mark_count,
                             coherence=coherence,
                             satisfaction=satisfaction,
+                            completion_reason=completion_reason,
                         )
                     except Exception as e:
                         print(f"[Growth] Drawing feedback failed: {e}",
