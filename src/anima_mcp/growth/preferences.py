@@ -101,7 +101,8 @@ class PreferencesMixin:
 
     def observe_drawing(self, pixel_count: int, phase: str,
                         anima_state: Dict[str, float],
-                        environment: Dict[str, float]) -> Optional[str]:
+                        environment: Dict[str, float],
+                        completion_reason: Optional[str] = None) -> Optional[str]:
         """
         Learn from a completed drawing.
 
@@ -113,10 +114,15 @@ class PreferencesMixin:
             phase: Drawing phase when saved (usually "resting")
             anima_state: Current anima dimensions
             environment: Current environment (light, temp, etc.)
+            completion_reason: Path tag from DrawingState.completion_reason().
+                Gates the milestone autobiographical memory: only earned tags
+                ("earned_coherence", "earned_composition") write the memory.
+                None (legacy callers) keeps prior behavior.
 
         Returns:
             Insight message if a new preference is discovered.
         """
+        from ..display.drawing_engine import is_earned_completion_reason
         wellness = sum(anima_state.values()) / len(anima_state) if anima_state else 0.5
         now = datetime.now()
         hour = now.hour
@@ -184,7 +190,10 @@ class PreferencesMixin:
             (self._drawings_observed,)
         )
         conn.commit()
-        if self._drawings_observed in (1, 10, 50, 100, 200, 500):
+        if (
+            self._drawings_observed in (1, 10, 50, 100, 200, 500)
+            and is_earned_completion_reason(completion_reason)
+        ):
             ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(
                 self._drawings_observed, f"{self._drawings_observed}th"
             )
@@ -466,23 +475,32 @@ class PreferencesMixin:
         mark_count: int,
         coherence: float,
         satisfaction: float,
+        completion_reason: Optional[str] = None,
     ) -> Optional[str]:
         """
         Record completion of a drawing with emotional feedback.
 
         Bridges drawing output back into Lumen's growth system:
         - Updates drawing_satisfaction preference
-        - Records autobiographical memory if satisfaction is high
+        - Records autobiographical memory if satisfaction is high AND the
+          drawing reached an earned completion (not a timeout or bail-out)
 
         Args:
             pixel_count: Total pixels in the drawing
             mark_count: Number of distinct marks/strokes
             coherence: EISV compositional coherence (0-1)
             satisfaction: Compositional satisfaction score (0-1)
+            completion_reason: Path tag from DrawingState.completion_reason().
+                Gates the "pleased with" autobiographical memory: bail-out
+                reasons (fatigue/stalled/hard-cap) block the memory even when
+                satisfaction > 0.7. None (legacy callers) keeps prior
+                satisfaction-only behavior.
 
         Returns:
             Insight message if a preference threshold was crossed
         """
+        from ..display.drawing_engine import is_earned_completion_reason
+
         # Map satisfaction to preference value: 0.5=neutral, >0.5=positive
         pref_value = satisfaction * 2.0 - 1.0  # Map [0,1] to [-1,1]
 
@@ -492,8 +510,11 @@ class PreferencesMixin:
             pref_value,
         )
 
-        # Record autobiographical memory for satisfying drawings
-        if satisfaction > 0.7:
+        # Only earned completions become autobiographical memories. A timeout
+        # with high pixel count can still score satisfaction > 0.7 on the
+        # coverage/balance components, but writing that as "pleased with"
+        # would be coherence masking drift (axiom 8).
+        if satisfaction > 0.7 and is_earned_completion_reason(completion_reason):
             self._record_memory(
                 f"Made a drawing I'm pleased with ({pixel_count} pixels, "
                 f"coherence {coherence:.2f})",
