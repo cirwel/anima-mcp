@@ -258,6 +258,22 @@ class PilRenderer(DisplayRenderer):
 
             print("BrainCraft HAT display initialized", file=sys.stderr, flush=True)
 
+            # Validate readback. Some TFT carriers (including the BrainCraft
+            # HAT) don't wire the display's MISO back to the Pi, so every
+            # .read() returns zeros regardless of chip state. If RDDID is
+            # all zeros, probe-based recovery would fire on every heartbeat
+            # against phantom data. Verified empirically 2026-04-24: this
+            # HAT returns 0 from RDDID/RDDST/RDDPM/RDDMADCTL/RDDCOLMOD.
+            self._probe_supported = True
+            try:
+                rddid = self._display.read(0x04, 4)  # chip manufacturer ID
+                if not rddid or all(b == 0 for b in rddid):
+                    self._probe_supported = False
+                    print("[Display] SPI readback not functional (RDDID=0) — probe-based chip-state recovery disabled", file=sys.stderr, flush=True)
+            except Exception as e:
+                self._probe_supported = False
+                print(f"[Display] SPI readback raised ({e}) — probe-based chip-state recovery disabled", file=sys.stderr, flush=True)
+
             # Immediately blank the display to clear any ST7789 framebuffer noise,
             # then show the waking face. This prevents scrambled pixels on startup.
             try:
@@ -357,21 +373,21 @@ class PilRenderer(DisplayRenderer):
         }
 
     def verify_and_recover(self) -> dict:
-        """Probe chip state; on any non-fully-awake reading, re-init.
+        """Probe chip state; on a non-fully-awake reading, full re-init.
 
-        Recovery must be a full ``_init_display()``, not just SLPOUT+DISPON.
-        A hardware reset via the RST line wipes ``COLMOD`` (pixel format)
-        and ``MADCTL`` (rotation / color order) along with the sleep/display
-        bits. Sending only the wake commands leaves the library's state
-        (RGB565, rotation=180) mismatched against the chip's post-reset
-        defaults (RGB666, rotation=0) — pixels continue to flow but are
-        rendered garbled. ``_init_display`` re-sends the full init sequence.
+        Self-disabling: if the hardware doesn't wire MISO (see
+        ``_probe_supported`` check at init), the probe would return
+        phantom zeros on every read and drive recovery every heartbeat.
+        On such hardware this returns ``unsupported`` and fires nothing.
 
-        Observed 2026-04-24: first post-deploy probe returned ``raw=0``
-        (every status bit cleared — a full reset). Wake-only recovery
-        produced a display with visible eyes and mouth but no face
-        background; switching to full re-init restores correct rendering.
+        Recovery is a full ``_init_display()``, not just SLPOUT+DISPON.
+        A hardware reset wipes ``COLMOD`` (pixel format) and ``MADCTL``
+        (rotation / color order); resending only the wake commands leaves
+        the library's state (RGB565, rotation=180) mismatched against
+        the chip's post-reset defaults — pixels flow but render garbled.
         """
+        if not getattr(self, "_probe_supported", True):
+            return {"probed": False, "recovered": False, "reason": "readback unsupported on this hardware"}
         state = self.probe_chip_state()
         fully_awake = (
             state is not None
