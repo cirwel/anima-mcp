@@ -172,3 +172,22 @@ def test_verify_and_recover_reinits_on_probe_failure(
     assert result["probed"] is False
     assert result["recovered"] is True
     assert calls == ["init"], "probe failure is a release-valve recovery trigger"
+
+
+def test_verify_and_recover_short_circuits_when_probe_unsupported(
+    renderer_with_fake_display, monkeypatch
+):
+    """Hardware without wired MISO (e.g. BrainCraft HAT) returns phantom
+    zeros from every .read(). Without this short-circuit, verify_and_recover
+    would fire _init_display on every heartbeat — observed live 2026-04-24.
+    """
+    r = renderer_with_fake_display
+    r._probe_supported = False
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
+    result = r.verify_and_recover()
+    assert result["recovered"] is False
+    assert result["probed"] is False
+    assert calls == [], "must not re-init when probe is known unsupported"
+    # Also: the probe itself must not be invoked (saves an SPI read)
+    assert r._display.read.call_count == 0
