@@ -113,36 +113,62 @@ def test_probe_chip_state_returns_none_when_no_display():
     assert r.probe_chip_state() is None
 
 
-def test_verify_and_recover_wakes_asleep_chip(renderer_with_fake_display):
+def test_verify_and_recover_reinits_asleep_chip(renderer_with_fake_display, monkeypatch):
     r = renderer_with_fake_display
     r._display.read.return_value = bytes([ASLEEP])
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
     result = r.verify_and_recover()
     assert result["recovered"] is True
-    # Two writes (SLPOUT + DISPON) were issued
-    assert r._display.write.call_count == 2
+    assert calls == ["init"]
 
 
-def test_verify_and_recover_noop_when_awake(renderer_with_fake_display):
+def test_verify_and_recover_noop_when_awake(renderer_with_fake_display, monkeypatch):
     r = renderer_with_fake_display
     r._display.read.return_value = bytes([AWAKE_DISPLAYING])
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
     result = r.verify_and_recover()
     assert result["recovered"] is False
+    assert calls == []
     assert r._display.write.call_count == 0
 
 
-def test_verify_and_recover_recovers_display_off_state(renderer_with_fake_display):
+def test_verify_and_recover_reinits_display_off_state(renderer_with_fake_display, monkeypatch):
     r = renderer_with_fake_display
     r._display.read.return_value = bytes([AWAKE_DISPLAY_OFF])
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
     result = r.verify_and_recover()
     assert result["recovered"] is True
-    assert r._display.write.call_count == 2
+    assert calls == ["init"]
 
 
-def test_verify_and_recover_reports_probe_failure(renderer_with_fake_display):
+def test_verify_and_recover_reinits_on_full_reset_even_if_bits_claim_awake(
+    renderer_with_fake_display, monkeypatch
+):
+    """If RDDPM returns raw=0, treat as full hardware reset regardless of
+    individual bit values. COLMOD/MADCTL are also wiped; wake-only recovery
+    leaves the chip with mismatched pixel format -> garbled rendering
+    (visible eyes + mouth but no face background, as observed on 2026-04-24).
+    """
+    r = renderer_with_fake_display
+    r._display.read.return_value = bytes([0])
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
+    result = r.verify_and_recover()
+    assert result["recovered"] is True
+    assert calls == ["init"], "raw=0 must trigger full _init_display, not SLPOUT+DISPON"
+
+
+def test_verify_and_recover_reinits_on_probe_failure(
+    renderer_with_fake_display, monkeypatch
+):
     r = renderer_with_fake_display
     r._display.read.side_effect = OSError("boom")
+    calls = []
+    monkeypatch.setattr(r, "_init_display", lambda: calls.append("init"))
     result = r.verify_and_recover()
     assert result["probed"] is False
-    # On probe failure, still attempt wake as a best-effort release valve
-    assert r._display.write.call_count == 2
     assert result["recovered"] is True
+    assert calls == ["init"], "probe failure is a release-valve recovery trigger"

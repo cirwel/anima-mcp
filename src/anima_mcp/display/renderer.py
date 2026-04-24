@@ -357,20 +357,32 @@ class PilRenderer(DisplayRenderer):
         }
 
     def verify_and_recover(self) -> dict:
-        """Probe chip state; if asleep or display-off, wake it.
+        """Probe chip state; on any non-fully-awake reading, re-init.
 
-        On probe failure, still issue a best-effort wake — the cost is two
-        SPI bytes and the benefit is recovery in the case where the probe
-        itself fails because the chip is wedged.
+        Recovery must be a full ``_init_display()``, not just SLPOUT+DISPON.
+        A hardware reset via the RST line wipes ``COLMOD`` (pixel format)
+        and ``MADCTL`` (rotation / color order) along with the sleep/display
+        bits. Sending only the wake commands leaves the library's state
+        (RGB565, rotation=180) mismatched against the chip's post-reset
+        defaults (RGB666, rotation=0) — pixels continue to flow but are
+        rendered garbled. ``_init_display`` re-sends the full init sequence.
+
+        Observed 2026-04-24: first post-deploy probe returned ``raw=0``
+        (every status bit cleared — a full reset). Wake-only recovery
+        produced a display with visible eyes and mouth but no face
+        background; switching to full re-init restores correct rendering.
         """
         state = self.probe_chip_state()
-        if state is None:
-            self.wake_chip()
-            return {"probed": False, "recovered": True}
-        needs_wake = not (state["sleep_out"] and state["display_on"])
-        if needs_wake:
-            self.wake_chip()
-        return {"probed": True, "recovered": needs_wake, "state": state}
+        fully_awake = (
+            state is not None
+            and state["sleep_out"]
+            and state["display_on"]
+            and state["raw"] != 0  # raw=0 means all status bits cleared
+        )
+        if fully_awake:
+            return {"probed": True, "recovered": False, "state": state}
+        self._init_display()
+        return {"probed": state is not None, "recovered": True, "state": state}
 
     def _create_canvas(self, background: Tuple[int, int, int] = BLACK) -> Tuple[Image.Image, ImageDraw.ImageDraw]:
         """Create a new canvas for drawing."""
