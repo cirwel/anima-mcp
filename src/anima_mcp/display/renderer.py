@@ -307,6 +307,71 @@ class PilRenderer(DisplayRenderer):
             print(f"[Display] Error showing waking face: {e}", file=sys.stderr)
             # Don't crash - display might be temporarily unavailable
 
+    # ST7789 proprioception — see docs/operations/DISPLAY_PROPRIOCEPTION.md
+    # D24 is shared with joystick RIGHT; a droop on D24 can reset the chip
+    # into sleep/display-off state. SPI writes continue to succeed silently
+    # from that point, so the software never notices. These three methods
+    # give the renderer a way to observe the chip and recover without a
+    # service restart.
+    SLPOUT_CMD = 0x11   # Sleep Out
+    DISPON_CMD = 0x29   # Display On
+    RDDPM_CMD = 0x0A    # Read Display Power Mode
+    RDDPM_SLPOUT_BIT = 1 << 4   # 1 = awake
+    RDDPM_DISON_BIT = 1 << 2    # 1 = display on
+
+    def wake_chip(self) -> None:
+        """Idempotent wake: send SLPOUT + DISPON.
+
+        Safe to call regardless of current chip state — awake chip is
+        unaffected. Used by verify_and_recover() and the brainhat heartbeat
+        callback. Swallows exceptions; this is a best-effort release valve.
+        """
+        if not self._display:
+            return
+        try:
+            self._display.write(self.SLPOUT_CMD, b"")
+            self._display.write(self.DISPON_CMD, b"")
+        except Exception as e:
+            print(f"[Display] wake_chip failed: {e}", file=sys.stderr, flush=True)
+
+    def probe_chip_state(self) -> Optional[dict]:
+        """Read RDDPM (0x0A) and decode sleep + display-on bits.
+
+        Returns ``{"sleep_out": bool, "display_on": bool, "raw": int}`` or
+        None if the display handle is missing or SPI read fails.
+        """
+        if not self._display:
+            return None
+        try:
+            data = self._display.read(self.RDDPM_CMD, 1)
+        except Exception as e:
+            print(f"[Display] probe_chip_state read failed: {e}", file=sys.stderr, flush=True)
+            return None
+        if not data:
+            return None
+        raw = data[-1]  # last byte — some SPI paths prepend a dummy
+        return {
+            "sleep_out": bool(raw & self.RDDPM_SLPOUT_BIT),
+            "display_on": bool(raw & self.RDDPM_DISON_BIT),
+            "raw": raw,
+        }
+
+    def verify_and_recover(self) -> dict:
+        """Probe chip state; if asleep or display-off, wake it.
+
+        On probe failure, still issue a best-effort wake — the cost is two
+        SPI bytes and the benefit is recovery in the case where the probe
+        itself fails because the chip is wedged.
+        """
+        state = self.probe_chip_state()
+        if state is None:
+            self.wake_chip()
+            return {"probed": False, "recovered": True}
+        needs_wake = not (state["sleep_out"] and state["display_on"])
+        if needs_wake:
+            self.wake_chip()
+        return {"probed": True, "recovered": needs_wake, "state": state}
+
     def _create_canvas(self, background: Tuple[int, int, int] = BLACK) -> Tuple[Image.Image, ImageDraw.ImageDraw]:
         """Create a new canvas for drawing."""
         image = Image.new("RGB", (self.config.width, self.config.height), background)
