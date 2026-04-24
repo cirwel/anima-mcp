@@ -111,7 +111,19 @@ class BrainHatInput:
 
         # Last display-pin refresh (see BACKLIGHT_REFRESH_INTERVAL)
         self._last_backlight_refresh = 0.0
-    
+        # Callback fired after each heartbeat pulse — lets the renderer
+        # verify chip state and wake if the pulse released a D24-reset.
+        self._post_pulse_callback = None
+
+    def set_post_pulse_callback(self, callback) -> None:
+        """Register a zero-arg callable invoked after each display-pin pulse.
+
+        Called after pins are restored to INPUT PULL_UP, so the callback
+        can safely drive other pins (e.g. ST7789 SLPOUT + DISPON over SPI
+        via CE0/D25). Exceptions are logged and swallowed.
+        """
+        self._post_pulse_callback = callback
+
     def enable(self):
         """Explicitly enable input (call to activate)."""
         if self._enabled:
@@ -214,6 +226,15 @@ class BrainHatInput:
             self._joy_right.pull = digitalio.Pull.UP
         except Exception as e:
             print(f"[BrainHatInput] Display-pin refresh failed: {e}", file=sys.stderr, flush=True)
+
+        # Pin state restored. Notify any registered listener so it can
+        # verify downstream chip state (the pulse HIGH released any
+        # D24-reset, which leaves ST7789 in sleep/display-off).
+        if self._post_pulse_callback is not None:
+            try:
+                self._post_pulse_callback()
+            except Exception as e:
+                print(f"[BrainHatInput] post_pulse_callback failed: {e}", file=sys.stderr, flush=True)
     
     def read(self) -> Optional[InputState]:
         """Read current input state from GPIO pins with debouncing."""

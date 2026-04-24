@@ -41,6 +41,20 @@ async def fast_input_poll(mode_change_event: asyncio.Event):
             if brainhat.is_available():
                 _ctx.joystick_enabled = True
                 print("[Input] BrainHat input enabled - buttons and joystick ready", file=sys.stderr, flush=True)
+
+                # After each D22/D24 heartbeat pulse, verify the ST7789 is
+                # still awake + displaying. If D24 drooped before the pulse
+                # the chip may have entered reset; releasing reset leaves it
+                # in sleep/display-off state, silently discarding frames.
+                def _verify_display_after_pulse():
+                    ctx = _get_ctx()
+                    if ctx is None or ctx.display is None:
+                        return
+                    result = ctx.display.verify_and_recover()
+                    if result.get("recovered"):
+                        print(f"[Display] Chip-state recovery fired: {result}", file=sys.stderr, flush=True)
+
+                brainhat.set_post_pulse_callback(_verify_display_after_pulse)
             else:
                 if not hasattr(fast_input_poll, '_logged_unavailable'):
                     print("[Input] BrainHat hardware not available - buttons disabled (not on Pi or hardware issue)", file=sys.stderr, flush=True)
