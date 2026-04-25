@@ -443,14 +443,14 @@ requires-dist = [
     { name = "adafruit-circuitpython-veml7700", marker = "extra == 'pi'", specifier = ">=1.1.0,<2.0.0" },
     { name = "aiohttp", specifier = ">=3.13.4,<4.0.0" },
     { name = "anima-mcp", extras = ["pi", "brain", "audio", "dev"], marker = "extra == 'all'" },
-    { name = "black", marker = "extra == 'dev'", specifier = ">=23.7.0,<24.0.0" },
+    { name = "black", marker = "extra == 'dev'", specifier = ">=23.7.0,<27.0.0" },
     { name = "brainflow", marker = "extra == 'brain'", specifier = ">=5.0.0,<6.0.0" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0,<2.0.0" },
     { name = "numpy", specifier = ">=1.24.0,<3.0.0" },
     { name = "numpy", marker = "extra == 'brain'", specifier = ">=1.24.0,<2.0.0" },
     { name = "numpy", marker = "extra == 'pi'", specifier = ">=1.24.0,<3.0.0" },
-    { name = "pillow", specifier = ">=10.0.0,<11.0.0" },
+    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
     { name = "psutil", specifier = ">=5.9.0,<6.0.0" },
     { name = "pyaudio", marker = "extra == 'audio'", specifier = ">=0.2.13,<1.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3,<10.0.0" },
@@ -461,7 +461,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.0.285,<1.0.0" },
     { name = "scipy", marker = "extra == 'brain'", specifier = ">=1.10.0,<2.0.0" },
     { name = "speechrecognition", marker = "extra == 'audio'", specifier = ">=3.10.0,<4.0.0" },
-    { name = "starlette", specifier = ">=0.35.0,<1.0.0" },
+    { name = "starlette", specifier = ">=0.35.0,<2.0.0" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=5.9.0,<6.0.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.0,<7.0.0" },
     { name = "uvicorn", specifier = ">=0.25.0,<1.0.0" },
@@ -1714,11 +1714,11 @@ wheels = [
 
 [[package]]
 name = "pyjwt"
-version = "2.11.0"
+version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/5a/b46fa56bf322901eee5b0454a34343cdbdae202cd421775a8ee4e42fd519/pyjwt-2.11.0.tar.gz", hash = "sha256:35f95c1f0fbe5d5ba6e43f00271c275f7a1a4db1dab27bf708073b75318ea623", size = 98019, upload-time = "2026-01-30T19:59:55.694Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a8/10/e8192be5f38f3e8e7e046716de4cae33d56fd5ae08927a823bb916be36c1/pyjwt-2.12.0.tar.gz", hash = "sha256:2f62390b667cd8257de560b850bb5a883102a388829274147f1d724453f8fb02", size = 102511, upload-time = "2026-03-12T17:15:30.831Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6f/01/c26ce75ba460d5cd503da9e13b21a33804d38c2165dec7b716d06b13010c/pyjwt-2.11.0-py3-none-any.whl", hash = "sha256:94a6bde30eb5c8e04fee991062b534071fd1439ef58d2adc9ccb823e7bcd0469", size = 28224, upload-time = "2026-01-30T19:59:54.539Z" },
+    { url = "https://files.pythonhosted.org/packages/15/70/70f895f404d363d291dcf62c12c85fdd47619ad9674ac0f53364d035925a/pyjwt-2.12.0-py3-none-any.whl", hash = "sha256:9bb459d1bdd0387967d287f5656bf7ec2b9a26645d1961628cda1764e087fd6e", size = 29700, upload-time = "2026-03-12T17:15:29.257Z" },
 ]
 
 [package.optional-dependencies]
