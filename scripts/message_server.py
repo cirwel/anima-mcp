@@ -9,7 +9,7 @@ Endpoints:
   POST /answer  - Answer a question from Lumen
 
 Connection methods (in order of preference):
-  1. HTTP to Pi's anima-mcp server (via LUMEN_HTTP_URL env var or ngrok)
+  1. HTTP to Pi's anima-mcp server (via LUMEN_HTTP_URL env var or Cloudflare tunnel)
   2. SSH fallback (via LUMEN_HOST env var)
 """
 import http.server
@@ -134,8 +134,7 @@ class LumenControlHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def handle_get_state(self):
-        """Get Lumen's current state via REST endpoint (same as ngrok)."""
-        # Try REST endpoint directly (same path as ngrok access)
+        """Get Lumen's current state via REST endpoint."""
         if LUMEN_HTTP_URL:
             try:
                 url = f"{LUMEN_HTTP_URL.rstrip('/')}/state"
@@ -233,7 +232,6 @@ except Exception as e:
 
     def handle_get_qa(self):
         """Get questions and answers from Lumen via REST endpoint."""
-        # Try REST endpoint first (same as ngrok)
         if LUMEN_HTTP_URL:
             try:
                 url = f"{LUMEN_HTTP_URL.rstrip('/')}/qa"
