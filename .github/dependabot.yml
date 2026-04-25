@@ -1,0 +1,55 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      runtime-deps:
+        patterns:
+          - "mcp"
+          - "pyyaml"
+          - "psutil"
+          - "Pillow"
+          - "aiohttp"
+          - "starlette"
+          - "uvicorn"
+          - "numpy"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-deps:
+        patterns:
+          - "pytest*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Pi-only adafruit-circuitpython-* deps pin against hardware drivers.
+      # Bumping in a PR that only runs ubuntu-latest CI gives no real signal,
+      # and a bad bump can brick Lumen on git_pull. Update manually when
+      # touching Pi hardware.
+      - dependency-name: "adafruit-circuitpython-*"
+      - dependency-name: "RPi.GPIO"
+      # Brain HAT / audio are optional + heavy + rarely used. Skip auto-bumps.
+      - dependency-name: "brainflow"
+      - dependency-name: "scipy"
+      - dependency-name: "pyaudio"
+      - dependency-name: "SpeechRecognition"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
+    labels:
+      - "dependencies"
+      - "ci"
