@@ -259,7 +259,7 @@ sudo ufw enable
 - [ ] Display/LEDs updating (if hardware present)
 - [ ] Sensors reading correctly (if hardware present)
 - [ ] MCP clients can connect
-- [ ] Ngrok tunnel working (if configured)
+- [ ] Cloudflare tunnel working (if configured)
 
 ---
 

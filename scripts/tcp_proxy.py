@@ -3,7 +3,7 @@
 
 Usage: tcp_proxy.py <local_port> <remote_host> <remote_port>
 
-Used to expose Pi's anima-mcp (Tailscale) on localhost so ngrok can tunnel it.
+Used to expose Pi's anima-mcp (Tailscale) on localhost so a tunnel (cloudflared, etc.) can forward it.
 """
 
 import asyncio

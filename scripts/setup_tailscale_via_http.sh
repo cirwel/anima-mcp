@@ -1,5 +1,5 @@
 #!/bin/bash
-# Activate Tailscale via HTTP — for headless Pi when ngrok is at limits
+# Activate Tailscale via HTTP — for headless Pi over LAN HTTP
 #
 # Prerequisites:
 #   1. Pi's HTTP (8766) is reachable: curl -s http://192.168.1.165:8766/health
@@ -15,7 +15,7 @@ PI_URL="${LUMEN_URL:-http://192.168.1.165:8766}"
 AUTH_KEY="${TAILSCALE_AUTH_KEY:-$1}"
 
 if [ -z "$AUTH_KEY" ]; then
-    echo "=== Tailscale via HTTP (ngrok alternative) ==="
+    echo "=== Tailscale via HTTP ==="
     echo ""
     echo "Usage: TAILSCALE_AUTH_KEY=tskey-auth-xxx ./scripts/setup_tailscale_via_http.sh"
     echo "   Or: ./scripts/setup_tailscale_via_http.sh tskey-auth-xxx"

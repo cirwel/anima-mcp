@@ -10,7 +10,7 @@ class TestOAuthEndpointsExist:
     def _build_app_with_oauth(self):
         """Helper: build the Starlette app with OAuth enabled."""
         env = {
-            "ANIMA_OAUTH_ISSUER_URL": "https://lumen-anima.ngrok.io",
+            "ANIMA_OAUTH_ISSUER_URL": "https://lumen.example.com",
             "ANIMA_OAUTH_SECRET": "test-secret",
             "ANIMA_OAUTH_AUTO_APPROVE": "true",
         }
