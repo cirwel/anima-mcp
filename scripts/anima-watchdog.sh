@@ -11,6 +11,12 @@ STATE_DIR="/tmp/anima-watchdog"
 MIN_DOWN_SECONDS=300    # 5 minutes before we act
 MIN_RESTART_GAP=600     # 10 minutes between restart attempts
 
+# Display-silent-failure: broker stays "active" but ST7789 has latched off.
+# Broker logs `[Errno 5] Input/output error` ~every 2s; healthy = 0.
+# Threshold 10 in 60s is well above any transient SPI hiccup.
+DISPLAY_ERROR_WINDOW=60
+DISPLAY_ERROR_THRESHOLD=10
+
 mkdir -p "$STATE_DIR"
 
 log() {
@@ -117,10 +123,48 @@ check_and_restart() {
     fi
 }
 
+check_display_silent_failure() {
+    local svc="anima-broker"
+    local state
+    state=$(systemctl is-active "$svc" 2>/dev/null)
+
+    # If broker isn't active, service-down path above handles it.
+    if [ "$state" != "active" ]; then
+        return 0
+    fi
+
+    local err_count
+    err_count=$(journalctl -u "$svc" --since "${DISPLAY_ERROR_WINDOW} seconds ago" --no-pager 2>/dev/null \
+        | grep -c "\[Errno 5\] Input/output error")
+    # grep -c exits 1 on zero matches; ensure numeric.
+    err_count=${err_count:-0}
+
+    if [ "$err_count" -lt "$DISPLAY_ERROR_THRESHOLD" ]; then
+        return 0
+    fi
+
+    if ! can_restart "$svc"; then
+        log "WARN: display Errno 5 flood (${err_count} in ${DISPLAY_ERROR_WINDOW}s) - skipping, restarted too recently"
+        return 0
+    fi
+
+    log "RESTART: display silent failure (Errno 5 x${err_count} in ${DISPLAY_ERROR_WINDOW}s) - restarting anima-broker + anima"
+    if sudo systemctl restart anima-broker anima 2>&1; then
+        record_restart "anima-broker"
+        record_restart "anima"
+        log "OK: display-triggered restart fired"
+    else
+        record_restart "anima-broker"
+        record_restart "anima"
+        log "FAIL: display-triggered restart command failed"
+    fi
+}
+
 # --- Main ---
 
 check_and_restart "anima-broker"
 check_and_restart "anima"
+check_display_silent_failure
 
 # Keep log from growing (keep last 200 lines)
 if [ -f "$LOGFILE" ]; then
