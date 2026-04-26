@@ -403,6 +403,28 @@ class TestLumenQaExtended:
         assert "not found" in data["error"]
         assert "recent_question_ids" in data
 
+    async def test_answer_mode_accepts_integer_question_id(self):
+        # All-numeric hex IDs (e.g. "83372556") may arrive as ints because some
+        # MCP relays coerce numeric-looking strings. The handler must accept
+        # either form and stringify before lookup.
+        from anima_mcp.handlers.communication import handle_lumen_qa
+
+        q = SimpleNamespace(message_id="83372556", msg_type="question", text="ok?")
+        board = SimpleNamespace(_messages=[q], _load=MagicMock())
+        msg = SimpleNamespace(message_id="m1")
+        with patch("anima_mcp.messages.get_board", return_value=board), \
+             patch("anima_mcp.messages.add_agent_message", return_value=msg), \
+             patch("anima_mcp.handlers.communication._get_unitares_bridge", return_value=None), \
+             patch("anima_mcp.knowledge.extract_insight_from_answer", AsyncMock(return_value=None)), \
+             patch("anima_mcp.accessors._get_growth", return_value=None):
+            data = parse_result(await handle_lumen_qa({
+                "question_id": 83372556,
+                "answer": "answered via integer id",
+            }))
+
+        assert data["success"] is True
+        assert data["question_id"] == "83372556"
+
 
 @pytest.mark.asyncio
 class TestSayAndPrimitiveFeedbackEdges:

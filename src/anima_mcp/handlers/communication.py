@@ -121,6 +121,8 @@ async def handle_lumen_qa(arguments: dict) -> list[TextContent]:
     from ..messages import get_board, MESSAGE_TYPE_QUESTION, add_agent_message
 
     question_id = arguments.get("question_id")
+    if isinstance(question_id, int):
+        question_id = str(question_id)
     answer = arguments.get("answer")
     limit = arguments.get("limit", 5)
     client_session_id = arguments.get("client_session_id") or _get_caller_session_id()
