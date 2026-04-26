@@ -64,8 +64,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "question_id": {
-                    "type": "string",
-                    "description": "Question ID to answer (from list mode). Omit to list questions.",
+                    "type": ["string", "integer"],
+                    "description": "Question ID to answer (from list mode). Omit to list questions. Integer accepted because some MCP relays coerce all-numeric hex IDs to int.",
                 },
                 "answer": {
                     "type": "string",
@@ -534,7 +534,10 @@ def _json_type_to_python(json_type):
         has_null = "null" in json_type
 
         if non_null:
-            base_type = _json_type_to_python(non_null[0])
+            if len(non_null) == 1:
+                base_type = _json_type_to_python(non_null[0])
+            else:
+                base_type = Union[tuple(_json_type_to_python(t) for t in non_null)]
             if has_null:
                 return Optional[base_type]
             return base_type
