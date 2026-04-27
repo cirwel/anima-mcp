@@ -1291,7 +1291,7 @@ cd /Users/cirwel/projects/anima-mcp && git push origin main
 mcp__anima__git_pull(restart=true)
 
 # Or manually
-ssh unitares-anima@100.79.215.83 'cd ~/anima-mcp && git pull && sudo systemctl restart anima-broker anima'
+ssh unitares-anima@<PI_TAILSCALE_IP> 'cd ~/anima-mcp && git pull && sudo systemctl restart anima-broker anima'
 ```
 
 **Step 4: Verify deployment**

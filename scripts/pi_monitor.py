@@ -20,8 +20,10 @@ from pathlib import Path
 from datetime import datetime
 
 # Configuration
-PI_TAILSCALE_IP = "100.79.215.83"
-PI_PORT = 8766
+# Tailscale IPs are operator-specific and change after Pi reinstalls; verify
+# with `tailscale status` and set PI_TAILSCALE_IP env var (no default).
+PI_TAILSCALE_IP = os.environ.get("PI_TAILSCALE_IP", "")
+PI_PORT = int(os.environ.get("PI_PORT", "8766"))
 CHECK_INTERVAL = 60  # seconds
 FAILURE_THRESHOLD = 2  # consecutive failures before alerting
 PID_FILE = Path.home() / ".pi_monitor.pid"
@@ -182,6 +184,11 @@ def stop_daemon():
 
 
 def main():
+    if not PI_TAILSCALE_IP:
+        print("ERROR: PI_TAILSCALE_IP not set. Run `tailscale status` and export it:")
+        print("  export PI_TAILSCALE_IP=100.x.y.z")
+        sys.exit(2)
+
     if len(sys.argv) > 1:
         if sys.argv[1] == "--daemon":
             if PID_FILE.exists():

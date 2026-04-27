@@ -580,7 +580,7 @@ def get_fastmcp() -> "FastMCP":
                 allowed_hosts=[
                     "127.0.0.1:*", "localhost:*", "[::1]:*",
                     "192.168.1.165:*", "192.168.1.151:*",
-                    "100.79.215.83:*",
+                    "<PI_TAILSCALE_IP>:*",
                     "lumen-anima.ngrok.io",
                     "0.0.0.0:*",
                 ],
