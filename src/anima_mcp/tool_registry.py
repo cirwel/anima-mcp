@@ -487,21 +487,20 @@ _DEFAULT_ALLOWED_HOSTS = [
     "127.0.0.1:*",
     "localhost:*",
     "[::1]:*",
-    "192.168.1.165:*",
-    "192.168.1.151:*",
-    "100.78.71.1:*",
     "lumen.cirwel.org",
     "0.0.0.0:*",
+    # Operator-specific LAN/Tailscale hosts belong in ANIMA_MCP_ALLOWED_HOSTS,
+    # not baked into a public default.
 ]
 
 _DEFAULT_ALLOWED_ORIGINS = [
     "http://127.0.0.1:*",
     "http://localhost:*",
     "http://[::1]:*",
-    "http://192.168.1.165:*",
-    "http://192.168.1.151:*",
     "https://lumen.cirwel.org",
     "null",
+    # Operator-specific LAN/Tailscale origins belong in ANIMA_ALLOWED_ORIGINS,
+    # not baked into a public default.
 ]
 
 

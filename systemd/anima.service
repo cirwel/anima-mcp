@@ -13,10 +13,13 @@ WorkingDirectory=/home/unitares-anima/anima-mcp
 
 # Environment variables (secrets from ~/.anima/anima.env — see config/anima.env.example)
 EnvironmentFile=-/home/unitares-anima/.anima/anima.env
-Environment="ANIMA_ID=49e14444-b59e-48f1-83b8-b36a988c9975"
+# ANIMA_ID is read from ~/anima.db; do not bake an operator's UUID into a
+# public template. Set ANIMA_ID in ~/.anima/anima.env only when forcing a
+# specific creature_id (e.g. restoring an identity).
+# UNITARES_URL is operator-specific (Tailscale-resolved). Set it in
+# ~/.anima/anima.env using the hostname form so it survives Mac IP changes.
 Environment="ANIMA_DB=/home/unitares-anima/.anima/anima.db"
 Environment="ANIMA_CONFIG=/home/unitares-anima/anima-mcp/anima_config.yaml"
-Environment="UNITARES_URL=http://100.96.201.46:8767/mcp/"
 Environment="ANIMA_OAUTH_ISSUER_URL=https://lumen.cirwel.org"
 Environment="ANIMA_OAUTH_AUTO_APPROVE=true"
 Environment="PYTHONUNBUFFERED=1"

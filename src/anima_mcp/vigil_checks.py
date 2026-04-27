@@ -27,8 +27,9 @@ def _parse_urls() -> List[str]:
     raw = os.environ.get("LUMEN_HEALTH_URLS")
     if raw:
         return [u.strip() for u in raw.split(",") if u.strip()]
+    # Default uses Tailscale hostname (resolves via magic-DNS); operator-
+    # specific LAN IPs belong in LUMEN_HEALTH_URLS, not in a public default.
     return [
-        "http://192.168.1.165:8766/health",   # LAN
         "http://lumen:8766/health",            # Tailscale hostname
     ]
 
