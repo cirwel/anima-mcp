@@ -15,7 +15,7 @@ EnvironmentFile=-/home/unitares-anima/.anima/anima.env
 Environment="ANIMA_ID=49e14444-b59e-48f1-83b8-b36a988c9975"
 Environment="ANIMA_DB=/home/unitares-anima/anima.db"
 Environment="ANIMA_CONFIG=/home/unitares-anima/anima-mcp/anima_config.yaml"
-Environment="UNITARES_URL=http://unitares.tail76aee6.ts.net:8767/mcp/"
+# Set UNITARES_URL in ~/.anima/anima.env (operator-specific tailnet; see anima.env.example)
 Environment="PYTHONUNBUFFERED=1"
 
 ExecStart=/home/unitares-anima/anima-mcp/.venv/bin/anima-creature
