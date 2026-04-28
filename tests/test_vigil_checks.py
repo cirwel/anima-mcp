@@ -68,6 +68,11 @@ def test_lumen_health_falls_back_to_second_url(monkeypatch):
     from anima_mcp import vigil_checks
 
     attempts = []
+    monkeypatch.setattr(
+        vigil_checks.LumenHealth,
+        "URLS",
+        ["http://primary.local:8766/health", "http://backup.local:8766/health"],
+    )
 
     def fake(url, timeout=10.0):
         attempts.append(url)
