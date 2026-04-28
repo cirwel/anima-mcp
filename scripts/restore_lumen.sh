@@ -15,9 +15,11 @@ ANIMA_DIR="/Users/cirwel/projects/anima-mcp"
 SSH_KEY="${HOME}/.ssh/id_ed25519_pi"
 SSH_OPTS="-i ${SSH_KEY} -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new"
 
-# Fallback hosts if primary fails
+# Fallback hosts if primary fails. Override with PI_FALLBACK_HOSTS env
+# (space-separated) to avoid baking operator-specific addresses into a public
+# template. Tailscale IPs change after reinstalls — prefer hostnames.
 if [ "$PI_HOST" = "lumen.local" ]; then
-    HOSTS="lumen.local 192.168.1.165 100.84.100.128"
+    HOSTS="${PI_FALLBACK_HOSTS:-lumen.local lumen}"
 else
     HOSTS="$PI_HOST"
 fi

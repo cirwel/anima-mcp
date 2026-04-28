@@ -9,17 +9,22 @@ ANIMA_DIR="/home/unitares-anima/.anima"
 DB_PATH="$ANIMA_DIR/anima.db"
 SSH_KEY="/home/unitares-anima/.ssh/id_ed25519"
 SSH_OPTS="-i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes"
-BACKUP_USER="cirwel"
+BACKUP_USER="${BACKUP_USER:-cirwel}"
 BACKUP_DIR="backups/lumen"
 MARKER="$ANIMA_DIR/.restored_marker"
 LOG_TAG="anima-restore"
 
-# Mac connection targets (tried in order)
-MAC_HOSTS=(
-    "192.168.1.183"        # LAN
-    "lumen-mac"            # Tailscale hostname
-    "100.96.201.46"        # Tailscale IP
-)
+# Mac connection targets (tried in order). Override with BACKUP_MAC_HOSTS env
+# (space-separated) to avoid baking operator-specific addresses into a public
+# template. Tailscale IPs change after reinstalls — prefer hostnames.
+if [ -n "${BACKUP_MAC_HOSTS:-}" ]; then
+    # shellcheck disable=SC2206
+    MAC_HOSTS=( $BACKUP_MAC_HOSTS )
+else
+    MAC_HOSTS=(
+        "lumen-mac"            # Tailscale hostname (set in your tailnet)
+    )
+fi
 
 log() {
     logger -t "$LOG_TAG" "$1"

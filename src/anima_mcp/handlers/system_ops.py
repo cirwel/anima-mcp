@@ -33,8 +33,13 @@ def _spawn_delayed_restart() -> None:
 
 
 def _pi_ssh_host() -> str:
-    """Return Pi host/IP for user-facing SSH instructions."""
-    return os.environ.get("ANIMA_PI_HOST", "100.78.71.1")
+    """Return Pi host/IP for user-facing SSH instructions.
+
+    Default falls back to the magic-DNS hostname rather than a literal
+    Tailscale IP — IPs change after reinstalls and operator-specific IPs
+    don't belong in a public default.
+    """
+    return os.environ.get("ANIMA_PI_HOST", "lumen")
 
 
 async def _delayed_restart():

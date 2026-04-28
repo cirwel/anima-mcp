@@ -12,7 +12,10 @@ WorkingDirectory=/home/unitares-anima/anima-mcp
 # Secrets from ~/.anima/anima.env (see config/anima.env.example)
 EnvironmentFile=-/home/unitares-anima/.anima/anima.env
 
-Environment="ANIMA_ID=49e14444-b59e-48f1-83b8-b36a988c9975"
+# ANIMA_ID is normally read from ~/anima.db; only set here as an override.
+# See anima.env.example for the env-var form. A fresh install (no DB) mints
+# a new creature_id automatically — do NOT bake the original operator's UUID
+# into a public template.
 Environment="ANIMA_DB=/home/unitares-anima/anima.db"
 Environment="ANIMA_CONFIG=/home/unitares-anima/anima-mcp/anima_config.yaml"
 # Set UNITARES_URL in ~/.anima/anima.env (operator-specific tailnet; see anima.env.example)
