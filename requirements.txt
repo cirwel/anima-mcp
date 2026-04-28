@@ -8,7 +8,7 @@ mcp>=1.0.0,<2.0.0
 pyyaml>=6.0,<7.0
 
 # Data handling
-psutil>=5.9.0,<6.0.0        # System resource monitoring
+psutil>=5.9.0,<8.0.0        # System resource monitoring
 numpy>=1.24.0,<3.0.0        # Memory field operations (resonance era)
 
 # Image processing (for display rendering, even on Mac)
