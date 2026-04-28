@@ -240,19 +240,25 @@ async def test_margin_calculation():
 def test_get_mcp_url_with_mcp():
     """Test _get_mcp_url when URL already contains /mcp."""
     bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp")
-    assert bridge._get_mcp_url() == "http://localhost:8767/mcp"
+    assert bridge._get_mcp_url() == "http://localhost:8767/mcp/"
 
 
 def test_get_mcp_url_with_sse():
     """Test _get_mcp_url converts /sse to /mcp."""
     bridge = UnitaresBridge(unitares_url="http://localhost:8767/sse")
-    assert bridge._get_mcp_url() == "http://localhost:8767/mcp"
+    assert bridge._get_mcp_url() == "http://localhost:8767/mcp/"
 
 
 def test_get_mcp_url_bare():
     """Test _get_mcp_url appends /mcp to bare URL."""
     bridge = UnitaresBridge(unitares_url="http://localhost:8767")
-    assert bridge._get_mcp_url() == "http://localhost:8767/mcp"
+    assert bridge._get_mcp_url() == "http://localhost:8767/mcp/"
+
+
+def test_get_health_url_from_mcp_url():
+    """Availability checks should hit /health, not /mcp/health."""
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp/")
+    assert bridge._get_health_url() == "http://localhost:8767/health"
 
 
 def test_parse_mcp_response_json():

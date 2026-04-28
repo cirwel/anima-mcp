@@ -125,11 +125,21 @@ class UnitaresBridge:
 
     def _get_mcp_url(self) -> str:
         """Resolve the MCP endpoint URL from the configured base URL."""
-        if '/mcp' in self._url:
-            return self._url
-        elif '/sse' in self._url:
-            return self._url.replace('/sse', '/mcp')
-        return f"{self._url}/mcp"
+        base = self._url.rstrip("/")
+        if "/mcp" in base:
+            return base.split("/mcp", 1)[0] + "/mcp/"
+        if base.endswith("/sse"):
+            return base[:-len("/sse")] + "/mcp/"
+        return f"{base}/mcp/"
+
+    def _get_health_url(self) -> str:
+        """Resolve UNITARES health URL from either base, /mcp, or legacy /sse URL."""
+        base = self._url.rstrip("/")
+        if "/mcp" in base:
+            base = base.split("/mcp", 1)[0]
+        elif base.endswith("/sse"):
+            base = base[:-len("/sse")]
+        return f"{base}/health"
 
     @staticmethod
     def _parse_mcp_response(text: str, content_type: str) -> Any:
@@ -186,7 +196,7 @@ class UnitaresBridge:
             session = await self._get_session()
 
             # Try health check or list_tools endpoint
-            health_url = self._url.replace('/sse', '/health') if '/sse' in self._url else f"{self._url}/health"
+            health_url = self._get_health_url()
             try:
                 import aiohttp
                 async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=self._timeout)) as response:
