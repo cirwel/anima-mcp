@@ -9,6 +9,7 @@ import json
 import time
 import pytest
 from datetime import datetime
+from dataclasses import replace
 
 from anima_mcp.experiential_filter import (
     ExperientialFilter,
@@ -386,15 +387,24 @@ class TestIntegrationSenseSelf:
         import anima_mcp.computational_neural as cn
 
         cal = NervousSystemCalibration()
+        deterministic_readings = replace(
+            normal_readings,
+            eeg_alpha_power=0.9,
+            eeg_theta_power=0.7,
+            eeg_delta_power=0.8,
+            eeg_gamma_power=0.2,
+        )
 
         # sense_self() mutates the global neural EMA state on every call.
         # Reset between comparisons so neutral salience is measured from the
         # same initial neural state rather than from sequential drift.
         cn._sensor = None
-        anima_none = sense_self(normal_readings, cal)
+        anima_none = sense_self(deterministic_readings, cal)
         cn._sensor = None
         salience = {dim: 1.0 for dim in DIMENSIONS}
-        anima_neutral = sense_self(normal_readings, cal, salience_weights=salience)
+        anima_neutral = sense_self(
+            deterministic_readings, cal, salience_weights=salience
+        )
 
         assert abs(anima_none.warmth - anima_neutral.warmth) < 0.05
         assert abs(anima_none.clarity - anima_neutral.clarity) < 0.05
