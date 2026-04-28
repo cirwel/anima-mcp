@@ -23,6 +23,12 @@ Environment="ANIMA_CONFIG=/home/unitares-anima/anima-mcp/anima_config.yaml"
 Environment="ANIMA_OAUTH_ISSUER_URL=https://lumen.cirwel.org"
 Environment="ANIMA_OAUTH_AUTO_APPROVE=true"
 Environment="PYTHONUNBUFFERED=1"
+# Server reads broker-published sensor data from /dev/shm — never opens
+# /dev/i2c-1. Pre-fix, lazy PiSensors() in the server held a duplicate
+# I2C bus handle that contaminated BMP280 state (silent at 0x77 for ~42h
+# on 2026-04-26 → 2026-04-28). Broker (anima-broker.service) is the sole
+# I2C owner; it does NOT set this env var.
+Environment="ANIMA_SENSORS_BACKEND=shm"
 
 # Quiet period after stop: let existing connections drain before restart begins.
 # Prevents the connection burst that crashes brcmfmac WiFi firmware on Pi.
