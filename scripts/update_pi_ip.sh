@@ -52,5 +52,28 @@ if [ -f "$CLAUDEMD" ]; then
         log "Updated CLAUDE.md"
 fi
 
+# Update governance-mcp launchd plist (Steward needs PI_MCP_URL_TAILSCALE).
+# Without this, Steward's 5-min sync cascade fails silently after the next
+# governance-mcp restart — there's no in-process default since the plugin
+# stopped hardcoding operator IPs (CIRWEL/unitares-pi-plugin#2).
+PLIST="$HOME/Library/LaunchAgents/com.unitares.governance-mcp.plist"
+if [ -f "$PLIST" ]; then
+    NEW_TS_URL="http://${NEW_TS_IP}:8766/mcp/"
+    # PlistBuddy Set fails if the key is absent, so try Set then fall back to Add.
+    if /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:PI_MCP_URL_TAILSCALE ${NEW_TS_URL}" "$PLIST" 2>/dev/null; then
+        log "Updated governance-mcp plist: PI_MCP_URL_TAILSCALE=${NEW_TS_URL}"
+    elif /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:PI_MCP_URL_TAILSCALE string ${NEW_TS_URL}" "$PLIST" 2>/dev/null; then
+        log "Added PI_MCP_URL_TAILSCALE to governance-mcp plist"
+    else
+        log "WARN: could not update PI_MCP_URL_TAILSCALE in $PLIST"
+    fi
+    # Reload so Steward picks up the new IP. This briefly restarts governance-mcp.
+    if launchctl unload "$PLIST" 2>/dev/null && launchctl load "$PLIST" 2>/dev/null; then
+        log "Reloaded com.unitares.governance-mcp (Steward will dial the new IP on next 5-min cycle)"
+    else
+        log "WARN: plist edited but launchctl reload failed — restart governance-mcp manually"
+    fi
+fi
+
 log "Done. All configs point to $NEW_TS_IP:8766"
 log "Restart Claude Code / Cursor to pick up new MCP URL."
