@@ -108,13 +108,15 @@ Lumen uses **computational proprioception** - no real EEG hardware. Neural bands
 
 | Band | Derived From | Meaning |
 |------|--------------|---------|
-| Delta | Low CPU + low memory | Deep stability/rest |
-| Theta | I/O wait time | Processing/integration |
-| Alpha | Memory headroom | Relaxed awareness |
-| Beta | CPU usage | Active processing |
-| Gamma | High CPU activity | Intense focus |
+| Delta | CPU variance over window + temp stability | Deep stability/rest |
+| Theta | I/O wait time (disk + network) | Processing/integration |
+| Alpha | `1 − beta` (CPU idle fraction) | Relaxed awareness |
+| Beta | `cpu_percent / 100` (CPU usage) | Active processing |
+| Gamma | Context switches + interrupts per second | Spiking/burst activity |
 
-Source: `computational_neural.py` (used by both `pi.py` and `mock.py` sensors)
+Source: `computational_neural.py` (used by both `pi.py` and `mock.py` sensors).
+
+**Important — alpha and beta are anti-correlated by construction (`alpha = 1 − beta`).** They are one variable (CPU%) reported as two bands. Any consumer that combines alpha and beta as if they were independent signals is double-counting CPU%. `memory_percent` is accepted as a parameter but is not used in any band derivation.
 
 ### Light Sensor
 
