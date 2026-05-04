@@ -50,7 +50,7 @@ class UnitaresBridge:
         self,
         unitares_url: Optional[str] = None,
         agent_id: Optional[str] = None,
-        timeout: float = 5.0
+        timeout: float = 30.0
     ):
         """
         Initialize bridge.
