@@ -38,6 +38,13 @@ updates:
       - dependency-name: "scipy"
       - dependency-name: "pyaudio"
       - dependency-name: "SpeechRecognition"
+      # Constraint-relaxation PRs slip past update-types filters because
+      # dependabot classifies them as constraint updates, not version bumps.
+      # Block future major-cap relaxations explicitly.
+      - dependency-name: "pytest-asyncio"
+        versions: [">=2.0.0"]
+      - dependency-name: "types-psutil"
+        versions: [">=8.0.0"]
     labels:
       - "dependencies"
 
