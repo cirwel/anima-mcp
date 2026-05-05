@@ -425,6 +425,11 @@ class UnitaresBridge:
                 "ethical_drift": ethical_drift,
                 "response_text": status_text,
                 "sensor_data": sensor_data,
+                # Broker only reads action+margin from the response — opt out of
+                # response-shaping enrichments (knowledge_surfacing, learning_context,
+                # mirror_signals) the broker discards anyway. Gate is in unitares
+                # PR #347 (lite_safe).
+                "response_mode": "minimal",
             }
 
             # Add trajectory signature if available (enables lineage tracking in UNITARES)
