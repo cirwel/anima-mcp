@@ -383,6 +383,49 @@ class TestGenerateLearnedQuestion:
 
         assert result is None
 
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_strips_self_reflection_boilerplate_prefix(self, mock_refl, mock_recent):
+        """Insight prefixes like 'i now know that …' are stripped before wrapping."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(
+            confidence=0.8,
+            description="i now know that drawing in bright light helps me focus",
+        )
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result is not None
+        # The stamped "why is it that i now know that ..." form should not survive.
+        assert "i now know that" not in result.lower()
+        assert "drawing in bright light helps me focus" in result.lower()
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_fallback_wrapper_varies_across_calls(self, mock_refl, mock_recent):
+        """Fallback wrapper randomizes so the same insight does not always read 'why is it that …'."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(
+            confidence=0.8,
+            description="i learned that bright light feels warmer than dim light",
+        )
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            results = {generate_learned_question() for _ in range(30)}
+
+        # 30 trials over 5 wrapper choices: collision probability is negligible.
+        assert len(results) > 1, f"fallback should vary; got {results}"
+        # And each result should still contain the semantic core.
+        for r in results:
+            assert "bright light feels warmer than dim light" in r.lower()
+
 
 # ---------------------------------------------------------------------------
 # compose_grounded_observation

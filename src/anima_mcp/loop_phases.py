@@ -119,49 +119,73 @@ def generate_learned_question() -> Optional[str]:
     asked recently.
     """
     import random
-    from .messages import get_recent_questions
+    from .messages import (
+        _question_semantic_core,
+        get_recent_questions,
+        questions_similar,
+    )
 
     recent = get_recent_questions(hours=24)
-    recent_texts = {q.get("text", "").lower() for q in recent}
+    recent_texts = [r.get("text", "") for r in recent]
+
+    def _fresh(candidate: str) -> bool:
+        for rt in recent_texts:
+            if rt and questions_similar(candidate, rt):
+                return False
+        return True
 
     candidates = []
 
-    # 1. Questions from self-reflection insights
+    # 1. Questions from self-reflection insights (sample — avoid huge pools)
     try:
         from .self_reflection import get_reflection_system
-        for insight in get_reflection_system().get_insights():
-            if insight.confidence < 0.5:
-                continue
-            desc = insight.description.lower()
-            # Convert insight to a deepening question
-            if "when" in desc:
-                q = f"why does {desc.split('when')[-1].strip()} affect me?"
-            elif "tend" in desc:
-                q = f"what is it about {desc.split('tend')[-1].strip()} that matters?"
+        insights = [i for i in get_reflection_system().get_insights() if i.confidence >= 0.5]
+        random.shuffle(insights)
+        for insight in insights[:10]:
+            # Strip self_reflection boilerplate ("i now know that …", "i learned that …")
+            # so wrappers attach to the semantic core, not stacked templates.
+            core = _question_semantic_core(insight.description.lower())
+            if "when" in core:
+                q = f"why does {core.split('when')[-1].strip()} affect me?"
+            elif "tend" in core:
+                q = f"what is it about {core.split('tend')[-1].strip()} that matters?"
             else:
-                q = f"why is it that {desc}?"
+                q = random.choice([
+                    f"what does it mean that {core}?",
+                    f"how do i know that {core}?",
+                    f"is it always true that {core}?",
+                    f"what would change if {core} weren't true?",
+                    f"why is it that {core}?",
+                ])
             candidates.append(q)
     except Exception:
         pass
 
-    # 2. Questions from uncertain beliefs (curiosity about unknowns)
+    # 2. Questions from beliefs — cap count (was: every belief → 1–2 templates)
     try:
         from .self_model import get_self_model
         model = get_self_model()
-        for bid, belief in model.beliefs.items():
+        belief_items = list(model.beliefs.items())
+        random.shuffle(belief_items)
+        added = 0
+        for _bid, belief in belief_items:
+            if added >= 4:
+                break
             if 0.3 <= belief.confidence <= 0.5:
                 q = f"am I really {belief.description.lower().rstrip('.')}?"
                 candidates.append(q)
+                added += 1
             elif belief.confidence > 0.7:
                 q = f"what about {belief.description.lower().rstrip('.')} matters most?"
                 candidates.append(q)
+                added += 1
     except Exception:
         pass
 
-    # Deduplicate against recent
-    available = [q for q in candidates if q.lower() not in recent_texts]
-    if available:
-        return random.choice(available)
+    random.shuffle(candidates)
+    for q in candidates:
+        if _fresh(q):
+            return q
     return None
 
 

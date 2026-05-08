@@ -22,6 +22,98 @@ MESSAGE_TYPE_USER = "user"                # Left by user via MCP tool
 MESSAGE_TYPE_AGENT = "agent"              # Left by AI agents
 MESSAGE_TYPE_SYSTEM = "system"            # System events
 
+# Question posting — agency + learned templates (reduce board churn)
+MIN_QUESTION_INTERVAL_SECONDS = 600  # 10 minutes between queued questions
+MAX_UNANSWERED_QUESTIONS_SOFT_CAP = 6  # hold new questions until backlog shrinks
+QUESTION_EXPIRY_SECONDS = 14_400  # 4 hours before stale unanswered questions expire
+
+_QUESTION_BOILERPLATE_PREFIXES = (
+    "why is it that i now know that ",
+    "why is it that i learned that ",
+    "why is it that i know this about myself: ",
+    "why is it that ",
+    "what does it mean that ",
+    "how do i know that ",
+    "is it always true that ",
+    "what would change if ",
+    # self_reflection insight stems — when an insight description (rather than a
+    # full question) reaches semantic-core stripping, peel these off too.
+    "i now know that ",
+    "i learned that ",
+    "i know this about myself: ",
+)
+
+
+def _question_semantic_core(normalized: str) -> str:
+    """Strip leading template noise from normalized question text."""
+    t = normalized
+    changed = True
+    while changed:
+        changed = False
+        for p in _QUESTION_BOILERPLATE_PREFIXES:
+            if t.startswith(p):
+                t = t[len(p) :].lstrip()
+                changed = True
+                break
+    return t
+
+
+def questions_similar(q1: str, q2: str) -> bool:
+    """Return True when two questions are similar enough to suppress churn."""
+
+    def normalize(s: str) -> str:
+        return s.lower().strip().rstrip("?!.")
+
+    n1, n2 = normalize(q1), normalize(q2)
+
+    # Exact match after normalization
+    if n1 == n2:
+        return True
+
+    words1 = set(n1.split())
+    words2 = set(n2.split())
+    if not words1 or not words2:
+        return n1 == n2
+
+    intersection = words1 & words2
+    union = words1 | words2
+    jaccard = len(intersection) / len(union) if union else 0
+
+    # 0.52 catches repeated learned-question templates without overblocking.
+    if jaccard > 0.52:
+        return True
+
+    core1 = _question_semantic_core(n1)
+    core2 = _question_semantic_core(n2)
+    if core1 and core2 and (core1 != n1 or core2 != n2):
+        cw1 = set(core1.split())
+        cw2 = set(core2.split())
+        stop = {
+            "i", "a", "the", "is", "that", "and", "or", "of", "to", "in", "it", "my", "me",
+        }
+        cw1 -= stop
+        cw2 -= stop
+        if len(cw1) >= 4 and len(cw2) >= 4:
+            union = cw1 | cw2
+            core_j = len(cw1 & cw2) / len(union) if union else 0.0
+            if core_j > 0.58:
+                return True
+
+    # Check for common question stems (prevents "what connects X" repetition)
+    stems = [
+        "what connects",
+        "why did so many",
+        "what changed",
+        "why did it get",
+        "what caused",
+        "how are these",
+    ]
+    for stem in stems:
+        if stem in n1 and stem in n2:
+            return True
+
+    return False
+
 
 def _get_persistent_path() -> Path:
     """Get persistent path for messages - survives reboots."""
@@ -409,6 +501,24 @@ class MessageBoard:
             "question_length": len(question),
         }
 
+    def _expire_old_questions(self, now: Optional[float] = None) -> bool:
+        """Mark stale unanswered questions answered so they do not block new ones."""
+        current = time.time() if now is None else now
+        cutoff = current - QUESTION_EXPIRY_SECONDS
+        expired_any = False
+        for m in self._messages:
+            if (
+                m.msg_type == MESSAGE_TYPE_QUESTION
+                and not m.answered
+                and m.timestamp < cutoff
+            ):
+                m.answered = True
+                expired_any = True
+                print(f"[Questions] Expired old question: {m.text[:50]}...", file=sys.stderr, flush=True)
+        if expired_any:
+            self._save()
+        return expired_any
+
     def add_question(self, text: str, author: str = "lumen", context: Optional[str] = None) -> Optional[Message]:
         """Add a question from Lumen - seeking response from agents/user.
 
@@ -420,17 +530,21 @@ class MessageBoard:
         import time
 
         now = time.time()
+        self._expire_old_questions(now)
 
-        # Rate limit: minimum 3 minutes between questions (prevents backlog)
-        MIN_QUESTION_INTERVAL = 180  # 3 minutes
         recent_questions = [m for m in self._messages if m.msg_type == MESSAGE_TYPE_QUESTION]
+
+        unanswered_ct = sum(1 for m in recent_questions if not m.answered)
+        if unanswered_ct >= MAX_UNANSWERED_QUESTIONS_SOFT_CAP:
+            return None
+
         if recent_questions:
             last_question_time = recent_questions[-1].timestamp
-            if now - last_question_time < MIN_QUESTION_INTERVAL:
+            if now - last_question_time < MIN_QUESTION_INTERVAL_SECONDS:
                 return None  # Too soon since last question
 
-        # Deduplication: Don't ask similar questions within 4 hours
-        four_hours_ago = now - 14400
+        # Deduplication: don't ask similar questions within the expiry window.
+        four_hours_ago = now - QUESTION_EXPIRY_SECONDS
 
         for q in recent_questions[-20:]:
             if q.timestamp > four_hours_ago:
@@ -467,47 +581,8 @@ class MessageBoard:
         return None
 
     def _questions_similar(self, q1: str, q2: str) -> bool:
-        """Check if two questions are similar (fuzzy matching).
-
-        Returns True if questions are too similar to ask again.
-        """
-        # Normalize: lowercase, strip punctuation
-        def normalize(s: str) -> str:
-            return s.lower().strip().rstrip("?!.")
-
-        n1, n2 = normalize(q1), normalize(q2)
-
-        # Exact match after normalization
-        if n1 == n2:
-            return True
-
-        # Check word overlap (Jaccard similarity > 0.6 = too similar)
-        words1 = set(n1.split())
-        words2 = set(n2.split())
-        if not words1 or not words2:
-            return n1 == n2
-
-        intersection = words1 & words2
-        union = words1 | words2
-        jaccard = len(intersection) / len(union) if union else 0
-
-        if jaccard > 0.6:
-            return True
-
-        # Check for common question stems (prevents "what connects X" repetition)
-        stems = [
-            "what connects",
-            "why did so many",
-            "what changed",
-            "why did it get",
-            "what caused",
-            "how are these",
-        ]
-        for stem in stems:
-            if stem in n1 and stem in n2:
-                return True
-
-        return False
+        """Check if two questions are similar (fuzzy matching)."""
+        return questions_similar(q1, q2)
 
     def get_unanswered_questions(self, limit: int = 5, auto_expire: bool = True) -> List[Message]:
         """Get unanswered questions for agents to respond to.
@@ -520,18 +595,7 @@ class MessageBoard:
 
         # Auto-expire old questions so Lumen can ask new ones
         if auto_expire:
-            now = time.time()
-            four_hours_ago = now - 14400  # 4 hour expiry (was 1 hour)
-            expired_any = False
-            for m in self._messages:
-                if (m.msg_type == MESSAGE_TYPE_QUESTION and
-                    not m.answered and
-                    m.timestamp < four_hours_ago):
-                    m.answered = True  # Mark as expired/answered
-                    expired_any = True
-                    print(f"[Questions] Expired old question: {m.text[:50]}...", file=sys.stderr, flush=True)
-            if expired_any:
-                self._save()
+            self._expire_old_questions()
 
         questions = [m for m in self._messages if m.msg_type == MESSAGE_TYPE_QUESTION and not m.answered]
         return questions[-limit:]
@@ -554,13 +618,13 @@ class MessageBoard:
         }
 
         # Find orphaned questions (answered=True but no actual answer, and not expired by age)
-        four_hours_ago = time.time() - 14400
+        expiry_cutoff = time.time() - QUESTION_EXPIRY_SECONDS
         repaired = 0
         for m in self._messages:
             if (m.msg_type == MESSAGE_TYPE_QUESTION and
                 m.answered and
                 m.message_id not in answered_ids and
-                m.timestamp >= four_hours_ago):  # Not old enough to be legitimately expired
+                m.timestamp >= expiry_cutoff):  # Not old enough to be legitimately expired
                 m.answered = False
                 repaired += 1
                 print(f"[MessageBoard] Repaired orphaned question: {m.text[:50]}...", file=sys.stderr, flush=True)
