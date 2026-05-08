@@ -8,6 +8,8 @@ from anima_mcp.messages import (
     MessageBoard, Message,
     MESSAGE_TYPE_OBSERVATION, MESSAGE_TYPE_QUESTION,
     MESSAGE_TYPE_USER,
+    MAX_UNANSWERED_QUESTIONS_SOFT_CAP,
+    questions_similar,
 )
 
 
@@ -97,7 +99,60 @@ class TestQuestions:
         q1 = board.add_question("First question?")
         q2 = board.add_question("Second question?")
         assert q1 is not None
-        assert q2 is None  # Within 3-minute rate limit
+        assert q2 is None  # Within minimum interval
+
+    def test_question_backlog_soft_cap(self, board):
+        """No new questions while many are already unanswered (reduces churn)."""
+        base_t = time.time() - 10_000
+        for i in range(MAX_UNANSWERED_QUESTIONS_SOFT_CAP):
+            board._messages.append(
+                Message(
+                    message_id=f"pend{i}",
+                    text=f"Pending {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=base_t + i * 1000,
+                    author="lumen",
+                    answered=False,
+                )
+            )
+        board._save()
+        q = board.add_question("Should not post while backlog full?")
+        assert q is None
+
+    def test_question_backlog_soft_cap_ignores_expired_questions(self, board):
+        """Expired questions should not keep the soft cap stuck forever."""
+        base_t = time.time() - 25_000
+        stale_question_ids = []
+        for i in range(MAX_UNANSWERED_QUESTIONS_SOFT_CAP):
+            qid = f"stale{i}"
+            stale_question_ids.append(qid)
+            board._messages.append(
+                Message(
+                    message_id=qid,
+                    text=f"Stale pending {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=base_t + i * 1000,
+                    author="lumen",
+                    answered=False,
+                )
+            )
+        board._save()
+
+        q = board.add_question("Can the board recover after stale backlog?")
+
+        assert q is not None
+        assert q.text == "Can the board recover after stale backlog?"
+        stale = [m for m in board._messages if m.message_id in stale_question_ids]
+        assert stale
+        assert all(m.answered for m in stale)
+
+    def test_questions_similar_public_helper_matches_board_behavior(self, board):
+        """Question similarity is available without reaching into MessageBoard internals."""
+        q1 = "why is it that I now know that dim light changes my attention?"
+        q2 = "why is it that I learned that dim light changes my attention?"
+
+        assert questions_similar(q1, q2)
+        assert board._questions_similar(q1, q2) == questions_similar(q1, q2)
 
     def test_unanswered_questions(self, board):
         q = board.add_question("Unanswered question?")
