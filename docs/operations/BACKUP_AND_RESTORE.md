@@ -57,7 +57,7 @@ From Pi's `~/.anima/`:
 - **New Pi with empty `~/.anima/`** → a new `creature_id` unless you restore `anima.db` from backup.
 - **Copying `anima.db` to a second device** → forks record identity; trajectory and behavior may diverge with environment.
 
-**Behavioral** identity (trajectory signatures, attractor) is documented in `docs/theory/TRAJECTORY_IDENTITY_PAPER.md` — distinct from UUID continuity.
+**Behavioral** identity (trajectory signatures, attractor) is documented in the trajectory-identity paper (`cirwel/trajectory-identity-paper`, separate repo) — distinct from UUID continuity.
 
 ## Backup Schedule
 

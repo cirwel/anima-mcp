@@ -54,11 +54,7 @@
 
 ## Theory
 
-| Doc | What it explains |
-|-----|------------------|
-| `theory/README.md` | Overview + implementation status |
-| `theory/TRAJECTORY_IDENTITY_PAPER.md` | Identity as trajectory signature (publication ready) |
-| `theory/lumen_eisv_art_paper.md` | Embodied, self-governed art-producing agents |
+The trajectory-identity paper (identity as trajectory signature) lives in its own repo: `cirwel/trajectory-identity-paper`. The Lumen EISV art paper outline is archived at `docs/archive/lumen_eisv_art_paper.md`.
 
 ## Operations
 

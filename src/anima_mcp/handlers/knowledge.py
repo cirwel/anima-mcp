@@ -255,7 +255,7 @@ async def handle_get_trajectory(arguments: dict) -> list[TextContent]:
     who Lumen is over time - not just a snapshot, but the characteristic
     way Lumen tends to behave, where Lumen rests, and how Lumen recovers.
 
-    See: docs/theory/TRAJECTORY_IDENTITY_PAPER.md
+    See: trajectory-identity paper (cirwel/trajectory-identity-paper, separate repo)
     """
     from ..accessors import _get_growth
     growth = _get_growth()

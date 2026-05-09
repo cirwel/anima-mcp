@@ -101,7 +101,7 @@ Lumen draws on a 240×240 pixel notepad using the same thermodynamic equations a
 
 Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records emotional trajectory over time.
 
-Eras can be selected via the joystick or MCP. See `docs/theory/` for the theoretical framework.
+Eras can be selected via the joystick or MCP. The theoretical framework lives in the trajectory-identity paper (separate repo).
 
 ### Identity and Learning
 
@@ -125,7 +125,7 @@ Learning systems run in the hardware broker and persist across restarts:
 | **Prediction** | Temporal patterns in sensor data with context-dependent features |
 | **Goals** | Data-grounded goals from preferences, curiosity, milestones |
 
-See `docs/theory/` for the [trajectory identity paper](docs/theory/TRAJECTORY_IDENTITY_PAPER.md) and [Schema Hub design](docs/plans/2026-02-22-schema-hub-design.md).
+For deeper theory: the trajectory-identity paper lives in its own repo (`cirwel/trajectory-identity-paper`). The [Schema Hub design](docs/plans/2026-02-22-schema-hub-design.md) is here.
 
 ---
 
@@ -243,7 +243,7 @@ python3 -m pytest tests/ -x -q   # ~7,340 tests
 |-------|----------|
 | Architecture | `docs/operations/BROKER_ARCHITECTURE.md` |
 | Schema Hub design | `docs/plans/2026-02-22-schema-hub-design.md` |
-| Theoretical foundations | `docs/theory/` |
+| Theoretical foundations | `cirwel/trajectory-identity-paper` (separate repo) |
 | Configuration | `docs/features/CONFIGURATION_GUIDE.md` |
 | Pi operations & deployment | `docs/operations/` |
 
