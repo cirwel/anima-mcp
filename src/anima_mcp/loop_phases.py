@@ -112,6 +112,55 @@ def compute_lagged_correlations() -> Dict[str, float]:
     return correlations
 
 
+_RECURSIVE_LEARNED_QUESTION_MARKERS = (
+    "when i asked ",
+    "about '",
+)
+
+
+def _is_recursive_question_seed(insight) -> bool:
+    """Return True for Q&A-derived insights that would create meta-questions."""
+    insight_id = getattr(insight, "id", "")
+    if isinstance(insight_id, str) and insight_id.startswith("qa_"):
+        return True
+
+    description = getattr(insight, "description", "")
+    desc = description.strip().lower()
+    return any(desc.startswith(marker) for marker in _RECURSIVE_LEARNED_QUESTION_MARKERS)
+
+
+def _format_tendency_question(desc: str) -> Optional[str]:
+    """Format a tendency insight without splitting inside the word 'tends'."""
+    import re
+
+    match = re.match(r"^(?P<subject>.*?)\btends?\s+to\s+(?P<predicate>.+)$", desc)
+    if not match:
+        return None
+
+    subject = match.group("subject").strip()
+    predicate = match.group("predicate").strip()
+
+    if subject in {"i", "i usually", "i often"}:
+        gerunds = {
+            "prefer ": "preferring ",
+            "feel ": "feeling ",
+            "seek ": "seeking ",
+            "notice ": "noticing ",
+            "return ": "returning ",
+        }
+        phrase = predicate
+        for prefix, replacement in gerunds.items():
+            if predicate.startswith(prefix):
+                phrase = replacement + predicate[len(prefix):]
+                break
+    elif predicate.startswith("be "):
+        phrase = f"{subject} being {predicate[3:]}"
+    else:
+        phrase = f"{subject} {predicate}".strip()
+
+    return f"what matters about {phrase}?"
+
+
 def generate_learned_question() -> Optional[str]:
     """Generate a question from Lumen's learned insights, beliefs, and preferences.
 
@@ -139,16 +188,20 @@ def generate_learned_question() -> Optional[str]:
     # 1. Questions from self-reflection insights (sample — avoid huge pools)
     try:
         from .self_reflection import get_reflection_system
-        insights = [i for i in get_reflection_system().get_insights() if i.confidence >= 0.5]
+        insights = [
+            i for i in get_reflection_system().get_insights()
+            if i.confidence >= 0.5 and not _is_recursive_question_seed(i)
+        ]
         random.shuffle(insights)
         for insight in insights[:10]:
             # Strip self_reflection boilerplate ("i now know that …", "i learned that …")
             # so wrappers attach to the semantic core, not stacked templates.
             core = _question_semantic_core(insight.description.lower())
-            if "when" in core:
+            tendency_question = _format_tendency_question(core)
+            if tendency_question:
+                q = tendency_question
+            elif "when" in core:
                 q = f"why does {core.split('when')[-1].strip()} affect me?"
-            elif "tend" in core:
-                q = f"what is it about {core.split('tend')[-1].strip()} that matters?"
             else:
                 q = random.choice([
                     f"what does it mean that {core}?",

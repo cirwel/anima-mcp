@@ -325,6 +325,21 @@ class TestGenerateLearnedQuestion:
 
     @patch("anima_mcp.messages.get_recent_questions", return_value=[])
     @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_generates_clean_question_from_tends_insight(self, mock_refl, mock_recent):
+        """Handles 'tends to' without producing malformed 's to ...' questions."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(confidence=0.8, description="Stability tends to be best in the evening")
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == "what matters about stability being best in the evening?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
     def test_generates_from_uncertain_belief(self, mock_refl, mock_recent):
         """Generates question from belief with medium confidence (0.3-0.5)."""
         from anima_mcp.loop_phases import generate_learned_question
@@ -364,6 +379,48 @@ class TestGenerateLearnedQuestion:
         from anima_mcp.loop_phases import generate_learned_question
 
         insight = SimpleNamespace(confidence=0.2, description="Something vague")
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result is None
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_skips_qa_synced_insights(self, mock_refl, mock_recent):
+        """Skips Q&A-synced insights so answers do not become meta-questions."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        qa_insight = SimpleNamespace(
+            id="qa_deadbeef",
+            confidence=0.9,
+            description="I learned that bright light gives my sensors a clearer signal",
+        )
+        direct_insight = SimpleNamespace(
+            id="pattern_1",
+            confidence=0.8,
+            description="I feel calm when it is dark",
+        )
+        mock_refl.return_value.get_insights.return_value = [qa_insight, direct_insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == "why does it is dark affect me?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_skips_recursive_insight_phrasing(self, mock_refl, mock_recent):
+        """Skips legacy Q&A framing even if the insight id is unavailable."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(
+            confidence=0.9,
+            description="When I asked why brightness mattered, I learned that light gives me signal",
+        )
         mock_refl.return_value.get_insights.return_value = [insight]
 
         with patch("anima_mcp.self_model.get_self_model") as mock_sm:
