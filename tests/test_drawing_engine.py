@@ -1316,11 +1316,43 @@ class TestCanvasSaveSensorFallback:
     """canvas_save should pull fresh readings when _last_readings is unset,
     instead of feeding growth silent defaults (0 lux, 22 C, 50% humidity)."""
 
+    def test_tiny_opening_snapshot_skips_growth_observation(self, tmp_path):
+        """Opening-phase false starts can be saved as files without counting as drawings."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+                   return_value=tmp_path / "canvas.json"):
+            engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
+        engine.canvas.drawing_phase = "opening"
+        engine.canvas.arc_phase = "opening"
+        engine.intent.state.arc_phase = "opening"
+        engine.canvas.mark_count = 1
+        engine.intent.mark_count = 1
+        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        engine.canvas.draw_pixel(20, 20, (0, 255, 0))
+        engine.last_anima = make_anima()
+        setattr(engine, "_last_readings", MagicMock(light_lux=42.0, ambient_temp_c=19.5, humidity_pct=55.0))
+
+        growth_mock = MagicMock()
+
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("anima_mcp.growth.get_growth_system", return_value=growth_mock):
+            result = engine.canvas_save(manual=True)
+
+        assert result is not None
+        assert Path(result).exists()
+        growth_mock.observe_drawing.assert_not_called()
+        growth_mock.record_drawing_completion.assert_not_called()
+
     def test_fresh_sensor_read_when_last_readings_missing(self, tmp_path):
         from unittest.mock import MagicMock
 
-        engine = DrawingEngine()
-        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+                   return_value=tmp_path / "canvas.json"):
+            engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
+        for i in range(250):
+            engine.canvas.draw_pixel(i % 240, i // 240, (255, 0, 0))
         engine.last_anima = make_anima()
         # Explicitly no prior render push
         engine._last_readings = None
@@ -1347,8 +1379,11 @@ class TestCanvasSaveSensorFallback:
     def test_skip_growth_when_fresh_read_also_fails(self, tmp_path):
         from unittest.mock import MagicMock
 
-        engine = DrawingEngine()
-        engine.canvas.draw_pixel(10, 10, (255, 0, 0))
+        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+                   return_value=tmp_path / "canvas.json"):
+            engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
+        for i in range(250):
+            engine.canvas.draw_pixel(i % 240, i // 240, (255, 0, 0))
         engine.last_anima = make_anima()
         engine._last_readings = None
 
