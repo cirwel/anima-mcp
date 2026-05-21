@@ -58,3 +58,6 @@ config/anima.env
 !*.env.example
 .worktrees/
 .claude/
+
+# superpowers plugin planning artifacts
+docs/superpowers/
