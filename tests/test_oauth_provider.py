@@ -114,6 +114,40 @@ class TestTokenExchange:
         assert new_token.access_token != token.access_token
         assert new_token.refresh_token
 
+    async def test_refresh_token_has_expires_at_attr(self, provider, sample_client_info):
+        """MCP SDK's token handler reads `refresh_token.expires_at` directly.
+        Missing the attribute → AttributeError → 500 on /token → claude.ai
+        connector drops after ~1h (access_token_ttl). Regression test for the
+        2026-05-24 incident."""
+        import time as _t
+        from mcp.server.auth.provider import AuthorizationParams
+        await provider.register_client(sample_client_info)
+        params = AuthorizationParams(
+            state="s", scopes=["mcp:tools"], code_challenge="ch",
+            redirect_uri="https://example.com/callback",
+            redirect_uri_provided_explicitly=True,
+        )
+        redirect_url = await provider.authorize(sample_client_info, params)
+        from urllib.parse import urlparse, parse_qs
+        code = parse_qs(urlparse(redirect_url).query)["code"][0]
+        auth_code = await provider.load_authorization_code(sample_client_info, code)
+        token = await provider.exchange_authorization_code(sample_client_info, auth_code)
+
+        rt = await provider.load_refresh_token(sample_client_info, token.refresh_token)
+        assert rt is not None
+        assert hasattr(rt, "expires_at"), "SDK token handler reads .expires_at"
+        assert rt.expires_at is not None
+        assert rt.expires_at > _t.time()
+        # Mirror the exact SDK check at mcp/server/auth/handlers/token.py:209
+        assert not (rt.expires_at and rt.expires_at < _t.time())
+
+        # Refresh-issued refresh tokens must also have expires_at
+        new_token = await provider.exchange_refresh_token(sample_client_info, rt, ["mcp:tools"])
+        rt2 = await provider.load_refresh_token(sample_client_info, new_token.refresh_token)
+        assert rt2 is not None
+        assert rt2.expires_at is not None
+        assert rt2.expires_at > _t.time()
+
 
 class TestTokenVerification:
     async def test_load_access_token(self, provider, sample_client_info):
