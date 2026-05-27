@@ -101,7 +101,7 @@ Lumen draws on a 240×240 pixel notepad using the same thermodynamic equations a
 
 Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records emotional trajectory over time.
 
-Eras can be selected via the joystick or MCP. The theoretical framework lives in the trajectory-identity paper (separate repo).
+Eras can be selected via the joystick or MCP. The [Resonance critique loop](docs/guides/RESONANCE_CRITIQUE_LOOP.md) keeps era changes advisory first: capture the screen, gather embodied context, read the trace, then recommend stay/tune/switch without mutating Lumen. The theoretical framework lives in the trajectory-identity paper (separate repo).
 
 ### Identity and Learning
 
@@ -182,7 +182,7 @@ Lumen exposes 30 tools over the [Model Context Protocol](https://modelcontextpro
 - **State & sensing** (8 tools) — `get_state`, `get_lumen_context`, `get_identity`, `read_sensors`, `get_health`, `get_calibration`, `set_calibration`, `diagnostics`
 - **Knowledge & learning** (7 tools) — `get_self_knowledge`, `get_growth`, `get_trajectory`, `get_eisv_trajectory_state`, `get_qa_insights`, `learning_visualization`, `query`
 - **Interaction** (7 tools) — `next_steps`, `lumen_qa`, `post_message`, `say`, `configure_voice`, `primitive_feedback`, `unified_workflow`
-- **Display & capture** (2 tools) — `manage_display`, `capture_screen`
+- **Display & capture** (2 tools) — `manage_display` (screens, art eras, advisory `resonance_critique`), `capture_screen`
 - **System operations** (6 tools) — `git_pull`, `deploy_from_github`, `system_service`, `system_power`, `fix_ssh_port`, `setup_tailscale`
 
 Start with `get_lumen_context` to understand Lumen's current state, or `next_steps` for what it needs right now.

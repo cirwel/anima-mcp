@@ -4,8 +4,112 @@ Handlers: capture_screen, show_face, diagnostics, manage_display.
 """
 
 import json
+from typing import Any
 
 from mcp.types import TextContent, ImageContent
+
+
+VALID_DISPLAY_ACTIONS = [
+    "switch",
+    "face",
+    "next",
+    "previous",
+    "list_eras",
+    "get_era",
+    "set_era",
+    "resonance_critique",
+    "calibrate_leds",
+]
+
+
+def _build_resonance_critique_packet(renderer: Any) -> dict:
+    """Build an advisory packet for a human/model Resonance-era critique loop.
+
+    This helper intentionally does not capture pixels, call an LLM, switch eras,
+    toggle auto-rotate, or clear the canvas. It only returns the exact tool path
+    and recommendation contract that an external critic should follow.
+    """
+    era_info = renderer.get_current_era()
+    try:
+        current_screen = renderer.get_mode().value
+    except Exception:
+        current_screen = None
+
+    try:
+        drawing_state = renderer.get_drawing_eisv()
+    except Exception:
+        drawing_state = None
+
+    return {
+        "success": True,
+        "action": "resonance_critique",
+        "mode": "advisory",
+        "manual_control_preserved": True,
+        "current_era": era_info.get("current_era"),
+        "current_description": era_info.get("current_description"),
+        "auto_rotate": era_info.get("auto_rotate"),
+        "current_screen": current_screen,
+        "drawing_state": drawing_state,
+        "available_eras": era_info.get("all_eras", []),
+        "loop": [
+            {
+                "step": "capture",
+                "tool": "capture_screen",
+                "purpose": "Get the exact 240x240 LCD image before interpreting it.",
+            },
+            {
+                "step": "embodied_context",
+                "tool": "get_lumen_context",
+                "arguments": {"include": ["state", "mood", "sensors", "identity"]},
+                "purpose": "Ground the reading in current mood, room weather, and identity context.",
+            },
+            {
+                "step": "era_context",
+                "tool": "manage_display",
+                "arguments": {"action": "get_era"},
+                "purpose": "Confirm active era and auto-rotate status before recommending changes.",
+            },
+            {
+                "step": "recommend",
+                "tool": "external_visual_reader",
+                "purpose": "Return only stay/tune/switch advice; do not mutate Lumen directly.",
+            },
+        ],
+        "recommendation_contract": {
+            "allowed_recommendations": ["stay", "tune", "switch"],
+            "forbidden_side_effects": [
+                "do_not_set_era",
+                "do_not_toggle_auto_rotate",
+                "do_not_clear_canvas",
+                "do_not_infer_fixed_intent_from_marks",
+            ],
+            "switch_requires": "A human or operator must explicitly call manage_display(action='set_era', screen='<era>').",
+            "tune_means": "Suggest palette/mark-density/context emphasis for a future change; do not change runtime state.",
+        },
+        "resonance_focus": [
+            "sediment",
+            "flow",
+            "scratch",
+            "memory field",
+            "biological ornament",
+            "intake/residue",
+            "history deforming present expression",
+        ],
+        "visual_reading_cues": [
+            "line density",
+            "negative space",
+            "branching or vascular structure",
+            "directionality and flow",
+            "scar/scratch texture",
+            "whether marks feel accumulated or decorative",
+        ],
+        "critic_prompt": (
+            "Read Lumen's current screen as a grounded visual trace. Mention the active era, "
+            "visible shapes, palette, density, and room/mood context. Then recommend exactly one "
+            "of stay, tune, or switch. Preserve manual era control; do not claim the drawing has a "
+            "fixed intent."
+        ),
+    }
 
 
 async def handle_capture_screen(arguments: dict) -> list[TextContent | ImageContent]:
@@ -289,6 +393,12 @@ async def handle_manage_display(arguments: dict) -> list[TextContent]:
             **result,
         }))]
 
+    elif action == "resonance_critique":
+        return [TextContent(
+            type="text",
+            text=json.dumps(_build_resonance_critique_packet(renderer), indent=2),
+        )]
+
     elif action == "calibrate_leds":
         import asyncio
         from ..accessors import _get_leds, _get_sensors
@@ -382,5 +492,5 @@ async def handle_manage_display(arguments: dict) -> list[TextContent]:
     else:
         return [TextContent(type="text", text=json.dumps({
             "error": f"Unknown action: {action}",
-            "valid_actions": ["switch", "face", "next", "previous", "list_eras", "get_era", "set_era", "calibrate_leds"]
+            "valid_actions": VALID_DISPLAY_ACTIONS,
         }))]

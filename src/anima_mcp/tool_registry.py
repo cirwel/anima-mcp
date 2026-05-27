@@ -140,11 +140,11 @@ TOOLS = [
     ),
     Tool(
         name="manage_display",
-        description="Control Lumen's display: switch screens, show face, navigate. Also manage art eras: list_eras, get_era, set_era.",
+        description="Control Lumen's display: switch screens, show face, navigate. Also manage art eras: list_eras, get_era, set_era, resonance_critique.",
         inputSchema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["switch", "face", "next", "previous", "list_eras", "get_era", "set_era", "calibrate_leds"], "description": "Action to perform"},
+                "action": {"type": "string", "enum": ["switch", "face", "next", "previous", "list_eras", "get_era", "set_era", "resonance_critique", "calibrate_leds"], "description": "Action to perform"},
                 "screen": {"type": "string", "description": "Screen name (for action=switch) or era name (for action=set_era)"}
             },
             "required": ["action"],
