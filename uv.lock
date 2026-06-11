@@ -462,7 +462,7 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=26.3.1,<27.0.0" },
     { name = "brainflow", marker = "extra == 'brain'", specifier = ">=5.0.0,<6.0.0" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0,<2.0.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0,<3.0.0" },
     { name = "numpy", specifier = ">=1.24.0,<3.0.0" },
     { name = "numpy", marker = "extra == 'brain'", specifier = ">=1.24.0,<3.0.0" },
     { name = "numpy", marker = "extra == 'pi'", specifier = ">=1.24.0,<3.0.0" },

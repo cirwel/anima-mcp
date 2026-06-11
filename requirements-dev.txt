@@ -10,7 +10,7 @@ pytest-cov>=4.1.0,<8.0.0
 # Code quality
 black>=26.3.1,<27.0.0
 ruff>=0.0.285,<1.0.0
-mypy>=1.5.0,<2.0.0
+mypy>=1.5.0,<3.0.0
 
 # Type stubs
 types-PyYAML>=6.0.0,<7.0.0
