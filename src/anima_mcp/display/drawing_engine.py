@@ -26,6 +26,7 @@ from ..expression_moods import ExpressionMoodTracker
 
 
 _EARNED_COMPLETION_REASONS = frozenset({"earned_coherence", "earned_composition"})
+MIN_RECORDED_DRAWING_PIXELS = 200
 
 
 def is_earned_completion_reason(reason: Optional[str]) -> bool:
@@ -1415,9 +1416,9 @@ class DrawingEngine:
         return {"success": False, "error": "Invalid cursor position"}
 
     def canvas_clear(self, persist: bool = True, already_saved: bool = False):
-        """Clear the canvas - saves first if there's a real drawing (50+ pixels).
+        """Clear the canvas - saves first if there's a recorded drawing.
 
-        Minimal threshold avoids saving noise/stray marks.
+        Minimal threshold avoids saving noise/stray marks as completed work.
 
         Args:
             persist: Write cleared state to disk.
@@ -1428,9 +1429,9 @@ class DrawingEngine:
         if now < self.canvas.drawing_paused_until:
             return  # Already paused, don't clear again
 
-        # Save before clearing if there's actual drawing (50+ pixels, not just noise)
+        # Save before clearing if there's actual drawing (not just noise).
         # Skip if caller already saved (prevents double growth observation)
-        if not already_saved and len(self.canvas.pixels) >= 200:
+        if not already_saved and len(self.canvas.pixels) >= MIN_RECORDED_DRAWING_PIXELS:
             saved_path = self.canvas_save(announce=False)
             if saved_path:
                 print(f"[Canvas] Saved before clear: {saved_path}", file=sys.stderr, flush=True)
@@ -1515,10 +1516,14 @@ class DrawingEngine:
             img.save(tmp_path, format="PNG")
             tmp_path.rename(filepath)
 
-            # Update tracking
+            # Update tracking. Tiny opening snapshots are allowed as files, but
+            # are not counted as completed drawings or fed back into growth.
+            pixel_count = len(self.canvas.pixels)
+            record_as_drawing = pixel_count >= MIN_RECORDED_DRAWING_PIXELS
             self.canvas.last_save_time = time.time()
-            self.canvas.drawings_saved += 1
-            self.canvas.consecutive_false_starts = 0  # Successful save resets false-start counter
+            if record_as_drawing:
+                self.canvas.drawings_saved += 1
+                self.canvas.consecutive_false_starts = 0  # Successful completion resets false-start counter
             self.canvas.save_to_disk()
 
             # Trigger save indicator (shows "saved" on screen for 2 seconds)
@@ -1529,7 +1534,6 @@ class DrawingEngine:
             # EISV calibration logging -- track state + structure for validation
             eisv = self.intent.eisv
             C = eisv.coherence()
-            pixel_count = len(self.canvas.pixels)
             # Spatial variance (how spread out marks are)
             if pixel_count > 10:
                 xs = [x for x, _ in self.canvas.pixels.keys()]
@@ -1560,107 +1564,118 @@ class DrawingEngine:
                 except Exception as e:
                     print(f"[Notepad] Could not announce save: {e}", file=sys.stderr, flush=True)
 
-            # Notify growth system -- learn from drawing activity
-            try:
-                anima = self.last_anima
-                readings = getattr(self, '_last_readings', None)
-                if not readings:
-                    # Push path (screens.render) hadn't primed _last_readings yet
-                    # (e.g., manual save at boot before first render). Pull fresh
-                    # rather than feeding growth silent defaults.
-                    try:
-                        from ..accessors import _get_sensors
-                        readings = _get_sensors().read()
-                    except Exception as e:
-                        print(f"[Growth] Skipping drawing observation: no readings available ({e})", file=sys.stderr, flush=True)
-                        readings = None
-                if anima and readings:
-                    from ..growth import get_growth_system
-                    anima_state = {
-                        "warmth": anima.warmth,
-                        "clarity": anima.clarity,
-                        "stability": anima.stability,
-                        "presence": anima.presence,
-                    }
-                    environment = {
-                        "light_lux": readings.light_lux or 0.0,
-                        "temp_c": readings.ambient_temp_c or 22,
-                        "humidity_pct": readings.humidity_pct or 50,
-                    }
-                    phase = self.canvas.drawing_phase or "resting"
-                    growth = get_growth_system()
-                    # Reason distinguishes earned completion from bail-outs
-                    # (fatigue/stall/hard-cap) and user-triggered snapshots.
-                    # Growth uses it to gate milestone + "pleased with" memories.
-                    if manual:
-                        completion_reason = "manual_snapshot"
-                    else:
-                        completion_reason = self.canvas.last_completion_reason
-                    insight = growth.observe_drawing(
-                        pixel_count=len(self.canvas.pixels),
-                        phase=phase,
-                        anima_state=anima_state,
-                        environment=environment,
-                        completion_reason=completion_reason,
-                    )
-                    if insight:
-                        print(f"[Growth] Drawing insight: {insight}", file=sys.stderr, flush=True)
+            # Notify growth system -- learn from completed drawing activity.
+            # Tiny opening snapshots are files only; feeding them to growth made
+            # Lumen look prolific while mostly recording false starts.
+            if not record_as_drawing:
+                print(
+                    f"[Growth] Skipping drawing observation for snapshot below completion floor "
+                    f"({pixel_count}px < {MIN_RECORDED_DRAWING_PIXELS}px)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                try:
+                    anima = self.last_anima
+                    readings = getattr(self, '_last_readings', None)
+                    if not readings:
+                        # Push path (screens.render) hadn't primed _last_readings yet
+                        # (e.g., manual save at boot before first render). Pull fresh
+                        # rather than feeding growth silent defaults.
+                        try:
+                            from ..accessors import _get_sensors
+                            readings = _get_sensors().read()
+                        except Exception as e:
+                            print(f"[Growth] Skipping drawing observation: no readings available ({e})", file=sys.stderr, flush=True)
+                            readings = None
+                    if anima and readings:
+                        from ..growth import get_growth_system
+                        anima_state = {
+                            "warmth": anima.warmth,
+                            "clarity": anima.clarity,
+                            "stability": anima.stability,
+                            "presence": anima.presence,
+                        }
+                        environment = {
+                            "light_lux": readings.light_lux or 0.0,
+                            "temp_c": readings.ambient_temp_c or 22,
+                            "humidity_pct": readings.humidity_pct or 50,
+                        }
+                        phase = self.canvas.drawing_phase or "resting"
+                        growth = get_growth_system()
+                        # Reason distinguishes earned completion from bail-outs
+                        # (fatigue/stall/hard-cap) and user-triggered snapshots.
+                        # Growth uses it to gate milestone + "pleased with" memories.
+                        if manual:
+                            completion_reason = "manual_snapshot"
+                        else:
+                            completion_reason = self.canvas.last_completion_reason
+                        insight = growth.observe_drawing(
+                            pixel_count=pixel_count,
+                            phase=phase,
+                            anima_state=anima_state,
+                            environment=environment,
+                            completion_reason=completion_reason,
+                        )
+                        if insight:
+                            print(f"[Growth] Drawing insight: {insight}", file=sys.stderr, flush=True)
 
-                    # Drawing -> Anima feedback: record completion with satisfaction
-                    try:
-                        satisfaction = self.canvas.compositional_satisfaction()
-                        coherence = (
+                        # Drawing -> Anima feedback: record completion with satisfaction
+                        try:
+                            satisfaction = self.canvas.compositional_satisfaction()
+                            coherence = (
+                                self.canvas.coherence_history[-1]
+                                if self.canvas.coherence_history else 0.5
+                            )
+                            growth.record_drawing_completion(
+                                pixel_count=pixel_count,
+                                mark_count=self.canvas.mark_count,
+                                coherence=coherence,
+                                satisfaction=satisfaction,
+                                completion_reason=completion_reason,
+                            )
+                        except Exception as e:
+                            print(f"[Growth] Drawing feedback failed: {e}",
+                                  file=sys.stderr, flush=True)
+                    elif not anima:
+                        print("[Growth] Warning: no anima at canvas_save, skipping growth notify", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[Notepad] Growth notify failed: {e}", file=sys.stderr, flush=True)
+
+            # Report drawing outcome to UNITARES for EISV validation
+            if record_as_drawing:
+                try:
+                    _unitares_bridge = _get_drawing_bridge()
+                    if _unitares_bridge:
+                        import asyncio
+                        _sat = self.canvas.compositional_satisfaction()
+                        _coh = (
                             self.canvas.coherence_history[-1]
                             if self.canvas.coherence_history else 0.5
                         )
-                        growth.record_drawing_completion(
-                            pixel_count=len(self.canvas.pixels),
-                            mark_count=self.canvas.mark_count,
-                            coherence=coherence,
-                            satisfaction=satisfaction,
-                            completion_reason=completion_reason,
-                        )
-                    except Exception as e:
-                        print(f"[Growth] Drawing feedback failed: {e}",
-                              file=sys.stderr, flush=True)
-                elif not anima:
-                    print("[Growth] Warning: no anima at canvas_save, skipping growth notify", file=sys.stderr, flush=True)
-            except Exception as e:
-                print(f"[Notepad] Growth notify failed: {e}", file=sys.stderr, flush=True)
-
-            # Report drawing outcome to UNITARES for EISV validation
-            try:
-                _unitares_bridge = _get_drawing_bridge()
-                if _unitares_bridge:
-                    import asyncio
-                    _sat = self.canvas.compositional_satisfaction()
-                    _coh = (
-                        self.canvas.coherence_history[-1]
-                        if self.canvas.coherence_history else 0.5
-                    )
-                    try:
-                        _loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        _loop = None
-                    if _loop:
-                        _loop.call_soon_threadsafe(
-                            asyncio.ensure_future,
-                            _unitares_bridge.report_outcome(
-                                outcome_type="drawing_completed",
-                                outcome_score=_sat,
-                                detail={
-                                    "mark_count": self.canvas.mark_count,
-                                    "pixel_count": len(self.canvas.pixels),
-                                    "arc_phase": self.canvas.arc_phase or "unknown",
-                                    "era": self.active_era.name if self.active_era else "unknown",
-                                    "coherence": _coh,
-                                    "spatial_var": spatial_var,
-                                    "gesture_variety": gesture_variety,
-                                }
+                        try:
+                            _loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            _loop = None
+                        if _loop:
+                            _loop.call_soon_threadsafe(
+                                asyncio.ensure_future,
+                                _unitares_bridge.report_outcome(
+                                    outcome_type="drawing_completed",
+                                    outcome_score=_sat,
+                                    detail={
+                                        "mark_count": self.canvas.mark_count,
+                                        "pixel_count": pixel_count,
+                                        "arc_phase": self.canvas.arc_phase or "unknown",
+                                        "era": getattr(self.active_era, "name", "unknown"),
+                                        "coherence": _coh,
+                                        "spatial_var": spatial_var,
+                                        "gesture_variety": gesture_variety,
+                                    }
+                                )
                             )
-                        )
-            except Exception:
-                pass  # Non-fatal
+                except Exception:
+                    pass  # Non-fatal
 
             return str(filepath)
 
@@ -1752,7 +1767,7 @@ class DrawingEngine:
         # (Caller must pass governance_paused flag if needed)
 
         # === PRIORITY 0: False start — abandon canvas, start fresh ===
-        if (pixel_count < 200
+        if (pixel_count < MIN_RECORDED_DRAWING_PIXELS
                 and self.canvas.consecutive_false_starts < 2
                 and state.is_false_start(self.canvas)):
             print(f"[Canvas] False start — abandoning ({pixel_count}px, {self.canvas.mark_count} marks, "
@@ -1788,7 +1803,7 @@ class DrawingEngine:
             return "abandoned"
 
         # === PRIORITY 1: Lumen said "finished" ===
-        if (pixel_count >= 200 and self._check_lumen_said_finished()):
+        if (pixel_count >= MIN_RECORDED_DRAWING_PIXELS and self._check_lumen_said_finished()):
             C = state.coherence()
             print(f"[Canvas] Lumen said finished - saving ({pixel_count}px, {self.intent.mark_count} marks, C={C:.2f})", file=sys.stderr, flush=True)
             saved_path = self.canvas_save(announce=False)
@@ -1801,7 +1816,9 @@ class DrawingEngine:
         # === PRIORITY 2: Narrative complete (multiple paths: coherence+attention, composition+curiosity, or fatigue) ===
         # Eras expose min_marks_for_completion (default 5): pointillist=80, field=30, geometric=3
         era_min_marks = getattr(self.active_era, 'min_marks_for_completion', 5)
-        if state.narrative_complete(self.canvas) and pixel_count >= 200 and self.intent.mark_count >= era_min_marks:
+        if (state.narrative_complete(self.canvas)
+                and pixel_count >= MIN_RECORDED_DRAWING_PIXELS
+                and self.intent.mark_count >= era_min_marks):
             C = state.coherence()
             satisfaction = self.canvas.compositional_satisfaction()
             print(f"[Canvas] Narrative complete -- saving ({pixel_count}px, {self.intent.mark_count} marks, C={C:.2f}, sat={satisfaction:.2f}, arc={state.arc_phase}, curio={state.curiosity:.2f}, engage={state.engagement:.2f}, fatigue={state.fatigue:.2f})", file=sys.stderr, flush=True)

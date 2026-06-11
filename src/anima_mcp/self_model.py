@@ -686,7 +686,7 @@ class SelfModel:
 
     # ==================== Trajectory Components ====================
     # These methods extract data for trajectory signature computation.
-    # See: docs/theory/TRAJECTORY_IDENTITY_PAPER.md
+    # See: trajectory-identity paper (cirwel/trajectory-identity-paper, separate repo)
 
     def get_belief_signature(self) -> Dict[str, Any]:
         """

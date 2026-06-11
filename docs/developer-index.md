@@ -35,6 +35,7 @@
 | Doc | What it explains |
 |-----|------------------|
 | `LUMEN_EXPRESSION_PHILOSOPHY.md` | How Lumen's expression should emerge authentically |
+| `guides/RESONANCE_CRITIQUE_LOOP.md` | Advisory screen/context/read/recommend loop for Resonance era taste |
 | `features/CONFIGURATION_GUIDE.md` | Nervous system calibration and config |
 
 **Key source files:**
@@ -50,15 +51,11 @@
 | `src/anima_mcp/eisv_mapper.py` | EISV mapping for UNITARES governance |
 | `src/anima_mcp/display/screens.py` | Display screens, drawing engine |
 | `src/anima_mcp/display/art_era.py` | Art era protocol |
-| `src/anima_mcp/display/eras/` | Pluggable art era modules (gestural, pointillist, field, geometric) |
+| `src/anima_mcp/display/eras/` | Pluggable art era modules (gestural, pointillist, field, geometric, resonance) |
 
 ## Theory
 
-| Doc | What it explains |
-|-----|------------------|
-| `theory/README.md` | Overview + implementation status |
-| `theory/TRAJECTORY_IDENTITY_PAPER.md` | Identity as trajectory signature (publication ready) |
-| `theory/lumen_eisv_art_paper.md` | Embodied, self-governed art-producing agents |
+The trajectory-identity paper (identity as trajectory signature) lives in its own repo: `cirwel/trajectory-identity-paper`. The Lumen EISV art paper outline is archived at `docs/archive/lumen_eisv_art_paper.md`.
 
 ## Operations
 

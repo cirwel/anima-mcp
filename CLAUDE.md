@@ -396,7 +396,7 @@ Things agents keep re-discovering. Read this so you don't waste time.
 | Fact | Detail |
 |------|--------|
 | **Transport** | Streamable HTTP only at `/mcp/`. SSE was removed. No `/sse` endpoint exists. OAuth 2.1 required via Cloudflare tunnel (`lumen.cirwel.org`); LAN/Tailscale/localhost are open. |
-| **OAuth env vars** | `ANIMA_OAUTH_ISSUER_URL`, `ANIMA_OAUTH_AUTO_APPROVE`, `ANIMA_OAUTH_SECRET` (optional). Tokens in-memory, reset on restart. See `docs/operations/SECRETS_AND_ENV.md`. |
+| **OAuth env vars** | `ANIMA_OAUTH_ISSUER_URL` (AS issuer, e.g. `https://lumen.cirwel.org`), `ANIMA_OAUTH_AUTO_APPROVE`, `ANIMA_OAUTH_SECRET` (optional), `ANIMA_OAUTH_DB_PATH` (defaults `~/.anima/oauth.db` — tokens persist across restarts), `ANIMA_OAUTH_RESOURCE_URL` (defaults `<issuer>/mcp/` — must match the URL the client has stored or claude.ai marks the connector errored). See `docs/operations/SECRETS_AND_ENV.md`. |
 | **Ports** | anima-mcp = **8766**, UNITARES governance = **8767**. Never guess. |
 | **Pi restart time** | **2 minutes** after `git_pull(restart=true)`. Wait. Don't panic at proxy errors. Do NOT SSH or retry MCP during this window — it can crash WiFi. |
 | **Tailscale IPs** | Verify with `tailscale status`. IPs may change after reinstall. |

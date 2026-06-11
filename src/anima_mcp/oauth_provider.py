@@ -46,13 +46,23 @@ class AuthCodeEntry:
 
 @dataclass
 class RefreshTokenEntry:
-    """Stored refresh token with metadata."""
+    """Stored refresh token with metadata.
+
+    expires_at must be present (even if None) because the MCP SDK's token
+    handler reads `refresh_token.expires_at` directly when servicing a
+    `grant_type=refresh_token` request. Without the attribute the handler
+    raises AttributeError → 500 on /token → claude.ai connector drops after
+    the access token expires (~1h).
+    """
     token: str
     client_id: str
     scopes: list[str]
     created_at: float = field(default_factory=time.time)
+    expires_at: int | None = None
 
     def is_expired(self, ttl: int = 604800) -> bool:
+        if self.expires_at is not None:
+            return self.expires_at < time.time()
         return time.time() - self.created_at > ttl
 
 
@@ -155,6 +165,7 @@ class AnimaOAuthProvider:
                     client_id=row["client_id"],
                     scopes=json.loads(row["scopes"]),
                     created_at=row["created_at"],
+                    expires_at=int(row["created_at"] + self._refresh_token_ttl),
                 )
 
     def _persist_client(self, client: OAuthClientInformationFull) -> None:
@@ -298,6 +309,7 @@ class AnimaOAuthProvider:
             token=refresh_token_str,
             client_id=client.client_id,
             scopes=scopes,
+            expires_at=int(time.time()) + self._refresh_token_ttl,
         )
 
         self._access_tokens[access_token_str] = access
@@ -353,6 +365,7 @@ class AnimaOAuthProvider:
             token=new_refresh_str,
             client_id=client.client_id,
             scopes=effective_scopes,
+            expires_at=int(time.time()) + self._refresh_token_ttl,
         )
 
         self._access_tokens[access_token_str] = access

@@ -279,6 +279,52 @@ class TestDisplayOpsSmoke:
             data = parse_result(result)
             assert "error" in data
 
+    def test_manage_display_resonance_critique_is_advisory_packet(self):
+        """resonance_critique returns a toolable advisory loop without changing era."""
+        from anima_mcp.handlers.display_ops import handle_manage_display
+
+        renderer = MagicMock()
+        renderer.get_current_era.return_value = {
+            "current_era": "resonance",
+            "current_description": "Marks respond to emotional memory",
+            "auto_rotate": False,
+            "all_eras": [
+                {"name": "gestural", "description": "Granular marks"},
+                {"name": "resonance", "description": "Emotional memory field"},
+            ],
+        }
+        renderer.get_mode.return_value.value = "notepad"
+        renderer.get_drawing_eisv.return_value = {
+            "E": 0.4,
+            "I": 0.7,
+            "S": 0.2,
+            "V": -0.1,
+            "C": 0.8,
+            "marks": 144,
+            "phase": "developing",
+            "era": "resonance",
+        }
+
+        with patch("anima_mcp.accessors._get_screen_renderer", return_value=renderer):
+            result = run_async(handle_manage_display({"action": "resonance_critique"}))
+            data = parse_result(result)
+
+        assert data["success"] is True
+        assert data["action"] == "resonance_critique"
+        assert data["mode"] == "advisory"
+        assert data["manual_control_preserved"] is True
+        assert data["current_era"] == "resonance"
+        assert data["auto_rotate"] is False
+        assert data["current_screen"] == "notepad"
+        assert data["available_eras"][1]["name"] == "resonance"
+        assert data["recommendation_contract"]["allowed_recommendations"] == [
+            "stay", "tune", "switch"
+        ]
+        assert any(step["tool"] == "capture_screen" for step in data["loop"])
+        assert any(step["tool"] == "get_lumen_context" for step in data["loop"])
+        assert "sediment" in data["resonance_focus"]
+        renderer.set_era.assert_not_called()
+
 
 # ===========================================================================
 # Module: handlers/workflows.py

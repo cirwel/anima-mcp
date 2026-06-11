@@ -33,6 +33,7 @@ Connect your MCP client (Claude Code, Cursor, Claude Desktop) to `http://<pi-ip>
 
 - **[Docs index](developer-index.md)** — For developers and AI agents
 - **[Getting started](guides/GETTING_STARTED_SIMPLE.md)** — New to Lumen? Start here
+- **[Resonance critique loop](guides/RESONANCE_CRITIQUE_LOOP.md)** — Advisory visual reading path for Resonance-era taste
 - **[GitHub repository](https://github.com/cirwel/anima-mcp)** — Source code
 
 ---

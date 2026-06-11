@@ -13,7 +13,7 @@ characteristics that define an agent's identity:
 - Δ (Relational Disposition): Social behavior patterns
 - Η (Homeostatic Identity): Unified self-maintenance characterization
 
-See: docs/theory/TRAJECTORY_IDENTITY_PAPER.md
+See: trajectory-identity paper (cirwel/trajectory-identity-paper, separate repo)
 """
 
 from dataclasses import dataclass, field

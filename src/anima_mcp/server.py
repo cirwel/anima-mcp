@@ -1359,7 +1359,7 @@ async def _update_display_loop():
 
             # Trajectory: Record anima history for trajectory signature computation
             # Every 5 iterations (~10 seconds) - builds time-series for attractor basin
-            # See: docs/theory/TRAJECTORY_IDENTITY_PAPER.md
+            # See: trajectory-identity paper (cirwel/trajectory-identity-paper, separate repo)
             if loop_count % TRAJECTORY_INTERVAL == 0 and anima:
                 from .anima_history import get_anima_history
 

@@ -140,11 +140,11 @@ TOOLS = [
     ),
     Tool(
         name="manage_display",
-        description="Control Lumen's display: switch screens, show face, navigate. Also manage art eras: list_eras, get_era, set_era.",
+        description="Control Lumen's display: switch screens, show face, navigate. Also manage art eras: list_eras, get_era, set_era, resonance_critique.",
         inputSchema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["switch", "face", "next", "previous", "list_eras", "get_era", "set_era", "calibrate_leds"], "description": "Action to perform"},
+                "action": {"type": "string", "enum": ["switch", "face", "next", "previous", "list_eras", "get_era", "set_era", "resonance_critique", "calibrate_leds"], "description": "Action to perform"},
                 "screen": {"type": "string", "description": "Screen name (for action=switch) or era name (for action=set_era)"}
             },
             "required": ["action"],
@@ -648,11 +648,26 @@ def get_fastmcp() -> "FastMCP":
                 auto_approve=auto_approve,
                 db_path=oauth_db_path,
             )
+            # Resource server URL must include the MCP transport path so the
+            # generated `.well-known/oauth-protected-resource/<path>` matches
+            # what RFC 9728 clients (claude.ai connector) probe, and so the
+            # `resource` field returned in protected-resource metadata equals
+            # the URL the client has stored for this connector. A mismatch
+            # causes claude.ai to mark the connector errored.
+            oauth_resource_url = os.environ.get(
+                "ANIMA_OAUTH_RESOURCE_URL",
+                oauth_issuer_url.rstrip("/") + "/mcp/",
+            )
             auth_settings = AuthSettings(
                 issuer_url=oauth_issuer_url,
-                resource_server_url=oauth_issuer_url,
+                resource_server_url=oauth_resource_url,
             )
-            print(f"[FastMCP] OAuth 2.1 enabled (issuer: {oauth_issuer_url})", file=sys.stderr, flush=True)
+            print(
+                f"[FastMCP] OAuth 2.1 enabled (issuer: {oauth_issuer_url}, "
+                f"resource: {oauth_resource_url})",
+                file=sys.stderr,
+                flush=True,
+            )
 
         _fastmcp = FastMCP(
             name="anima-mcp",

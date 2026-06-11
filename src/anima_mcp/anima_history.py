@@ -5,7 +5,7 @@ This module enables computing attractor basins and other trajectory invariants
 by maintaining a time-series of anima state observations.
 
 Part of the Trajectory Identity framework.
-See: docs/theory/TRAJECTORY_IDENTITY_PAPER.md
+See: trajectory-identity paper (cirwel/trajectory-identity-paper, separate repo)
 """
 
 from collections import deque

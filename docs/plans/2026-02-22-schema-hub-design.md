@@ -2,7 +2,6 @@
 
 **Date:** 2026-02-22
 **Status:** Design Approved
-**Authors:** Kenny, Claude
 
 ---
 
