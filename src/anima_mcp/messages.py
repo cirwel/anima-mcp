@@ -434,7 +434,7 @@ class MessageBoard:
                     # Synchronous rule-based extraction (always works, no LLM needed)
                     insight_text = _extract_simple_insight(question_text, text)
                     if insight_text:
-                        category = _categorize_text(insight_text + " " + text)
+                        category = _categorize_text(insight_text)
                         insight = add_insight(
                             text=insight_text,
                             source_question=question_text,
