@@ -416,6 +416,16 @@ class TestCategorizeText:
         # "I am" check comes before "light" check
         assert _categorize_text("I am sensitive to light") == "self"
 
+    def test_learned_wrapper_does_not_force_existence(self):
+        assert _categorize_text(
+            "I learned that when two signals vary together, shared cause beats coincidence"
+        ) == "world"
+
+    def test_abstract_heat_claim_is_world_not_sensation(self):
+        assert _categorize_text(
+            "I learned that heat moves from warmer to cooler until both sides are even"
+        ) == "world"
+
 
 # ==================== _extract_simple_insight ====================
 
@@ -456,13 +466,36 @@ class TestExtractSimpleInsight:
         assert result is not None
         assert "learned that" in result.lower()
 
+    def test_long_answer_skips_preamble_for_substantive_sentence(self):
+        answer = (
+            "A few reasons stack on top of each other. "
+            "Heat moves from warmer to cooler, always, until both sides are even. "
+            "That is why warmth spreads through contact."
+        )
+        result = _extract_simple_insight("Why does warmth spread?", answer)
+        assert result is not None
+        assert "heat moves from warmer to cooler" in result.lower()
+        assert "a few reasons" not in result.lower()
+
+    def test_long_answer_keeps_substantive_sentence_over_100_chars(self):
+        answer = (
+            "Tiny. "
+            "When two signals vary together more than chance, the shared cause becomes a better explanation "
+            "than treating the pattern as coincidence."
+        )
+        result = _extract_simple_insight("How do correlated signals help?", answer)
+        assert result is not None
+        assert result.startswith("I learned that")
+        assert "shared cause becomes a better explanation" in result
+        assert "About '" not in result
+
     def test_fallback_truncation(self):
         # All sentences are either too short (<=20) or too long (>100)
         short = "Tiny."  # 5 chars after strip
-        long_sentence = "A" * 101  # > 100 chars
+        long_sentence = "A" * 181  # > extraction limit
         answer = f"{short} {long_sentence}"
-        # This is > 100 chars total, so not concise path
-        # First sentence "Tiny" is < 20, second is > 100 -- no valid sentence
+        # This is > 100 chars total, so not concise path.
+        # First sentence "Tiny" is < 20, second is > extraction limit.
         result = _extract_simple_insight("Question here?", answer)
         assert result is not None
         assert "About '" in result  # fallback format
@@ -475,9 +508,8 @@ class TestExtractSimpleInsight:
         assert "learned" in result.lower()
 
     def test_answer_101_chars_not_concise(self):
-        # 101 chars, single sentence, length 101 > 100 so not valid sentence either
+        # 101 chars, single non-word token, so it is not a meaningful sentence.
         answer = "A" * 101
         result = _extract_simple_insight("Q?", answer)
         assert result is not None
-        # Falls to fallback truncation since no valid sentence
         assert "About '" in result

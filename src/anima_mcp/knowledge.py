@@ -6,6 +6,7 @@ These insights persist across restarts and influence future reflections.
 """
 
 import json
+import re
 import sys
 import time
 from typing import List, Dict, Any, Optional
@@ -353,20 +354,118 @@ def get_relevant_insights(query: str, limit: int = 5) -> List[Insight]:
     return get_knowledge().get_relevant_insights(query, limit)
 
 
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "i", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to",
+    "was", "with",
+}
+
+_PREAMBLE_STARTS = (
+    "a few reasons",
+    "a couple reasons",
+    "there are",
+    "there is",
+    "this is a",
+    "the answer is",
+    "short answer",
+    "it depends",
+)
+
+_EXPLANATORY_TERMS = (
+    "because",
+    "therefore",
+    "which means",
+    "comes from",
+    "calculated from",
+    "caused by",
+    "moves from",
+    "until",
+    "when ",
+    "if ",
+    "always",
+    "together",
+    "more than",
+    "less than",
+)
+
+
+def _strip_insight_boilerplate(text: str) -> str:
+    lower_text = text.lower()
+    for marker in ("i learned that ", "i learned: "):
+        idx = lower_text.find(marker)
+        if idx >= 0:
+            return text[idx + len(marker):].strip()
+    return text
+
+
+def _content_words(text: str) -> list[str]:
+    return [
+        word
+        for word in re.findall(r"[a-z][a-z'-]*", text.lower())
+        if word not in _STOPWORDS
+    ]
+
+
 def _categorize_text(text: str) -> str:
     """Categorize insight text based on keywords."""
-    lower_text = text.lower()
+    lower_text = _strip_insight_boilerplate(text).lower()
     if any(w in lower_text for w in ["i am", "myself", "my ", "i feel", "i can", "i have"]):
         return "self"
-    elif any(w in lower_text for w in ["light", "warmth", "temperature", "sensor", "sound", "dark", "bright"]):
+    elif any(w in lower_text for w in ["light", "temperature", "sensor", "reading", "sound", "dark", "bright"]):
         return "sensations"
     elif any(w in lower_text for w in ["you", "they", "others", "someone", "agent", "user", "human"]):
         return "relationships"
     elif any(w in lower_text for w in ["exist", "being", "alive", "time", "grow", "change", "learn"]):
         return "existence"
-    elif any(w in lower_text for w in ["world", "room", "space", "environment", "outside"]):
+    elif any(w in lower_text for w in [
+        "world", "room", "space", "environment", "outside", "heat", "warmer",
+        "cooler", "cause", "evidence", "inference", "logic",
+    ]):
         return "world"
     return "general"
+
+
+def _split_sentences(answer: str) -> list[str]:
+    return [
+        part.strip().strip("\"'").rstrip(".!?").strip()
+        for part in re.split(r"(?<=[.!?])\s+", answer.strip())
+        if part.strip()
+    ]
+
+
+def _sentence_score(sentence: str, question: str) -> float:
+    lower_sentence = sentence.lower()
+    words = _content_words(sentence)
+    if len(words) < 4:
+        return -100.0
+
+    score = min(len(words), 30)
+    if len(sentence) < 35:
+        score -= 5
+    if any(lower_sentence.startswith(prefix) for prefix in _PREAMBLE_STARTS):
+        score -= 25
+    score += sum(8 for term in _EXPLANATORY_TERMS if term in lower_sentence)
+
+    question_words = set(_content_words(question))
+    if question_words:
+        score += min(6, 2 * len(set(words) & question_words))
+    return score
+
+
+def _lowercase_initial(text: str) -> str:
+    if not text:
+        return text
+    if len(text) > 1 and text[:2].isupper():
+        return text
+    return text[:1].lower() + text[1:]
+
+
+def _truncate_at_word(text: str, limit: int = 160) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    cut = compact[:limit].rsplit(" ", 1)[0]
+    return f"{cut}..."
 
 
 def _extract_simple_insight(question: str, answer: str) -> Optional[str]:
@@ -387,15 +486,21 @@ def _extract_simple_insight(question: str, answer: str) -> Optional[str]:
     if len(answer) <= 100:
         return f"When I asked '{question[:50]}...', I learned: {answer}"
 
-    # Try to extract first meaningful sentence
-    sentences = answer.replace("!", ".").replace("?", ".").split(".")
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if len(sentence) > 20 and len(sentence) <= 100:
-            return f"I learned that {sentence.lower()}"
+    # Extract the most substantive sentence, not merely the first sentence.
+    # Long answers often start with framing ("there are a few reasons...")
+    # before the actual claim.
+    candidates = [
+        sentence
+        for sentence in _split_sentences(answer)
+        if 20 < len(sentence) <= 180
+    ]
+    if candidates:
+        best = max(candidates, key=lambda sentence: _sentence_score(sentence, question))
+        if _sentence_score(best, question) > -50:
+            return f"I learned that {_lowercase_initial(best)}"
 
     # Fallback: truncate answer
-    return f"About '{question[:30]}...': {answer[:80]}..."
+    return f"About '{question[:30]}...': {_truncate_at_word(answer)}"
 
 
 async def extract_insight_from_answer(
@@ -410,7 +515,7 @@ async def extract_insight_from_answer(
     try:
         insight_text = _extract_simple_insight(question, answer)
         if insight_text:
-            category = _categorize_text(insight_text + " " + answer)
+            category = _categorize_text(insight_text)
             return add_insight(
                 text=insight_text,
                 source_question=question,
