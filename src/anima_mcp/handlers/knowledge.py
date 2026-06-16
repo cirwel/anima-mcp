@@ -231,6 +231,7 @@ async def handle_get_qa_insights(arguments: dict) -> list[TextContent]:
                     "references": i.references,
                     "conviction_score": round(i.conviction_score(), 3),
                     "rederived_from": len(i.derived_from),
+                    "contradicted_by": len(i.contradicted_by),
                     "age": _age_str(i.timestamp),
                     "timestamp": i.timestamp,
                 }

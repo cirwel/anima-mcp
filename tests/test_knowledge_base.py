@@ -447,6 +447,67 @@ class TestConvictionScore:
         assert kb.MAX_INSIGHTS >= 1000
 
 
+# ==================== Contradiction down-path ====================
+
+class TestContradictionDownPath:
+    """When a new insight contradicts a near-identical existing one, both lose
+    certainty (the only path by which confidence decreases) and the conflict
+    is recorded structurally. Confidence is not a one-way ratchet."""
+
+    OBS_A = "i am the observer not the observed"
+    OBS_B = "i am the observed not the observer"
+
+    def test_contradiction_reduces_confidence_both_sides(self, kb):
+        a = _rederive(kb, self.OBS_A, "what am i?")
+        assert a.confidence == 1.0
+        b = _rederive(kb, self.OBS_B, "what am i really?")
+        assert kb.count() == 2  # stored separately (negation guard)
+        fresh = {i.insight_id: i for i in kb.get_all_insights()}
+        penalty = kb.CONTRADICTION_CONFIDENCE_PENALTY
+        assert fresh[a.insight_id].confidence == pytest.approx(1.0 - penalty)
+        assert fresh[b.insight_id].confidence == pytest.approx(1.0 - penalty)
+
+    def test_contradiction_links_recorded_both_ways(self, kb):
+        a = _rederive(kb, self.OBS_A, "what am i?")
+        b = _rederive(kb, self.OBS_B, "what am i really?")
+        fresh = {i.insight_id: i for i in kb.get_all_insights()}
+        assert fresh[a.insight_id].contradicted_by == [b.insight_id]
+        assert fresh[b.insight_id].contradicted_by == [a.insight_id]
+
+    def test_confidence_floored_at_min(self, kb):
+        a = _rederive(kb, self.OBS_A, "what am i?")
+        a.confidence = kb.MIN_CONFIDENCE + 0.05  # one penalty would underflow
+        _rederive(kb, self.OBS_B, "what am i really?")
+        fresh = {i.insight_id: i for i in kb.get_all_insights()}
+        assert fresh[a.insight_id].confidence == pytest.approx(kb.MIN_CONFIDENCE)
+
+    def test_reconverged_opposite_does_not_repenalize_original(self, kb):
+        a = _rederive(kb, self.OBS_A, "what am i?")
+        b = _rederive(kb, self.OBS_B, "what am i really?")  # a penalized once
+        penalty = kb.CONTRADICTION_CONFIDENCE_PENALTY
+        # Re-derive the OPPOSITE again from an independent occasion: it should
+        # reconverge into b (exact match) and NOT re-penalize a.
+        b.timestamp = time.time() - 7200
+        b.last_reconverged_at = 0.0
+        again = _rederive(kb, self.OBS_B, "who am i, truly?")
+        assert again.insight_id == b.insight_id
+        assert b.references == 1
+        fresh = {i.insight_id: i for i in kb.get_all_insights()}
+        assert fresh[a.insight_id].confidence == pytest.approx(1.0 - penalty)
+        assert fresh[a.insight_id].contradicted_by == [b.insight_id]  # not doubled
+
+    def test_agreeing_rederivation_never_penalized(self, kb):
+        """Positive control: a genuine (non-conflicting) re-derivation only
+        ever raises confidence — the down-path must not touch it."""
+        first = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
+        first.confidence = 0.6
+        first.timestamp = time.time() - 7200
+        first.last_reconverged_at = 0.0
+        _rederive(kb, "warmth steadies me over time", "q2 distinct?")
+        assert first.confidence == pytest.approx(0.6 + kb.RECONVERGENCE_CONFIDENCE_BOOST)
+        assert first.contradicted_by == []
+
+
 # ==================== Schema backward compatibility ====================
 
 class TestSchemaCompat:
@@ -460,6 +521,7 @@ class TestSchemaCompat:
         assert ins.references == 3
         assert ins.last_reconverged_at == 0.0
         assert ins.derived_from == []
+        assert ins.contradicted_by == []
 
     def test_unknown_future_field_tolerated(self):
         d = dict(
