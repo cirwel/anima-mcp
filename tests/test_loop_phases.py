@@ -485,6 +485,50 @@ class TestGenerateLearnedQuestion:
 
 
 # ---------------------------------------------------------------------------
+# generate_experiential_question
+# ---------------------------------------------------------------------------
+
+class TestGenerateExperientialQuestion:
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    def test_outward_question_from_surprise_source(self, mock_recent):
+        from anima_mcp.loop_phases import generate_experiential_question
+        q = generate_experiential_question(["light"], surprise_level=0.5)
+        assert q is not None
+        # Outward + present-tense, and about the shifted source — not the self-model.
+        assert "the light" in q
+        assert any(w in q for w in ("shifted", "change", "different", "now"))
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    def test_none_when_no_surprise_sources(self, mock_recent):
+        from anima_mcp.loop_phases import generate_experiential_question
+        assert generate_experiential_question([], surprise_level=0.9) is None
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    def test_none_below_surprise_threshold(self, mock_recent):
+        from anima_mcp.loop_phases import generate_experiential_question
+        # A faint shift (<= 0.2) is not worth a question.
+        assert generate_experiential_question(["light"], surprise_level=0.1) is None
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    def test_unmapped_source_phrasing(self, mock_recent):
+        from anima_mcp.loop_phases import generate_experiential_question
+        q = generate_experiential_question(["heart_rate"], surprise_level=0.6)
+        assert q is not None and "heart rate" in q  # underscores humanized
+
+    def test_freshness_skips_recently_asked(self):
+        from anima_mcp.loop_phases import generate_experiential_question, _SURPRISE_PHRASING
+        phrase = _SURPRISE_PHRASING["clarity"]
+        already = [
+            {"text": f"{phrase} just shifted — what changed?"},
+            {"text": f"why did {phrase} change just now?"},
+            {"text": f"what is different about {phrase} right now?"},
+            {"text": f"{phrase} feels different in this moment — what is it?"},
+        ]
+        with patch("anima_mcp.messages.get_recent_questions", return_value=already):
+            assert generate_experiential_question(["clarity"], surprise_level=0.7) is None
+
+
+# ---------------------------------------------------------------------------
 # compose_grounded_observation
 # ---------------------------------------------------------------------------
 
