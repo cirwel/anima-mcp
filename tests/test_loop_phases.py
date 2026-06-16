@@ -621,6 +621,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = []
             mock_sm.return_value.beliefs = {}
@@ -636,6 +637,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = [insight]
             mock_sm.return_value.beliefs = {}
@@ -652,6 +654,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = []
             mock_sm.return_value.beliefs = {}
@@ -671,6 +674,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = [insight1, insight2]
             mock_sm.return_value.beliefs = {}
@@ -689,6 +693,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = [low, high]
             mock_sm.return_value.beliefs = {}
@@ -706,6 +711,7 @@ class TestGroundedSelfAnswer:
 
         with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
              patch("anima_mcp.knowledge.get_insights", return_value=[]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[]), \
              patch("anima_mcp.self_model.get_self_model") as mock_sm:
             mock_refl.return_value.get_insights.return_value = [low]
             mock_sm.return_value.beliefs = {}

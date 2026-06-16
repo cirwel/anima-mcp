@@ -11,6 +11,7 @@ which is a real risk on the Raspberry Pi.
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Union
 
@@ -33,7 +34,10 @@ def atomic_json_write(
         The tmp file is cleaned up on error.
     """
     path = Path(path)
-    tmp_path = path.with_suffix(".tmp")
+    # Unique tmp name (pid + random) in the same directory so concurrent
+    # writers to the same target never clobber each other's temp file before
+    # the atomic rename. The rename itself remains the atomic commit point.
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp_path, "w") as f:

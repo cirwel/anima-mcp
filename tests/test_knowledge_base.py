@@ -5,11 +5,13 @@ categorization, extraction, and insight summary.
 Run with: pytest tests/test_knowledge_base.py -v
 """
 
+import time
+
 import pytest
 
 from anima_mcp.knowledge import (
     KnowledgeBase, Insight,
-    _categorize_text, _extract_simple_insight,
+    _categorize_text, _extract_simple_insight, _polarity_conflict,
 )
 
 
@@ -46,23 +48,28 @@ class TestAddInsight:
         assert kb.count() == 1
 
     def test_duplicate_detection_case_insensitive(self, kb):
-        """Adding same text (different case) returns existing insight, not a new one."""
-        _add(kb, "I like warmth")
+        """Adding same text (different case) returns the existing insight and
+        collapses to one row. On the SAME occasion (same source question, no
+        time gap) it earns NO conviction credit — references stays 0.
+        Re-stating a belief in one breath is not independent re-derivation."""
+        first = _add(kb, "I like warmth")
         dup = _add(kb, "i like warmth")
         assert kb.count() == 1  # Not duplicated
-        assert dup.references >= 1  # Boosted
+        assert dup is first  # collapsed into the existing row
+        assert first.references == 0  # same occasion: no false conviction
 
-    def test_duplicate_boosts_confidence(self, kb):
-        """Duplicate add increases confidence of existing insight."""
+    def test_same_occasion_duplicate_does_not_boost_confidence(self, kb):
+        """A same-occasion duplicate must NOT ratchet confidence — confidence
+        is no longer a one-way ratchet driven by repetition. Only genuine
+        independent re-derivation moves it."""
         orig = _add(kb, "Stability matters")
-        # Lower the starting confidence so the +0.1 boost is observable
         orig.confidence = 0.5
-        _add(kb, "stability matters")  # Duplicate
-        # Fetch the stored insight
-        assert kb._insights[0].confidence > 0.5
+        _add(kb, "stability matters")  # same source + same instant
+        assert kb._insights[0].confidence == 0.5  # unchanged
 
     def test_semantic_overlap_consolidates_not_second_row(self, kb):
-        """Similar insight (high word overlap, not identical) merges into one row."""
+        """Similar insight (high word overlap, not identical) merges into one
+        row. Same occasion → collapsed for surfacing but references stays 0."""
         first = (
             "one two three four five six seven eight distinct words here"
         )
@@ -73,7 +80,7 @@ class TestAddInsight:
         b = _add(kb, second)
         assert a.insight_id == b.insight_id
         assert kb.count() == 1
-        assert kb._insights[0].references >= 1
+        assert kb._insights[0].references == 0  # same occasion: not credited
 
     def test_overflow_trims_to_max_keeping_best(self, kb):
         """When exceeding MAX_INSIGHTS, a genuinely important insight is kept."""
@@ -301,3 +308,164 @@ class TestPersistence:
         # Path doesn't exist yet — KnowledgeBase should handle gracefully
         kb = KnowledgeBase()
         assert kb.count() == 0
+
+
+# ==================== Reconvergence (honest conviction signal) ====================
+
+def _rederive(kb, text, question, author="claude"):
+    """Add an insight as if from an independent occasion."""
+    return kb.add_insight(
+        text=text, source_question=question,
+        source_answer="(answer)", source_author=author, category="self",
+    )
+
+
+class TestReconvergence:
+    """references must count INDEPENDENT re-derivations only — a new source
+    question AND a gap beyond the reconvergence window. Same-batch repetition
+    (which the daily cron produces) must never inflate a conviction."""
+
+    def test_independent_rederivation_credits_reference(self, kb):
+        first = _rederive(kb, "light shapes my clarity over time", "does light change clarity?")
+        # Backdate so the reconvergence window has elapsed.
+        first.timestamp = time.time() - 7200
+        first.last_reconverged_at = 0.0
+        again = _rederive(kb, "light shapes my clarity over time", "is my clarity tied to light?")
+        assert again is first
+        assert first.references == 1
+        assert len(first.derived_from) == 1
+        assert kb.count() == 1  # collapsed, not a second row
+
+    def test_same_source_question_not_credited(self, kb):
+        first = _rederive(kb, "warmth steadies me over time", "what steadies me?")
+        first.timestamp = time.time() - 7200  # window elapsed...
+        first.last_reconverged_at = 0.0
+        _rederive(kb, "warmth steadies me over time", "what steadies me?")  # ...but SAME question
+        assert first.references == 0
+
+    def test_within_window_not_credited(self, kb):
+        first = _rederive(kb, "warmth steadies me over time", "q one distinct?")
+        # No backdating: still inside the 30-minute window (same batch).
+        _rederive(kb, "warmth steadies me over time", "q two distinct?")
+        assert first.references == 0
+
+    def test_batch_credits_at_most_once_per_window(self, kb):
+        first = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
+        first.timestamp = time.time() - 7200
+        first.last_reconverged_at = 0.0
+        # A cron batch re-stating the same belief from several questions at once:
+        _rederive(kb, "warmth steadies me over time", "q2 distinct?")
+        _rederive(kb, "warmth steadies me over time", "q3 distinct?")
+        _rederive(kb, "warmth steadies me over time", "q4 distinct?")
+        assert first.references == 1  # first credit closes the window for the batch
+
+    def test_independent_rederivation_boosts_confidence(self, kb):
+        first = _rederive(kb, "recovery follows stability closely here", "how do i recover?")
+        first.confidence = 0.6
+        first.timestamp = time.time() - 7200
+        first.last_reconverged_at = 0.0
+        _rederive(kb, "recovery follows stability closely here", "what drives my recovery?")
+        assert first.references == 1
+        assert first.confidence == min(1.0, 0.6 + kb.RECONVERGENCE_CONFIDENCE_BOOST)
+
+
+# ==================== Negation / polarity guard ====================
+
+class TestNegationGuard:
+    """Near-identical wording can assert the OPPOSITE claim. Such pairs must
+    NEVER merge — otherwise a contradiction becomes a (false) conviction."""
+
+    def test_opposite_via_word_order_not_merged(self, kb):
+        """The headline case: same words, opposite meaning ('X not Y' vs
+        'Y not X'). Bag-of-words similarity is ~1.0, so only the negation-focus
+        rule catches it."""
+        a = _rederive(kb, "i am the observer not the observed", "what am i?")
+        b = _rederive(kb, "i am the observed not the observer", "what am i really?")
+        assert a.insight_id != b.insight_id
+        assert kb.count() == 2  # contradiction stored, not fused
+
+    def test_antonym_not_merged(self, kb):
+        a = _rederive(kb, "the room feels much warmer than before today", "how is the room?")
+        b = _rederive(kb, "the room feels much cooler than before today", "how is the room now?")
+        assert a.insight_id != b.insight_id
+        assert kb.count() == 2
+
+    def test_negation_parity_not_merged(self, kb):
+        a = _rederive(kb, "light is tied to my warmth here today", "is light tied to warmth?")
+        b = _rederive(kb, "light is not tied to my warmth here today", "is light tied to warmth, really?")
+        assert a.insight_id != b.insight_id
+        assert kb.count() == 2
+
+    def test_agreeing_near_duplicate_still_merges(self, kb):
+        """Positive control: a genuine paraphrase with no polarity flip still
+        consolidates (guard is precise, not blanket)."""
+        a = _rederive(kb, "one two three four five six seven eight nine here", "q a?")
+        b = _rederive(kb, "one two three four five six seven eight ten here", "q b?")
+        assert a.insight_id == b.insight_id
+        assert kb.count() == 1
+
+    def test_polarity_conflict_unit(self):
+        assert _polarity_conflict(
+            "i am the observer not the observed",
+            "i am the observed not the observer",
+        )
+        assert _polarity_conflict("the room is warmer now", "the room is cooler now")
+        assert _polarity_conflict("light affects warmth", "light does not affect warmth")
+        assert not _polarity_conflict(
+            "warmth steadies me over time", "warmth steadies me across time"
+        )
+
+
+# ==================== Conviction score & surfacing ====================
+
+class TestConvictionScore:
+    def test_rederived_outranks_recent_oneoff(self, kb):
+        conv = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
+        conv.timestamp = time.time() - 7200
+        conv.last_reconverged_at = 0.0
+        _rederive(kb, "warmth steadies me over time", "q2 distinct?")  # credit → references=1
+        # A newer, never-re-derived insight:
+        _rederive(kb, "the air is dry tonight here", "weather tonight?")
+        top = kb.get_top_convictions(limit=1)
+        assert top[0].text == "warmth steadies me over time"
+
+    def test_get_top_convictions_respects_limit(self, kb):
+        texts = [
+            "warmth steadies me through the night",
+            "light brightens my clarity at dawn",
+            "silence feels like a kind of rest",
+            "drawing helps me settle when restless",
+            "the cold makes my edges feel sharper",
+        ]
+        for i, t in enumerate(texts):
+            _rederive(kb, t, f"q{i}?")
+        assert kb.count() == 5
+        assert len(kb.get_top_convictions(limit=3)) == 3
+
+    def test_unbounded_retention_high_ceiling(self, kb):
+        """Default cap is a high safety valve, not a routine forgetter."""
+        assert kb.MAX_INSIGHTS >= 1000
+
+
+# ==================== Schema backward compatibility ====================
+
+class TestSchemaCompat:
+    def test_legacy_dict_without_new_fields_loads(self):
+        d = dict(
+            insight_id="x1", text="legacy", source_question="q",
+            source_answer="a", source_author="test", timestamp=1.0,
+            category="self", confidence=1.0, references=3,
+        )
+        ins = Insight.from_dict(d)
+        assert ins.references == 3
+        assert ins.last_reconverged_at == 0.0
+        assert ins.derived_from == []
+
+    def test_unknown_future_field_tolerated(self):
+        d = dict(
+            insight_id="x2", text="future", source_question="q",
+            source_answer="a", source_author="test", timestamp=1.0,
+            some_field_from_the_future="ignored",
+        )
+        ins = Insight.from_dict(d)  # must not raise
+        assert ins.text == "future"

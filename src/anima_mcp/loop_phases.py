@@ -464,16 +464,24 @@ def grounded_self_answer(question_text: str, anima, readings) -> Optional[str]:
     except Exception:
         pass
 
-    # 2. Q&A knowledge base
+    # 2. Q&A knowledge base. Candidate pool = recent insights + strongest
+    # convictions, deduped: a genuinely re-derived belief should be able to
+    # surface even when it has aged out of the most-recent window.
     try:
-        from .knowledge import get_insights as get_qa_insights
-        for insight in get_qa_insights(limit=20):
+        from .knowledge import get_insights as get_qa_insights, get_top_convictions
+        pool = {i.insight_id: i for i in get_qa_insights(limit=20)}
+        for i in get_top_convictions(limit=20):
+            pool.setdefault(i.insight_id, i)
+        for insight in pool.values():
             text_lower = insight.text.lower()
             q_words = set(question_lower.split()) - {"i", "a", "the", "is", "do", "my", "me", "am", "what", "why", "how", "when", "does"}
             i_words = set(text_lower.split()) - {"i", "a", "the", "is", "my", "me", "when", "that", "and", "learned"}
             overlap = q_words & i_words
             if overlap and insight.confidence > 0.4:
-                evidence.append((insight.confidence * 0.9, insight.text))
+                # Weight by conviction: re-derived beliefs surface first, but
+                # stay in a sane range so other evidence sources still compete.
+                weight = min(1.1, insight.confidence * 0.9 + 0.1 * min(insight.references, 3))
+                evidence.append((weight, insight.text))
     except Exception:
         pass
 

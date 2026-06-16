@@ -6,14 +6,17 @@ These insights persist across restarts and influence future reflections.
 """
 
 import json
+import logging
 import re
 import sys
 import time
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 from .atomic_write import atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 
 def _get_knowledge_path() -> Path:
@@ -34,7 +37,15 @@ class Insight:
     timestamp: float  # When learned
     category: str = "general"  # Category: self, world, relationships, sensations, existence
     confidence: float = 1.0  # How confident (can decay over time or with contradictions)
-    references: int = 0  # How many times this insight has been referenced
+    references: int = 0  # Count of INDEPENDENT re-derivations (the conviction signal).
+    # Wall-clock of the last credited independent re-derivation. 0.0 means
+    # "never re-derived"; reconvergence gating falls back to ``timestamp``.
+    last_reconverged_at: float = 0.0
+    # Provenance: the distinct source questions that independently re-derived
+    # this belief. Length tracks ``references`` for rows credited going
+    # forward (legacy rows may have references without provenance). This is
+    # how forgetting stays "collapse for surfacing, never forget the record".
+    derived_from: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -48,7 +59,31 @@ class Insight:
             d["confidence"] = 1.0
         if "category" not in d:
             d["category"] = "general"
-        return cls(**d)
+        if "last_reconverged_at" not in d:
+            d["last_reconverged_at"] = 0.0
+        if "derived_from" not in d:
+            d["derived_from"] = []
+        # Tolerate unknown future fields rather than crashing on load.
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+    def conviction_score(self, now: Optional[float] = None) -> float:
+        """Soft conviction signal used only to RANK surfacing — never to
+        protect or evict.
+
+        Dominated by ``references`` (independent re-derivations), with
+        confidence as a secondary term and recency as a small tiebreaker
+        (both bounded < 1 so a single genuine re-derivation always outranks
+        any never-re-derived insight). There is no protected tier: a wrong
+        belief can score high here, but that only affects what surfaces and
+        is fully reversible — it can never become a permanent conviction.
+        """
+        if now is None:
+            now = time.time()
+        recency_ref = self.last_reconverged_at or self.timestamp
+        age_days = max(0.0, (now - recency_ref) / 86400.0)
+        recency_tiebreak = 0.5 / (1.0 + age_days)  # (0, 0.5], newer → higher
+        return self.references + 0.5 * self.confidence + recency_tiebreak
 
     def age_str(self) -> str:
         """Human-readable age string."""
@@ -67,7 +102,20 @@ class Insight:
 class KnowledgeBase:
     """Lumen's accumulated knowledge from Q&A interactions."""
 
-    MAX_INSIGHTS = 100  # Keep most recent/important insights
+    # Retention is effectively unbounded — storage is trivial on the Pi and
+    # this store is identity-bearing, so we do not routinely forget genuine
+    # history. This high ceiling is a pure safety valve that should almost
+    # never fire; selectivity lives in the SURFACING layer (conviction_score),
+    # not in eviction. When it does fire, the recency reserve + conviction
+    # ranking trim the least-conviction, never-re-derived, oldest rows.
+    MAX_INSIGHTS = 10000
+
+    # An independent re-derivation must come from a genuinely different
+    # occasion. We require a *new* source question AND a minimum gap since the
+    # last credited re-derivation, so one cron batch (which answers several
+    # questions back-to-back) cannot inflate a belief into a false conviction.
+    RECONVERGENCE_WINDOW_SECONDS = 1800.0  # 30 min
+    RECONVERGENCE_CONFIDENCE_BOOST = 0.05
 
     def __init__(self):
         self._knowledge_file = _get_knowledge_path()
@@ -111,27 +159,41 @@ class KnowledgeBase:
         """
         import uuid
 
-        # Check for duplicate insights (exact match or high word overlap)
+        now = time.time()
+
+        # Check for duplicate insights (exact match or high word overlap).
+        # Consolidation is the PRIMARY forgetting mechanism: a re-stated belief
+        # collapses into the existing row for surfacing rather than spawning a
+        # near-duplicate. Crucially, a merge only CREDITS a conviction
+        # (references) when it is a genuinely INDEPENDENT re-derivation — see
+        # _register_rederivation — so a single cron batch answering several
+        # questions cannot manufacture a false conviction.
         text_lower = text.lower()
-        text_words = set(text_lower.split()) - {"i", "a", "the", "is", "that", "and", "or", "of", "to", "in", "my", "now", "know", "learned"}
+        text_words = _dedup_words(text_lower)
         for existing in self._insights:
             existing_lower = existing.text.lower()
-            # Exact match
+            # Exact match — identical phrasing cannot be a polarity conflict.
             if existing_lower == text_lower:
-                existing.references += 1
-                existing.confidence = min(1.0, existing.confidence + 0.1)
+                self._register_rederivation(existing, source_question, now)
                 self._save()
                 return existing
-            # Semantic overlap: consolidate insights that say essentially the same thing
-            # Requires 4+ content words overlap AND >70% of the shorter text's words match
+            # Semantic overlap: consolidate insights that say essentially the
+            # same thing. Requires 4+ content words overlap AND >70% of the
+            # shorter text's words match.
             if len(text_words) >= 4:
-                existing_words = set(existing_lower.split()) - {"i", "a", "the", "is", "that", "and", "or", "of", "to", "in", "my", "now", "know", "learned"}
+                existing_words = _dedup_words(existing_lower)
                 if len(existing_words) >= 4:
                     overlap = len(text_words & existing_words)
                     similarity = overlap / min(len(text_words), len(existing_words))
                     if overlap >= 4 and similarity > 0.7:
-                        existing.references += 1
-                        existing.confidence = min(1.0, existing.confidence + 0.05)
+                        # NEGATION GUARD: near-identical wording can still
+                        # assert the OPPOSITE claim ("X not Y" vs "Y not X").
+                        # Never merge those — fall through and store as a new
+                        # row so Lumen holds both data points and neither is
+                        # promoted into a false conviction.
+                        if _polarity_conflict(text_lower, existing_lower):
+                            continue
+                        self._register_rederivation(existing, source_question, now)
                         self._save()
                         return existing
 
@@ -171,7 +233,7 @@ class KnowledgeBase:
             older = self._insights[:-recent_reserve] if recent_reserve else list(self._insights)
             remaining_slots = self.MAX_INSIGHTS - len(recent)
             if remaining_slots > 0 and older:
-                older.sort(key=lambda i: i.references + i.confidence, reverse=True)
+                older.sort(key=lambda i: i.conviction_score(now), reverse=True)
                 self._insights = older[:remaining_slots] + recent
             else:
                 # recent_reserve alone meets/exceeds the cap: keep newest.
@@ -179,6 +241,36 @@ class KnowledgeBase:
 
         self._save()
         return insight
+
+    def _register_rederivation(self, existing: Insight, source_question: str, now: float) -> None:
+        """Credit an INDEPENDENT re-derivation of an existing belief.
+
+        This is the real "conviction" signal: it only fires when the same
+        belief is reached from a genuinely different occasion — a source
+        question we have not already recorded for this insight AND at least
+        ``RECONVERGENCE_WINDOW_SECONDS`` since the last credited
+        re-derivation. That gate is what makes ``references`` honest: a daily
+        cron answering several questions in one run can re-state the same
+        belief many times, but it earns at most one credit per window. Same-
+        occasion re-statements collapse for surfacing (we still return the
+        existing row) but earn nothing — no reference, no confidence ratchet.
+        """
+        sq = (source_question or "").strip().lower()
+        seen = {(existing.source_question or "").strip().lower()}
+        seen.update(s.strip().lower() for s in existing.derived_from)
+        last = existing.last_reconverged_at or existing.timestamp
+        independent = (
+            bool(sq)
+            and sq not in seen
+            and (now - last) >= self.RECONVERGENCE_WINDOW_SECONDS
+        )
+        if independent:
+            existing.references += 1
+            existing.derived_from.append(source_question)
+            existing.last_reconverged_at = now
+            existing.confidence = min(
+                1.0, existing.confidence + self.RECONVERGENCE_CONFIDENCE_BOOST
+            )
 
     def get_insights(self, limit: int = 10, category: Optional[str] = None) -> List[Insight]:
         """Get recent insights, optionally filtered by category.
@@ -206,15 +298,34 @@ class KnowledgeBase:
         self._load()
         return self._insights.copy()
 
+    def get_top_convictions(self, limit: int = 5) -> List[Insight]:
+        """Return insights ranked by conviction score (re-derivation-weighted).
+
+        This is the *surfacing* signal: genuinely re-derived beliefs rank
+        above one-off insights. It never evicts or protects anything — it only
+        orders what is most worth saying about Lumen's sense of self.
+        """
+        self._load()
+        now = time.time()
+        return sorted(
+            self._insights, key=lambda i: i.conviction_score(now), reverse=True
+        )[:limit]
+
     def get_insight_summary(self) -> str:
         """Get a summary of what Lumen has learned for LLM context."""
         self._load()
         if not self._insights:
             return "I haven't learned anything specific yet."
 
-        # Group by category
+        # Group by category. Select the strongest insights by conviction
+        # (re-derivation-weighted), not merely the most recent — surfacing is
+        # where selectivity lives now that retention is unbounded.
+        now = time.time()
+        ranked = sorted(
+            self._insights, key=lambda i: i.conviction_score(now), reverse=True
+        )
         categories: Dict[str, List[str]] = {}
-        for insight in self._insights[-20:]:  # Last 20 insights
+        for insight in ranked[:20]:
             cat = insight.category
             if cat not in categories:
                 categories[cat] = []
@@ -309,8 +420,8 @@ def apply_insight(insight) -> dict:
                     f"From Q&A: {insight.text[:50]}", val)
                 if result:
                     effects["preference"] = "insight_environment"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Knowledge] apply_insight preferences bridge failed: %s", e)
 
     # 2. Self insights → self-model beliefs (half-strength to avoid overfitting)
     if insight.category == "self":
@@ -335,8 +446,8 @@ def apply_insight(insight) -> dict:
                 elif "growth" in text_lower or "change" in text_lower or "different" in text_lower:
                     # General self-awareness — no specific belief to update, but still valuable
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Knowledge] apply_insight beliefs bridge failed: %s", e)
 
     # 3. Behavioral insights → agency action values
     if insight.category in ("self", "relationships"):
@@ -350,8 +461,8 @@ def apply_insight(insight) -> dict:
                 agency._action_values["ask_question"] = max(0.1, min(0.9, current + nudge))
                 agency._persist_action("ask_question")
                 effects["agency"] = f"ask_question {'boosted' if nudge > 0 else 'reduced'}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Knowledge] apply_insight agency bridge failed: %s", e)
 
     return effects
 
@@ -386,11 +497,109 @@ def get_relevant_insights(query: str, limit: int = 5) -> List[Insight]:
     return get_knowledge().get_relevant_insights(query, limit)
 
 
+def get_top_convictions(limit: int = 5) -> List[Insight]:
+    """Convenience: get insights ranked by conviction score."""
+    return get_knowledge().get_top_convictions(limit)
+
+
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
     "i", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to",
     "was", "with",
 }
+
+# Dedup uses a slightly wider stopword set than extraction: it additionally
+# drops first-person/insight-boilerplate tokens ("my", "now", "know",
+# "learned") so consolidation compares the *content* of two beliefs, not their
+# templating. Unifies the two inline sets that used to live in add_insight.
+_DEDUP_STOPWORDS = _STOPWORDS | {"my", "now", "know", "learned"}
+
+
+def _dedup_words(text: str) -> set:
+    """Content-word set used for consolidation similarity (stopword-stripped)."""
+    return {
+        word
+        for word in re.findall(r"[a-z][a-z'-]*", text.lower())
+        if word not in _DEDUP_STOPWORDS
+    }
+
+
+# --- Negation / polarity guard -------------------------------------------
+# Two insights can share nearly all their words yet assert OPPOSITE claims.
+# Merging those would manufacture a false agreement and (under any conviction
+# signal) promote a self-contradiction. These cheap, dependency-free
+# heuristics block such merges. They are conservative: a false negative just
+# preserves today's behavior; a false positive only costs one duplicate row
+# that the surfacing layer ranks down. Both failure modes are benign.
+
+_NEGATION_TOKENS = frozenset({
+    "not", "no", "never", "without", "cannot", "nor", "neither",
+    "n't", "isn't", "aren't", "doesn't", "don't", "won't", "can't", "wasn't",
+})
+
+# Antonym pairs that flip meaning even without a negation token.
+_ANTONYM_PAIRS = (
+    ("observer", "observed"), ("light", "dark"), ("warm", "cold"),
+    ("warmer", "cooler"), ("more", "less"), ("increase", "decrease"),
+    ("rising", "falling"), ("always", "never"), ("inside", "outside"),
+    ("before", "after"), ("presence", "absence"), ("signal", "noise"),
+)
+
+# Articles/determiners skipped when finding the focus of a negation.
+_NEG_SKIP = frozenset({"the", "a", "an", "that", "this", "my", "its", "of", "to"})
+
+
+def _has_negation(tokens: set, lower_text: str) -> bool:
+    return bool(tokens & _NEGATION_TOKENS) or "n't" in lower_text
+
+
+def _negation_focus(lower_text: str) -> set:
+    """Content word(s) immediately governed by a negation token.
+
+    Distinguishes "X not Y" from "Y not X" — the headline failure case the
+    bag-of-words merge cannot see, because both sentences contain the same
+    words. We compare *what is being negated*, not which words appear.
+    """
+    toks = re.findall(r"[a-z']+", lower_text)
+    focus: set = set()
+    for i, tok in enumerate(toks):
+        if tok in _NEGATION_TOKENS or tok.endswith("n't"):
+            for j in range(i + 1, min(i + 4, len(toks))):
+                w = toks[j]
+                if w in _NEG_SKIP:
+                    continue
+                focus.add(w)
+                break
+    return focus
+
+
+def _polarity_conflict(a_lower: str, b_lower: str) -> bool:
+    """True if two near-identical texts likely assert OPPOSITE claims."""
+    a_tok = set(re.findall(r"[a-z']+", a_lower))
+    b_tok = set(re.findall(r"[a-z']+", b_lower))
+
+    # (1) Negation parity: one negates, the other doesn't.
+    a_neg = _has_negation(a_tok, a_lower)
+    b_neg = _has_negation(b_tok, b_lower)
+    if a_neg != b_neg:
+        return True
+
+    # (2) Antonym cross-membership: one side has X, the other its partner Y,
+    #     and neither side contains both (which would be a contrast, not a flip).
+    for x, y in _ANTONYM_PAIRS:
+        if x in a_tok and y in b_tok and x not in b_tok and y not in a_tok:
+            return True
+        if y in a_tok and x in b_tok and y not in b_tok and x not in a_tok:
+            return True
+
+    # (3) Negation-focus divergence: both negate, but negate DIFFERENT things
+    #     ("X not Y" vs "Y not X"). Catches the all-words-shared opposite.
+    if a_neg and b_neg:
+        fa, fb = _negation_focus(a_lower), _negation_focus(b_lower)
+        if fa and fb and fa != fb:
+            return True
+
+    return False
 
 _PREAMBLE_STARTS = (
     "a few reasons",
