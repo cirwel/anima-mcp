@@ -46,6 +46,12 @@ class Insight:
     # forward (legacy rows may have references without provenance). This is
     # how forgetting stays "collapse for surfacing, never forget the record".
     derived_from: List[str] = field(default_factory=list)
+    # Down-path / contradiction visibility: ids of insights that assert the
+    # OPPOSITE claim (detected by the negation guard at add time). Makes
+    # contradictions structural rather than silently stored side-by-side, and
+    # is the trigger that lets confidence FALL — confidence is not a one-way
+    # ratchet that can only ever strengthen with repetition.
+    contradicted_by: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -63,6 +69,8 @@ class Insight:
             d["last_reconverged_at"] = 0.0
         if "derived_from" not in d:
             d["derived_from"] = []
+        if "contradicted_by" not in d:
+            d["contradicted_by"] = []
         # Tolerate unknown future fields rather than crashing on load.
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})
@@ -117,6 +125,14 @@ class KnowledgeBase:
     RECONVERGENCE_WINDOW_SECONDS = 1800.0  # 30 min
     RECONVERGENCE_CONFIDENCE_BOOST = 0.05
 
+    # Down-path: when a new insight contradicts a near-identical existing one
+    # (negation guard fires), both sides lose certainty. Reversible and
+    # bounded — never zero — so a contested belief is demoted in surfacing,
+    # not erased. A single contradiction should not flatten a belief that was
+    # independently re-derived many times; ``references`` still carries weight.
+    CONTRADICTION_CONFIDENCE_PENALTY = 0.15
+    MIN_CONFIDENCE = 0.1
+
     def __init__(self):
         self._knowledge_file = _get_knowledge_path()
         self._insights: List[Insight] = []
@@ -170,6 +186,7 @@ class KnowledgeBase:
         # questions cannot manufacture a false conviction.
         text_lower = text.lower()
         text_words = _dedup_words(text_lower)
+        contradicts: List[Insight] = []
         for existing in self._insights:
             existing_lower = existing.text.lower()
             # Exact match — identical phrasing cannot be a polarity conflict.
@@ -188,10 +205,12 @@ class KnowledgeBase:
                     if overlap >= 4 and similarity > 0.7:
                         # NEGATION GUARD: near-identical wording can still
                         # assert the OPPOSITE claim ("X not Y" vs "Y not X").
-                        # Never merge those — fall through and store as a new
-                        # row so Lumen holds both data points and neither is
-                        # promoted into a false conviction.
+                        # Never merge those — remember it as a contradiction and
+                        # keep scanning (a later row may be a clean merge). If we
+                        # fall through to store a new row, both sides lose
+                        # certainty (down-path) so the contradiction is visible.
                         if _polarity_conflict(text_lower, existing_lower):
+                            contradicts.append(existing)
                             continue
                         self._register_rederivation(existing, source_question, now)
                         self._save()
@@ -212,6 +231,10 @@ class KnowledgeBase:
             category=category,
             confidence=confidence,
         )
+        # Down-path: if this new row contradicts existing near-identical
+        # insight(s), record the link and reduce certainty on both sides.
+        if contradicts:
+            self._register_contradiction(insight, contradicts)
         self._insights.append(insight)
 
         # Trim to max, protecting the most-recent insights so the store never
@@ -271,6 +294,31 @@ class KnowledgeBase:
             existing.confidence = min(
                 1.0, existing.confidence + self.RECONVERGENCE_CONFIDENCE_BOOST
             )
+
+    def _register_contradiction(self, new_insight: Insight, existing_list: List[Insight]) -> None:
+        """Make a contradiction structural and let confidence fall.
+
+        Triggered when the negation guard blocks a merge: ``new_insight``
+        asserts the opposite of one or more near-identical existing insights.
+        We link both directions (``contradicted_by``) so the conflict is
+        visible, and apply a bounded confidence penalty to BOTH sides — the
+        only path by which confidence decreases. The penalty is bounded
+        (never below ``MIN_CONFIDENCE``) and small relative to a re-derivation
+        credit, so a belief independently re-derived many times is demoted but
+        not erased by a single dissenting data point.
+        """
+        for existing in existing_list:
+            existing.confidence = max(
+                self.MIN_CONFIDENCE, existing.confidence - self.CONTRADICTION_CONFIDENCE_PENALTY
+            )
+            if new_insight.insight_id not in existing.contradicted_by:
+                existing.contradicted_by.append(new_insight.insight_id)
+            if existing.insight_id not in new_insight.contradicted_by:
+                new_insight.contradicted_by.append(existing.insight_id)
+        # The new claim enters contested too — it is opposed from birth.
+        new_insight.confidence = max(
+            self.MIN_CONFIDENCE, new_insight.confidence - self.CONTRADICTION_CONFIDENCE_PENALTY
+        )
 
     def get_insights(self, limit: int = 10, category: Optional[str] = None) -> List[Insight]:
         """Get recent insights, optionally filtered by category.
