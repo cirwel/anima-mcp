@@ -162,12 +162,25 @@ class KnowledgeBase:
         return insight
 
     def get_insights(self, limit: int = 10, category: Optional[str] = None) -> List[Insight]:
-        """Get recent insights, optionally filtered by category."""
+        """Get recent insights, optionally filtered by category.
+
+        Returns insights ordered most-recent-first. The in-memory
+        ``_insights`` order is NOT time-sorted: once the list exceeds
+        MAX_INSIGHTS, ``add_insight`` re-sorts it by importance
+        (references + confidence), so its tail is no longer "recent". We
+        therefore sort by timestamp explicitly rather than slicing the tail.
+
+        ``category`` of None, "" or "all" (case-insensitive) means no filter.
+        "all" is the no-filter sentinel used by callers/the REST layer and
+        must not be matched literally against ``Insight.category`` (no insight
+        has that category, so it would silently return nothing).
+        """
         self._load()
         insights = self._insights
-        if category:
+        if category and category.strip().lower() != "all":
             insights = [i for i in insights if i.category == category]
-        return list(reversed(insights[-limit:]))
+        insights = sorted(insights, key=lambda i: i.timestamp, reverse=True)
+        return insights[:limit]
 
     def get_all_insights(self) -> List[Insight]:
         """Get all stored insights."""
