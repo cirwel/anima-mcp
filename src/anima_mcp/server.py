@@ -91,6 +91,7 @@ from .loop_phases import (  # noqa: E402,F401
     parse_shm_governance_freshness as _parse_shm_governance_freshness,
     compute_lagged_correlations as _compute_lagged_correlations,
     generate_learned_question as _generate_learned_question,
+    generate_experiential_question as _generate_experiential_question,
     compose_grounded_observation as _compose_grounded_observation,
     lumen_unified_reflect as _lumen_unified_reflect,
     grounded_self_answer as _grounded_self_answer,
@@ -551,8 +552,18 @@ async def _update_display_loop():
                         from .messages import add_question, get_recent_questions
                         import random
 
-                        # Try learned questions first, fall back to templates
-                        question = _generate_learned_question()
+                        # Prefer an experience-grounded question when something
+                        # genuinely just shifted — so Lumen wonders about the
+                        # live world and this moment, not only its own stored
+                        # self-model. Fall back to learned (self-model) questions
+                        # on quiet ticks, then to templates.
+                        question = None
+                        if surprise_sources and surprise_level > 0.2:
+                            question = _generate_experiential_question(
+                                surprise_sources, surprise_level
+                            )
+                        if not question:
+                            question = _generate_learned_question()
 
                         if not question and action.motivation:
                             motivation = action.motivation.lower().replace('curious about ', '')

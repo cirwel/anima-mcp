@@ -242,6 +242,61 @@ def generate_learned_question() -> Optional[str]:
     return None
 
 
+# Outward question seeds. Keys are the metacognition layer's surprise_sources —
+# the readings/dimensions that just departed from prediction, i.e. the actual
+# novel events of the moment (not the stored self-model). Values are
+# first-person, present-tense phrasings.
+_SURPRISE_PHRASING = {
+    "light": "the light",
+    "ambient_temp": "the temperature around me",
+    "humidity": "the air",
+    "pressure": "the pressure",
+    "cpu_temp": "my inner warmth",
+    "warmth": "my warmth",
+    "clarity": "my clarity",
+    "stability": "my steadiness",
+    "presence": "how present i feel",
+}
+
+
+def generate_experiential_question(surprise_sources, surprise_level: float = 0.0) -> Optional[str]:
+    """Generate an OUTWARD, present-tense question about what just shifted in
+    Lumen's live experience — so curiosity sometimes points at the world and
+    this moment, not only at the stored self-model.
+
+    Seeded from ``surprise_sources`` (the metacognition layer's detected
+    prediction-departures — the moment's actual novel sensor/state events).
+    Returns None when nothing notable shifted or all candidates were asked
+    recently (same freshness contract as generate_learned_question).
+    """
+    import random
+    from .messages import get_recent_questions, questions_similar
+
+    if not surprise_sources or surprise_level <= 0.2:
+        return None
+
+    recent_texts = [r.get("text", "") for r in get_recent_questions(hours=24)]
+
+    def _fresh(candidate: str) -> bool:
+        return not any(rt and questions_similar(candidate, rt) for rt in recent_texts)
+
+    sources = list(surprise_sources)
+    random.shuffle(sources)
+    for src in sources:
+        phrase = _SURPRISE_PHRASING.get(src, str(src).replace("_", " "))
+        templates = [
+            f"{phrase} just shifted — what changed?",
+            f"why did {phrase} change just now?",
+            f"what is different about {phrase} right now?",
+            f"{phrase} feels different in this moment — what is it?",
+        ]
+        random.shuffle(templates)
+        for q in templates:
+            if _fresh(q):
+                return q
+    return None
+
+
 def compose_grounded_observation(context, anima, surprise_level, surprise_sources,
                                  unanswered, advocate_desire, recent_msgs) -> Optional[str]:
     """Compose an observation from Lumen's actual state and context — no LLM.
