@@ -124,6 +124,42 @@ class TestGetInsights:
         results = kb.get_insights(limit=2)
         assert results[0].text == "New insight"
 
+    def test_category_all_is_no_filter(self, kb):
+        """category='all'/''/None is the no-filter sentinel — it must return
+        every category, not filter literally for category == 'all' (which no
+        insight has, so it would silently return nothing). Regression: passing
+        category='all' returned [] while the base held insights."""
+        _add(kb, "I am aware", category="self")
+        _add(kb, "The room is warm", category="sensations")
+        for sentinel in ("all", "ALL", " All ", "", None):
+            results = kb.get_insights(category=sentinel)
+            assert len(results) == 2, f"sentinel {sentinel!r} must not filter"
+
+    def test_newest_first_survives_importance_trim(self, kb):
+        """After MAX_INSIGHTS overflow, add_insight re-sorts _insights by
+        importance (references + confidence), so the list tail is no longer
+        time-ordered. get_insights must still return the most RECENT insight
+        first. Regression: it sliced the importance-sorted tail and surfaced
+        stale insights despite newer ones existing."""
+        kb.MAX_INSIGHTS = 5
+        old = _add(kb, "Old important insight")
+        old.references = 100  # set before the trim so it sorts to the FRONT
+        for i in range(5):
+            _add(kb, f"Filler insight {i}")
+        assert kb.count() == 5  # f4 evicted; old + f0..f3 survive
+        # Pin deterministic timestamps, then persist so _load() preserves them.
+        # `old` is first in the importance-sorted list but OLDEST in time.
+        for ins in kb._insights:
+            if ins.text == "Old important insight":
+                ins.timestamp = 1000.0
+            else:
+                ins.timestamp = 2000.0 + int(ins.text.split()[-1])  # f3 newest
+        kb._save()
+        results = kb.get_insights(limit=5)
+        # Timestamp order must win over the importance-front `old`.
+        assert results[0].text == "Filler insight 3"  # newest by timestamp
+        assert results[-1].text == "Old important insight"  # oldest, despite importance
+
     def test_empty_returns_empty(self, kb):
         """Empty knowledge base returns empty list."""
         assert kb.get_insights() == []
