@@ -152,11 +152,30 @@ class KnowledgeBase:
         )
         self._insights.append(insight)
 
-        # Trim to max, keeping most referenced/confident
+        # Trim to max, protecting the most-recent insights so the store never
+        # freezes. The old policy sorted purely by importance (references +
+        # confidence) and kept the top N; once the store filled with
+        # high-importance survivors, every NEW insight (references=0) scored
+        # lowest, was appended, and got trimmed in the same call before it
+        # ever reached disk — the store stopped accepting new self-knowledge
+        # entirely (frozen ~130 days in production). Now we always retain the
+        # most recently added insights, then fill remaining slots by
+        # importance. New insights survive long enough to earn references and
+        # compete; genuinely high-importance old insights are still kept.
         if len(self._insights) > self.MAX_INSIGHTS:
-            # Sort by importance (references + confidence)
-            self._insights.sort(key=lambda i: i.references + i.confidence, reverse=True)
-            self._insights = self._insights[:self.MAX_INSIGHTS]
+            # Reserve a recency window. Capped at half the cap so importance
+            # still governs the majority of slots (and so small test caps
+            # behave sanely).
+            recent_reserve = min(30, self.MAX_INSIGHTS // 2)
+            recent = self._insights[-recent_reserve:] if recent_reserve else []
+            older = self._insights[:-recent_reserve] if recent_reserve else list(self._insights)
+            remaining_slots = self.MAX_INSIGHTS - len(recent)
+            if remaining_slots > 0 and older:
+                older.sort(key=lambda i: i.references + i.confidence, reverse=True)
+                self._insights = older[:remaining_slots] + recent
+            else:
+                # recent_reserve alone meets/exceeds the cap: keep newest.
+                self._insights = recent[-self.MAX_INSIGHTS:]
 
         self._save()
         return insight

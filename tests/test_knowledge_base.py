@@ -76,7 +76,7 @@ class TestAddInsight:
         assert kb._insights[0].references >= 1
 
     def test_overflow_trims_to_max_keeping_best(self, kb):
-        """When exceeding MAX_INSIGHTS, least important are dropped."""
+        """When exceeding MAX_INSIGHTS, a genuinely important insight is kept."""
         kb.MAX_INSIGHTS = 5
         # Add 6 insights; make the first one highly referenced
         first = _add(kb, "Important insight")
@@ -84,9 +84,26 @@ class TestAddInsight:
         for i in range(5):
             _add(kb, f"Filler insight {i}")
         assert kb.count() == 5  # Trimmed to max
-        # The important one should survive
+        # The important one should survive (it wins the importance fill).
         texts = [ins.text for ins in kb._insights]
         assert "Important insight" in texts
+
+    def test_overflow_new_insight_survives(self, kb):
+        """A brand-new insight must persist even when the store is already full
+        of equally/older-scored entries. Regression: the old importance-only
+        trim evicted every new insight (references=0) the moment the store hit
+        MAX_INSIGHTS, freezing it permanently (frozen ~130 days in prod)."""
+        kb.MAX_INSIGHTS = 5
+        # Fill to capacity with entries that mirror the real frozen store:
+        # references=0, confidence=1.0 each.
+        for i in range(5):
+            _add(kb, f"Old filler insight {i}")
+        assert kb.count() == 5
+        # A genuinely new unique insight must survive the trim.
+        _add(kb, "Brand new unique insight that should survive")
+        assert kb.count() == 5
+        texts = [ins.text for ins in kb._insights]
+        assert "Brand new unique insight that should survive" in texts
 
     def test_multiple_unique_insights(self, kb):
         """Adding distinct texts grows the count."""
@@ -136,28 +153,29 @@ class TestGetInsights:
             assert len(results) == 2, f"sentinel {sentinel!r} must not filter"
 
     def test_newest_first_survives_importance_trim(self, kb):
-        """After MAX_INSIGHTS overflow, add_insight re-sorts _insights by
-        importance (references + confidence), so the list tail is no longer
-        time-ordered. get_insights must still return the most RECENT insight
-        first. Regression: it sliced the importance-sorted tail and surfaced
-        stale insights despite newer ones existing."""
+        """After a MAX_INSIGHTS overflow, the in-memory list is no longer
+        time-ordered (older slots are importance-sorted ahead of the protected
+        recency window). get_insights must still return the most RECENT insight
+        first. Regression: it sliced the (reordered) tail and surfaced stale
+        insights despite newer ones existing."""
         kb.MAX_INSIGHTS = 5
         old = _add(kb, "Old important insight")
-        old.references = 100  # set before the trim so it sorts to the FRONT
+        old.references = 100  # high importance, but it is the OLDEST in time
         for i in range(5):
             _add(kb, f"Filler insight {i}")
-        assert kb.count() == 5  # f4 evicted; old + f0..f3 survive
+        # recency-protected trim (reserve=2): keeps old (importance) + f0,f1
+        # (importance fill) + f3,f4 (recent window); f2 evicted.
+        assert kb.count() == 5
         # Pin deterministic timestamps, then persist so _load() preserves them.
-        # `old` is first in the importance-sorted list but OLDEST in time.
         for ins in kb._insights:
             if ins.text == "Old important insight":
                 ins.timestamp = 1000.0
             else:
-                ins.timestamp = 2000.0 + int(ins.text.split()[-1])  # f3 newest
+                ins.timestamp = 2000.0 + int(ins.text.split()[-1])  # f4 newest
         kb._save()
         results = kb.get_insights(limit=5)
         # Timestamp order must win over the importance-front `old`.
-        assert results[0].text == "Filler insight 3"  # newest by timestamp
+        assert results[0].text == "Filler insight 4"  # newest by timestamp
         assert results[-1].text == "Old important insight"  # oldest, despite importance
 
     def test_empty_returns_empty(self, kb):
