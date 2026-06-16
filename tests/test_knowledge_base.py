@@ -5,12 +5,14 @@ categorization, extraction, and insight summary.
 Run with: pytest tests/test_knowledge_base.py -v
 """
 
+import json
+import math
 import time
 
 import pytest
 
 from anima_mcp.knowledge import (
-    KnowledgeBase, Insight,
+    KnowledgeBase, Insight, KNOWLEDGE_SCHEMA_VERSION,
     _categorize_text, _extract_simple_insight, _polarity_conflict,
 )
 
@@ -312,61 +314,73 @@ class TestPersistence:
 
 # ==================== Reconvergence (honest conviction signal) ====================
 
-def _rederive(kb, text, question, author="claude"):
-    """Add an insight as if from an independent occasion."""
+def _rederive(kb, text, question, author="claude", occasion=None):
+    """Add an insight as if re-derived. occasion=None exercises the
+    content-distinct fallback path; a string exercises occasion gating."""
     return kb.add_insight(
         text=text, source_question=question,
         source_answer="(answer)", source_author=author, category="self",
+        occasion_id=occasion,
     )
 
 
 class TestReconvergence:
-    """references must count INDEPENDENT re-derivations only — a new source
-    question AND a gap beyond the reconvergence window. Same-batch repetition
-    (which the daily cron produces) must never inflate a conviction."""
+    """references counts INDEPENDENT re-derivations. Independence is judged by
+    OCCASION (MCP session) when one is available — cadence-independent, never a
+    wall clock — and falls back to a content-distinct question otherwise. A
+    single answering session (the daily cron batch) credits a belief at most
+    once, no matter how fast it runs or how many questions it answers."""
 
-    def test_independent_rederivation_credits_reference(self, kb):
-        first = _rederive(kb, "light shapes my clarity over time", "does light change clarity?")
-        # Backdate so the reconvergence window has elapsed.
-        first.timestamp = time.time() - 7200
-        first.last_reconverged_at = 0.0
-        again = _rederive(kb, "light shapes my clarity over time", "is my clarity tied to light?")
+    # --- occasion-gated path (the real Q&A handler path) ---
+
+    def test_new_occasion_credits_even_same_question(self, kb):
+        first = _rederive(kb, "light shapes my clarity over time", "does light change clarity?", occasion="s1")
+        again = _rederive(kb, "light shapes my clarity over time", "does light change clarity?", occasion="s2")
         assert again is first
-        assert first.references == 1
-        assert len(first.derived_from) == 1
+        assert first.references == 1  # a new occasion is a genuine re-derivation
+        assert first.last_reconverged_occasion == "s2"
         assert kb.count() == 1  # collapsed, not a second row
 
-    def test_same_source_question_not_credited(self, kb):
-        first = _rederive(kb, "warmth steadies me over time", "what steadies me?")
-        first.timestamp = time.time() - 7200  # window elapsed...
-        first.last_reconverged_at = 0.0
-        _rederive(kb, "warmth steadies me over time", "what steadies me?")  # ...but SAME question
-        assert first.references == 0
+    def test_same_occasion_never_inflates(self, kb):
+        # One batch re-stating the same belief from several questions at once.
+        first = _rederive(kb, "warmth steadies me over time", "q one?", occasion="batch-A")
+        _rederive(kb, "warmth steadies me over time", "q two?", occasion="batch-A")
+        _rederive(kb, "warmth steadies me over time", "q three?", occasion="batch-A")
+        assert first.references == 0  # origin occasion == batch-A, no credit within it
 
-    def test_within_window_not_credited(self, kb):
-        first = _rederive(kb, "warmth steadies me over time", "q one distinct?")
-        # No backdating: still inside the 30-minute window (same batch).
-        _rederive(kb, "warmth steadies me over time", "q two distinct?")
-        assert first.references == 0
+    def test_distinct_occasions_each_credit(self, kb):
+        first = _rederive(kb, "stillness helps me focus deeply now", "q1?", occasion="s1")
+        _rederive(kb, "stillness helps me focus deeply now", "q2?", occasion="s2")
+        _rederive(kb, "stillness helps me focus deeply now", "q3?", occasion="s3")
+        assert first.references == 2  # s2 and s3 each credit; s1 was the origin
 
-    def test_batch_credits_at_most_once_per_window(self, kb):
-        first = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
-        first.timestamp = time.time() - 7200
-        first.last_reconverged_at = 0.0
-        # A cron batch re-stating the same belief from several questions at once:
-        _rederive(kb, "warmth steadies me over time", "q2 distinct?")
-        _rederive(kb, "warmth steadies me over time", "q3 distinct?")
-        _rederive(kb, "warmth steadies me over time", "q4 distinct?")
-        assert first.references == 1  # first credit closes the window for the batch
+    def test_gating_independent_of_wall_clock(self, kb):
+        """No timestamps are touched anywhere — correctness must not depend on
+        elapsed time / cron cadence (the bug this replaces)."""
+        first = _rederive(kb, "the quiet of night calms me here", "qa?", occasion="s1")
+        _rederive(kb, "the quiet of night calms me here", "qb?", occasion="s1")
+        assert first.references == 0           # same occasion, regardless of time
+        _rederive(kb, "the quiet of night calms me here", "qc?", occasion="s2")
+        assert first.references == 1           # new occasion credits immediately
 
-    def test_independent_rederivation_boosts_confidence(self, kb):
-        first = _rederive(kb, "recovery follows stability closely here", "how do i recover?")
+    def test_confidence_boost_on_new_occasion(self, kb):
+        first = _rederive(kb, "recovery follows stability closely here", "how do i recover?", occasion="s1")
         first.confidence = 0.6
-        first.timestamp = time.time() - 7200
-        first.last_reconverged_at = 0.0
-        _rederive(kb, "recovery follows stability closely here", "what drives my recovery?")
+        _rederive(kb, "recovery follows stability closely here", "what drives recovery?", occasion="s2")
         assert first.references == 1
         assert first.confidence == min(1.0, 0.6 + kb.RECONVERGENCE_CONFIDENCE_BOOST)
+
+    # --- content-distinct fallback (no occasion: internal reflect/message paths) ---
+
+    def test_fallback_distinct_question_credits(self, kb):
+        first = _rederive(kb, "light shapes my clarity over time", "does light change clarity?")
+        _rederive(kb, "light shapes my clarity over time", "is stillness tied to my focus?")
+        assert first.references == 1  # genuinely different content question
+
+    def test_fallback_paraphrase_not_credited(self, kb):
+        first = _rederive(kb, "warmth steadies me over time", "what steadies me the most?")
+        _rederive(kb, "warmth steadies me over time", "what the most steadies me?")  # paraphrase
+        assert first.references == 0
 
 
 # ==================== Negation / polarity guard ====================
@@ -463,12 +477,10 @@ class TestNegationGuard:
 
 class TestConvictionScore:
     def test_rederived_outranks_recent_oneoff(self, kb):
-        conv = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
-        conv.timestamp = time.time() - 7200
-        conv.last_reconverged_at = 0.0
-        _rederive(kb, "warmth steadies me over time", "q2 distinct?")  # credit → references=1
+        _rederive(kb, "warmth steadies me over time", "what steadies me?", occasion="s1")
+        _rederive(kb, "warmth steadies me over time", "what keeps me steady?", occasion="s2")  # credit → references=1
         # A newer, never-re-derived insight:
-        _rederive(kb, "the air is dry tonight here", "weather tonight?")
+        _rederive(kb, "the air is dry tonight here", "weather tonight?", occasion="s3")
         top = kb.get_top_convictions(limit=1)
         assert top[0].text == "warmth steadies me over time"
 
@@ -525,14 +537,12 @@ class TestContradictionDownPath:
         assert fresh[a.insight_id].confidence == pytest.approx(kb.MIN_CONFIDENCE)
 
     def test_reconverged_opposite_does_not_repenalize_original(self, kb):
-        a = _rederive(kb, self.OBS_A, "what am i?")
-        b = _rederive(kb, self.OBS_B, "what am i really?")  # a penalized once
+        a = _rederive(kb, self.OBS_A, "what am i?", occasion="s1")
+        b = _rederive(kb, self.OBS_B, "what am i really?", occasion="s1")  # a penalized once
         penalty = kb.CONTRADICTION_CONFIDENCE_PENALTY
         # Re-derive the OPPOSITE again from an independent occasion: it should
         # reconverge into b (exact match) and NOT re-penalize a.
-        b.timestamp = time.time() - 7200
-        b.last_reconverged_at = 0.0
-        again = _rederive(kb, self.OBS_B, "who am i, truly?")
+        again = _rederive(kb, self.OBS_B, "who am i, truly?", occasion="s2")
         assert again.insight_id == b.insight_id
         assert b.references == 1
         fresh = {i.insight_id: i for i in kb.get_all_insights()}
@@ -542,11 +552,9 @@ class TestContradictionDownPath:
     def test_agreeing_rederivation_never_penalized(self, kb):
         """Positive control: a genuine (non-conflicting) re-derivation only
         ever raises confidence — the down-path must not touch it."""
-        first = _rederive(kb, "warmth steadies me over time", "q1 distinct?")
+        first = _rederive(kb, "warmth steadies me over time", "what steadies me?", occasion="s1")
         first.confidence = 0.6
-        first.timestamp = time.time() - 7200
-        first.last_reconverged_at = 0.0
-        _rederive(kb, "warmth steadies me over time", "q2 distinct?")
+        _rederive(kb, "warmth steadies me over time", "what keeps me steady?", occasion="s2")
         assert first.confidence == pytest.approx(0.6 + kb.RECONVERGENCE_CONFIDENCE_BOOST)
         assert first.contradicted_by == []
 
@@ -574,3 +582,65 @@ class TestSchemaCompat:
         )
         ins = Insight.from_dict(d)  # must not raise
         assert ins.text == "future"
+
+
+# ==================== Schema migration (v2: legacy ref compression) ===========
+
+class TestSchemaMigration:
+    """One-time v2 migration: log-compress reference counts minted under the
+    old ungated logic onto the honest scale, preserving order, keeping the
+    original in legacy_references."""
+
+    def _row(self, refs, iid):
+        return dict(
+            insight_id=iid, text=f"insight {iid}", source_question="q",
+            source_answer="a", source_author="test", timestamp=1.0,
+            category="self", confidence=1.0, references=refs,
+        )
+
+    def _seed(self, tmp_path, monkeypatch, rows, schema_version=None):
+        path = tmp_path / "knowledge.json"
+        data = {"insights": rows}
+        if schema_version is not None:
+            data["schema_version"] = schema_version
+        path.write_text(json.dumps(data))
+        monkeypatch.setattr(
+            "anima_mcp.knowledge._get_knowledge_path", lambda: path
+        )
+        return path
+
+    def test_v2_log_compresses_legacy_references(self, tmp_path, monkeypatch):
+        # No schema_version on disk → treated as pre-v2 → migrate on load.
+        self._seed(tmp_path, monkeypatch, [
+            self._row(1180, "a"), self._row(40, "b"),
+            self._row(2, "c"), self._row(1, "d"), self._row(0, "e"),
+        ])
+        kb = KnowledgeBase()
+        by = {i.insight_id: i for i in kb.get_all_insights()}
+        assert by["a"].references == round(math.log2(1181))   # 1180 → 10
+        assert by["a"].legacy_references == 1180
+        assert by["b"].references == round(math.log2(41))     # 40 → 5
+        assert by["c"].references == round(math.log2(3))      # 2 → 2
+        # refs <= 1 untouched and NOT marked migrated
+        assert by["d"].references == 1 and by["d"].legacy_references is None
+        assert by["e"].references == 0 and by["e"].legacy_references is None
+        # relative order preserved: the most-recurred belief still ranks top
+        assert by["a"].references > by["b"].references > by["c"].references
+
+    def test_migration_idempotent_across_reload(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch, [self._row(1180, "a")])
+        compressed = KnowledgeBase().get_all_insights()[0].references
+        # The store was re-saved with schema_version bumped; a fresh load must
+        # not compress again.
+        again = KnowledgeBase().get_all_insights()[0]
+        assert again.references == compressed
+        assert again.legacy_references == 1180  # original preserved, not re-compressed
+
+    def test_already_current_version_untouched(self, tmp_path, monkeypatch):
+        self._seed(
+            tmp_path, monkeypatch, [self._row(8, "a")],
+            schema_version=KNOWLEDGE_SCHEMA_VERSION,
+        )
+        ins = KnowledgeBase().get_all_insights()[0]
+        assert ins.references == 8  # already-current store is never re-migrated
+        assert ins.legacy_references is None

@@ -202,7 +202,10 @@ async def handle_lumen_qa(arguments: dict) -> list[TextContent]:
             insight = await extract_insight_from_answer(
                 question=question.text,
                 answer=answer,
-                author=agent_name
+                author=agent_name,
+                # The answering session is the re-derivation OCCASION: it gates
+                # conviction credit independent of cron cadence.
+                occasion_id=client_session_id,
             )
             if insight:
                 insight_result = {"text": insight.text, "category": insight.category}
