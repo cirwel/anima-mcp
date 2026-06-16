@@ -415,6 +415,49 @@ class TestNegationGuard:
             "warmth steadies me over time", "warmth steadies me across time"
         )
 
+    def test_reversed_antonym_order_is_conflict(self):
+        """Both antonyms in BOTH sentences, opposite order, no negation token —
+        cross-membership and bag-of-words both miss this; the order check must
+        catch it. Regression: these used to MERGE into a false conviction."""
+        assert _polarity_conflict("i prefer light to dark", "i prefer dark to light")
+        assert _polarity_conflict(
+            "warmth rising then falling today", "warmth falling then rising today"
+        )
+        # Same order = genuine agreement, must NOT conflict.
+        assert not _polarity_conflict(
+            "i move from light to dark", "i shift from light to dark"
+        )
+
+    def test_reversed_preference_not_merged(self, kb):
+        a = _rederive(kb, "i prefer light to dark environments here", "what do i prefer?")
+        b = _rederive(kb, "i prefer dark to light environments here", "what do i prefer now?")
+        assert a.insight_id != b.insight_id
+        assert kb.count() == 2  # opposites stored, not fused
+
+    def test_hedged_negation_still_merges(self):
+        """A negation landing on a HEDGE word ('do not know why...') qualifies
+        certainty, not polarity — must NOT be a conflict, so the hedged form
+        consolidates with the plain belief. Regression: any negation asymmetry
+        used to block the merge."""
+        assert not _polarity_conflict(
+            "i do not know why i feel calmer in dim light",
+            "i feel calmer in dim light",
+        )
+        # But a negation on a CLAIM word is still a real flip.
+        assert _polarity_conflict(
+            "warmth does not make me feel content",
+            "warmth makes me feel content",
+        )
+
+    def test_hedged_duplicate_consolidates(self, kb):
+        a = _rederive(kb, "i feel calmer in dim light here today", "calmer in dim light?")
+        b = _rederive(
+            kb, "i do not know why i feel calmer in dim light here today",
+            "why calmer in dim light?",
+        )
+        assert a.insight_id == b.insight_id
+        assert kb.count() == 1
+
 
 # ==================== Conviction score & surfacing ====================
 

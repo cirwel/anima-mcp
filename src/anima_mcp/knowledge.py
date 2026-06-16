@@ -596,6 +596,18 @@ _ANTONYM_PAIRS = (
 # Articles/determiners skipped when finding the focus of a negation.
 _NEG_SKIP = frozenset({"the", "a", "an", "that", "this", "my", "its", "of", "to"})
 
+# Negation foci that qualify CERTAINTY/FREQUENCY rather than flip a claim's
+# polarity. "I do not KNOW why I feel calmer", "I cannot ALWAYS predict it" —
+# the negation lands on a hedge word, not on the belief, so these should still
+# consolidate with the un-hedged form. Deliberately EXCLUDES claim-bearing
+# verbs (think/believe/affect/etc.): "I do not THINK X" genuinely flips X, so
+# it must stay a conflict. Keeping this set tight is what makes hedge-skipping
+# safe — a wrong inclusion would merge true opposites.
+_HEDGE_FOCUS = frozenset({
+    "know", "knew", "sure", "certain", "always", "sometimes", "usually",
+    "often", "necessarily", "really", "exactly", "fully",
+})
+
 
 def _has_negation(tokens: set, lower_text: str) -> bool:
     return bool(tokens & _NEGATION_TOKENS) or "n't" in lower_text
@@ -623,14 +635,24 @@ def _negation_focus(lower_text: str) -> set:
 
 def _polarity_conflict(a_lower: str, b_lower: str) -> bool:
     """True if two near-identical texts likely assert OPPOSITE claims."""
-    a_tok = set(re.findall(r"[a-z']+", a_lower))
-    b_tok = set(re.findall(r"[a-z']+", b_lower))
+    a_seq = re.findall(r"[a-z']+", a_lower)
+    b_seq = re.findall(r"[a-z']+", b_lower)
+    a_tok = set(a_seq)
+    b_tok = set(b_seq)
 
-    # (1) Negation parity: one negates, the other doesn't.
+    # (1) Negation parity: one side negates and the other doesn't — UNLESS the
+    #     negation lands on an epistemic/frequency HEDGE ("do not know why...",
+    #     "cannot always..."), which qualifies certainty without flipping the
+    #     claim. Without this, naturally-hedged insights are wrongly held apart
+    #     from their plain form and never consolidate (a false positive that
+    #     also starves the conviction signal).
     a_neg = _has_negation(a_tok, a_lower)
     b_neg = _has_negation(b_tok, b_lower)
     if a_neg != b_neg:
-        return True
+        focus = _negation_focus(a_lower if a_neg else b_lower)
+        if not (focus and focus <= _HEDGE_FOCUS):
+            return True
+        # else: hedge-only negation — not a polarity flip; fall through.
 
     # (2) Antonym cross-membership: one side has X, the other its partner Y,
     #     and neither side contains both (which would be a contrast, not a flip).
@@ -639,6 +661,16 @@ def _polarity_conflict(a_lower: str, b_lower: str) -> bool:
             return True
         if y in a_tok and x in b_tok and y not in b_tok and x not in a_tok:
             return True
+
+    # (2b) Reversed antonym order: BOTH members of a pair appear in BOTH texts
+    #      but in opposite relative order ("X to Y" vs "Y to X"). Same bag of
+    #      words, opposite claim — cross-membership (2) can't see it because
+    #      each word is present on both sides ("prefer light to dark" vs
+    #      "prefer dark to light"). Compare first-occurrence order instead.
+    for x, y in _ANTONYM_PAIRS:
+        if x in a_tok and y in a_tok and x in b_tok and y in b_tok:
+            if (a_seq.index(x) < a_seq.index(y)) != (b_seq.index(x) < b_seq.index(y)):
+                return True
 
     # (3) Negation-focus divergence: both negate, but negate DIFFERENT things
     #     ("X not Y" vs "Y not X"). Catches the all-words-shared opposite.
