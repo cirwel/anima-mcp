@@ -7,6 +7,7 @@ These insights persist across restarts and influence future reflections.
 
 import json
 import logging
+import math
 import re
 import sys
 import time
@@ -17,6 +18,11 @@ from pathlib import Path
 from .atomic_write import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+# Persisted store schema version. Bump when a one-time on-load migration is
+# needed (see KnowledgeBase._migrate_schema). v2: log-compress legacy
+# reference counts onto the honest occasion-gated scale.
+KNOWLEDGE_SCHEMA_VERSION = 2
 
 
 def _get_knowledge_path() -> Path:
@@ -52,6 +58,16 @@ class Insight:
     # is the trigger that lets confidence FALL — confidence is not a one-way
     # ratchet that can only ever strengthen with repetition.
     contradicted_by: List[str] = field(default_factory=list)
+    # Occasion (MCP session id) of the last credited re-derivation. Credit is
+    # gated on a NEW occasion, not a wall-clock window, so the conviction
+    # signal is independent of cron cadence: one answering session credits a
+    # belief at most once no matter how many questions it answers or how long
+    # it takes.
+    last_reconverged_occasion: str = ""
+    # Original reference count before the one-time log-compression migration
+    # (legacy counts were minted under looser, ungated rules). None = minted
+    # under the honest signal / never migrated.
+    legacy_references: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -71,6 +87,10 @@ class Insight:
             d["derived_from"] = []
         if "contradicted_by" not in d:
             d["contradicted_by"] = []
+        if "last_reconverged_occasion" not in d:
+            d["last_reconverged_occasion"] = ""
+        if "legacy_references" not in d:
+            d["legacy_references"] = None
         # Tolerate unknown future fields rather than crashing on load.
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})
@@ -119,10 +139,12 @@ class KnowledgeBase:
     MAX_INSIGHTS = 10000
 
     # An independent re-derivation must come from a genuinely different
-    # occasion. We require a *new* source question AND a minimum gap since the
-    # last credited re-derivation, so one cron batch (which answers several
-    # questions back-to-back) cannot inflate a belief into a false conviction.
-    RECONVERGENCE_WINDOW_SECONDS = 1800.0  # 30 min
+    # OCCASION (MCP session). Gating on occasion rather than a wall-clock
+    # window keeps the conviction signal independent of cron cadence: one
+    # answering session credits a belief at most once, no matter how many
+    # questions it answers or how long the batch takes. (Earlier this used a
+    # 30-minute window, which silently coupled correctness to the cron
+    # schedule — change the cadence and the gate's meaning changed with it.)
     RECONVERGENCE_CONFIDENCE_BOOST = 0.05
 
     # Down-path: when a new insight contradicts a near-identical existing one
@@ -144,6 +166,8 @@ class KnowledgeBase:
             if self._knowledge_file.exists():
                 data = json.loads(self._knowledge_file.read_text())
                 self._insights = [Insight.from_dict(i) for i in data.get("insights", [])]
+                if data.get("schema_version", 0) < KNOWLEDGE_SCHEMA_VERSION:
+                    self._migrate_schema()
             else:
                 self._insights = []
         except Exception as e:
@@ -153,10 +177,31 @@ class KnowledgeBase:
     def _save(self):
         """Save insights to persistent storage."""
         try:
-            data = {"insights": [i.to_dict() for i in self._insights]}
+            data = {
+                "schema_version": KNOWLEDGE_SCHEMA_VERSION,
+                "insights": [i.to_dict() for i in self._insights],
+            }
             atomic_json_write(self._knowledge_file, data, indent=2)
         except Exception as e:
             print(f"[Knowledge] Save error: {e}", file=sys.stderr, flush=True)
+
+    def _migrate_schema(self):
+        """One-time, idempotent migrations to KNOWLEDGE_SCHEMA_VERSION.
+
+        v2 — log-compress legacy reference counts. Counts minted under the old
+        ungated logic (every near-duplicate +1, no occasion gate) reached the
+        thousands, which would dominate conviction ranking forever and starve
+        new, honestly-gated re-derivations. ``round(log2(refs+1))`` brings them
+        onto the new scale while preserving their relative ORDER (a belief
+        re-stated 1180x still outranks one re-stated 40x); the original is kept
+        in ``legacy_references`` so the migration is auditable/reversible.
+        Re-runs are prevented by the persisted ``schema_version`` bump on save.
+        """
+        for ins in self._insights:
+            if ins.legacy_references is None and ins.references > 1:
+                ins.legacy_references = ins.references
+                ins.references = round(math.log2(ins.references + 1))
+        self._save()
 
     def add_insight(
         self,
@@ -166,12 +211,16 @@ class KnowledgeBase:
         source_author: str,
         category: str = "general",
         confidence: Optional[float] = None,
+        occasion_id: Optional[str] = None,
     ) -> Insight:
         """Add a new learned insight.
 
         Args:
             confidence: Initial confidence. If None, defaults to 1.0 for
                 external sources, 0.7 for self-sourced (author=="lumen").
+            occasion_id: Answering occasion (MCP session id). Gates
+                re-derivation credit on a new occasion — see
+                _register_rederivation.
         """
         import uuid
 
@@ -191,7 +240,7 @@ class KnowledgeBase:
             existing_lower = existing.text.lower()
             # Exact match — identical phrasing cannot be a polarity conflict.
             if existing_lower == text_lower:
-                self._register_rederivation(existing, source_question, now)
+                self._register_rederivation(existing, source_question, now, occasion_id)
                 self._save()
                 return existing
             # Semantic overlap: consolidate insights that say essentially the
@@ -212,7 +261,7 @@ class KnowledgeBase:
                         if _polarity_conflict(text_lower, existing_lower):
                             contradicts.append(existing)
                             continue
-                        self._register_rederivation(existing, source_question, now)
+                        self._register_rederivation(existing, source_question, now, occasion_id)
                         self._save()
                         return existing
 
@@ -230,6 +279,10 @@ class KnowledgeBase:
             timestamp=time.time(),
             category=category,
             confidence=confidence,
+            # Record the originating occasion so a same-session restatement of
+            # this brand-new belief does not later count as an independent
+            # re-derivation of it.
+            last_reconverged_occasion=occasion_id or "",
         )
         # Down-path: if this new row contradicts existing near-identical
         # insight(s), record the link and reduce certainty on both sides.
@@ -265,32 +318,50 @@ class KnowledgeBase:
         self._save()
         return insight
 
-    def _register_rederivation(self, existing: Insight, source_question: str, now: float) -> None:
+    def _register_rederivation(
+        self,
+        existing: Insight,
+        source_question: str,
+        now: float,
+        occasion_id: Optional[str] = None,
+    ) -> None:
         """Credit an INDEPENDENT re-derivation of an existing belief.
 
-        This is the real "conviction" signal: it only fires when the same
-        belief is reached from a genuinely different occasion — a source
-        question we have not already recorded for this insight AND at least
-        ``RECONVERGENCE_WINDOW_SECONDS`` since the last credited
-        re-derivation. That gate is what makes ``references`` honest: a daily
-        cron answering several questions in one run can re-state the same
-        belief many times, but it earns at most one credit per window. Same-
-        occasion re-statements collapse for surfacing (we still return the
-        existing row) but earn nothing — no reference, no confidence ratchet.
+        This is the real "conviction" signal. Independence is judged by
+        OCCASION, not a wall clock: a belief earns at most one reference per
+        answering session (``occasion_id`` — the MCP session id, distinct per
+        cron run). A single batch answering many questions, fast or slow,
+        credits once. This is cadence-independent by construction and not
+        gameable by Lumen's own question generator (Lumen does not control when
+        sessions happen).
+
+        When no occasion is available (internal reflection / message paths),
+        fall back to a CONTENT-distinct question guard — a paraphrase of an
+        already-recorded question does not count as a fresh derivation — rather
+        than reintroducing a time window.
+
+        Same-occasion (or paraphrase) re-statements still collapse for
+        surfacing (we return the existing row) but earn nothing.
         """
-        sq = (source_question or "").strip().lower()
-        seen = {(existing.source_question or "").strip().lower()}
-        seen.update(s.strip().lower() for s in existing.derived_from)
-        last = existing.last_reconverged_at or existing.timestamp
-        independent = (
-            bool(sq)
-            and sq not in seen
-            and (now - last) >= self.RECONVERGENCE_WINDOW_SECONDS
-        )
+        if not (source_question or "").strip():
+            return
+        if occasion_id:
+            independent = occasion_id != existing.last_reconverged_occasion
+        else:
+            sig = _question_signature(source_question)
+            if not sig:
+                return
+            seen = [_question_signature(existing.source_question)]
+            seen += [_question_signature(q) for q in existing.derived_from]
+            independent = all(
+                not _questions_equivalent(sig, s) for s in seen if s
+            )
         if independent:
             existing.references += 1
             existing.derived_from.append(source_question)
             existing.last_reconverged_at = now
+            if occasion_id:
+                existing.last_reconverged_occasion = occasion_id
             existing.confidence = min(
                 1.0, existing.confidence + self.RECONVERGENCE_CONFIDENCE_BOOST
             )
@@ -522,11 +593,12 @@ def add_insight(
     source_author: str,
     category: str = "general",
     confidence: Optional[float] = None,
+    occasion_id: Optional[str] = None,
 ) -> Insight:
     """Convenience: add an insight."""
     return get_knowledge().add_insight(
         text, source_question, source_answer, source_author,
-        category, confidence=confidence,
+        category, confidence=confidence, occasion_id=occasion_id,
     )
 
 
@@ -570,6 +642,34 @@ def _dedup_words(text: str) -> set:
         for word in re.findall(r"[a-z][a-z'-]*", text.lower())
         if word not in _DEDUP_STOPWORDS
     }
+
+
+# Question content signature — drops interrogatives/auxiliaries and the
+# counterfactual framing ("what would change if X weren't true") so two
+# questions are compared by their CONTENT, not their template. Used to judge
+# whether a re-derivation came from a genuinely different question on the
+# occasion-less fallback path (string identity was gameable by paraphrase).
+_QUESTION_STOPWORDS = _DEDUP_STOPWORDS | {
+    "what", "why", "how", "when", "where", "who", "which", "whether",
+    "would", "could", "should", "does", "do", "did", "is", "are", "was",
+    "were", "if", "true", "really", "about", "me", "myself", "right",
+}
+
+
+def _question_signature(question: str) -> frozenset:
+    """Content-word signature of a question (frozenset, stopword-stripped)."""
+    return frozenset(
+        word
+        for word in re.findall(r"[a-z][a-z'-]*", (question or "").lower())
+        if word not in _QUESTION_STOPWORDS
+    )
+
+
+def _questions_equivalent(a: frozenset, b: frozenset) -> bool:
+    """True if two question signatures are paraphrase-level near-identical."""
+    if not a or not b:
+        return False
+    return len(a & b) / min(len(a), len(b)) >= 0.7
 
 
 # --- Negation / polarity guard -------------------------------------------
@@ -827,11 +927,15 @@ def _extract_simple_insight(question: str, answer: str) -> Optional[str]:
 async def extract_insight_from_answer(
     question: str,
     answer: str,
-    author: str
+    author: str,
+    occasion_id: Optional[str] = None,
 ) -> Optional[Insight]:
     """
     Extract a key insight from a Q&A pair using rule-based extraction.
     Returns None if no meaningful insight can be extracted.
+
+    ``occasion_id`` (the answering MCP session) gates re-derivation credit so
+    one answering session credits a re-stated belief at most once.
     """
     try:
         insight_text = _extract_simple_insight(question, answer)
@@ -842,7 +946,8 @@ async def extract_insight_from_answer(
                 source_question=question,
                 source_answer=answer,
                 source_author=author,
-                category=category
+                category=category,
+                occasion_id=occasion_id,
             )
     except Exception as e:
         print(f"[Knowledge] Insight extraction failed: {e}", file=sys.stderr, flush=True)

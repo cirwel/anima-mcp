@@ -289,15 +289,14 @@ class TestDuplicateAdd:
             text="recovery follows stability closely here",
             source_question="how do i recover?",
             source_answer="(a)", source_author="claude", category="self",
+            occasion_id="s1",
         )
-        # Backdate past the reconvergence window, then re-derive from a NEW
-        # question — this is a genuinely independent occasion.
-        first.timestamp = time.time() - 7200
-        first.last_reconverged_at = 0.0
+        # A genuinely independent occasion (new MCP session) re-derives it.
         again = kb.add_insight(
             text="recovery follows stability closely here",
             source_question="what drives my recovery?",
             source_answer="(a)", source_author="claude", category="self",
+            occasion_id="s2",
         )
         assert again is first
         assert first.references == 1
