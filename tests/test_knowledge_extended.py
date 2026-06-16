@@ -268,24 +268,40 @@ class TestCount:
 
 
 class TestDuplicateAdd:
-    def test_duplicate_increments_references(self, kb):
+    def test_same_occasion_duplicate_collapses_without_credit(self, kb):
+        """A duplicate from the SAME occasion collapses to one row but earns
+        no conviction credit — references is now an honest independent-
+        re-derivation counter, not a string-collision counter."""
         first = _add(kb, "Repeated insight")
         assert first.references == 0
-        second = _add(kb, "repeated insight")  # case-insensitive match
-        assert second is first  # same object returned
-        assert first.references == 1
+        second = _add(kb, "repeated insight")  # case-insensitive, same source/instant
+        assert second is first  # same object returned (collapsed)
+        assert first.references == 0  # NOT credited
 
-    def test_duplicate_boosts_confidence(self, kb):
+    def test_same_occasion_duplicate_does_not_boost_confidence(self, kb):
         first = _add(kb, "Boost me")
         original_confidence = first.confidence
         _add(kb, "boost me")
-        assert first.confidence == min(1.0, original_confidence + 0.1)
+        assert first.confidence == original_confidence  # unchanged
 
-    def test_duplicate_confidence_capped_at_one(self, kb):
-        first = _add(kb, "Cap test")
-        first.confidence = 0.95
-        _add(kb, "cap test")
-        assert first.confidence == 1.0  # min(1.0, 0.95 + 0.1) = 1.0
+    def test_independent_rederivation_increments_references(self, kb):
+        first = kb.add_insight(
+            text="recovery follows stability closely here",
+            source_question="how do i recover?",
+            source_answer="(a)", source_author="claude", category="self",
+        )
+        # Backdate past the reconvergence window, then re-derive from a NEW
+        # question — this is a genuinely independent occasion.
+        first.timestamp = time.time() - 7200
+        first.last_reconverged_at = 0.0
+        again = kb.add_insight(
+            text="recovery follows stability closely here",
+            source_question="what drives my recovery?",
+            source_answer="(a)", source_author="claude", category="self",
+        )
+        assert again is first
+        assert first.references == 1
+        assert first.confidence == min(1.0, 1.0 + kb.RECONVERGENCE_CONFIDENCE_BOOST)
 
 
 # ==================== Trim path (>MAX_INSIGHTS) ====================
