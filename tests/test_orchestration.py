@@ -137,8 +137,6 @@ def test_wake_handles_db_lock(tmp_path, monkeypatch):
     # Mock IdentityStore to always raise lock error
     call_count = 0
 
-    original_init = None
-
     class LockingStore:
         def __init__(self, *args, **kwargs):
             nonlocal call_count

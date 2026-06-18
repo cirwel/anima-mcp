@@ -2,7 +2,7 @@
 
 import random
 from anima_mcp.display.drawing_engine import CanvasState
-from anima_mcp.display.eras.gestural import GesturalEra, GesturalState
+from anima_mcp.display.eras.gestural import GesturalEra
 
 
 class TestGesturalBrushWidth:
@@ -50,8 +50,8 @@ class TestGesturalBrushWidth:
         assert len(canvas.pixels) <= 2, f"Low-energy dot should be 1-2px, got {len(canvas.pixels)}"
 
 
-from anima_mcp.display.eras.field import FieldEra
-from anima_mcp.display.eras.pointillist import PointillistEra
+from anima_mcp.display.eras.field import FieldEra  # noqa: E402
+from anima_mcp.display.eras.pointillist import PointillistEra  # noqa: E402
 
 
 class TestFieldSinglePixel:
@@ -155,7 +155,7 @@ class TestDensityGrid:
         assert cell_x == 3 and cell_y == 5
 
 
-from anima_mcp.display.eras.geometric import GeometricEra
+from anima_mcp.display.eras.geometric import GeometricEra  # noqa: E402
 
 
 class TestEraCompletionTuning:
@@ -185,7 +185,6 @@ class TestEraCompletionTuning:
     def test_fatigue_rate_applied_in_engine(self):
         """Engine should scale fatigue by era's fatigue_rate."""
         from anima_mcp.display.drawing_engine import DrawingEngine
-        from conftest import make_anima
 
         # Geometric era (fatigue_rate=2.0)
         engine_geo = DrawingEngine()

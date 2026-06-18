@@ -1,10 +1,6 @@
 """Tests for system_metrics persistence and rate-of-change probes."""
 
-import sqlite3
-import time
 from datetime import datetime, timedelta
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 

@@ -227,7 +227,6 @@ class TestEnergyModulation:
         eisv.I = 0.6  # I > E → α(I-E) positive
         eisv.S = 0.2
         p = _EISV_PARAMS
-        C = eisv.coherence()
 
         dE = p["alpha"] * (eisv.I - eisv.E) - p["beta_E"] * eisv.E * eisv.S + p["gamma_E"] * 0.0
         # α(0.6 - 0.3) = 0.01 * 0.3 = 0.003 (positive)
@@ -251,7 +250,6 @@ class TestEnergyModulation:
 
     def test_modulation_bounded(self):
         """EISV coupling should be small relative to flat depletion (0.001)."""
-        eisv = DrawingEISV()
         p = _EISV_PARAMS
         # Worst case: maximum parameter values
         max_dE = abs(p["alpha"] * 1.0 + p["beta_E"] * 1.0 + p["gamma_E"] * 1.0) * p["dt"]

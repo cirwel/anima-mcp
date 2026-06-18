@@ -62,7 +62,7 @@ audio = [
 
 dev = [
     "pytest>=9.0.3,<10.0.0",
-    "pytest-asyncio>=0.21.0,<2.0.0",
+    "pytest-asyncio>=0.24.0,<2.0.0",
     "pytest-cov>=4.1.0,<8.0.0",
     "black>=26.3.1,<27.0.0",
     "ruff>=0.0.285,<1.0.0",
@@ -108,5 +108,12 @@ packages = ["src/anima_mcp"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.0.3,<10.0.0",
+    "pytest-asyncio>=0.24.0,<2.0.0",
+    "pytest-cov>=4.1.0,<8.0.0",
+    "black>=26.3.1,<27.0.0",
+    "ruff>=0.0.285,<1.0.0",
+    "mypy>=1.5.0,<3.0.0",
+    "types-PyYAML>=6.0.0,<7.0.0",
+    "types-psutil>=5.9.0,<8.0.0",
 ]

@@ -26,13 +26,6 @@ class TestTrajectoryToPrimitiveLanguageWiring:
         from anima_mcp.eisv.expression import translate_expression
         from anima_mcp.primitive_language import PrimitiveLanguageSystem
 
-        # Build a trajectory window (5 stable states)
-        window = {
-            "states": [{"E": 0.6, "I": 0.7, "S": 0.2, "V": 0.1}] * 5,
-            "derivatives": [{"dE": 0.0, "dI": 0.0, "dS": 0.0, "dV": 0.0}] * 4,
-            "second_derivatives": [{"d2E": 0.0, "d2I": 0.0, "d2S": 0.0, "d2V": 0.0}] * 3,
-        }
-
         # Use rule-based generator (always available, no model files needed)
         from anima_mcp.eisv.expression import ExpressionGenerator
         gen = ExpressionGenerator(seed=42)

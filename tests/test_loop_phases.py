@@ -98,7 +98,7 @@ class TestServerGovernanceFallback:
 
         bridge = AsyncMock()
         bridge.check_in.return_value = {"source": "unitares", "verdict": "ok"}
-        ctx = make_ctx()
+        make_ctx()
         store = MagicMock()
         store.get_identity.return_value = make_identity()
 
@@ -116,7 +116,7 @@ class TestServerGovernanceFallback:
 
         bridge = AsyncMock()
         bridge.check_in.side_effect = RuntimeError("connection refused")
-        ctx = make_ctx()
+        make_ctx()
         store = MagicMock()
         store.get_identity.return_value = make_identity()
 
@@ -985,7 +985,7 @@ class TestExtractAndValidateSchema:
         """extract_and_validate_schema handles errors non-fatally."""
         from anima_mcp.loop_phases import extract_and_validate_schema
 
-        ctx = make_ctx()
+        make_ctx()
 
         with patch("anima_mcp.accessors._get_schema_hub", side_effect=RuntimeError("broken")):
             # Should not raise
@@ -1062,7 +1062,7 @@ class TestSelfReflect:
         """self_reflect handles exceptions without crashing."""
         from anima_mcp.loop_phases import self_reflect
 
-        ctx = make_ctx()
+        make_ctx()
 
         with patch("anima_mcp.self_reflection.get_reflection_system", side_effect=RuntimeError("broken")):
             await self_reflect()  # Should not raise

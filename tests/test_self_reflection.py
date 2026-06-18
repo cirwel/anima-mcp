@@ -307,7 +307,7 @@ class TestAnalyzeConjunctivePatterns:
         inputs = [(100, 20, 40, 0.0), (500, 30, 70, 0.8)]
         for i in range(80):
             low_high = inputs[i % 2]
-            l, t, h, a = low_high
+            light, t, h, a = low_high
             # All four inputs correlated — all pairs will show high/high
             # quadrant with elevated clarity.
             clarity = 0.8 if i % 2 == 1 else 0.4
@@ -317,7 +317,7 @@ class TestAnalyzeConjunctivePatterns:
                 "stability": 0.5,
                 "presence": 0.5,
                 "sensors": json.dumps({
-                    "light_lux": l,
+                "light_lux": light,
                     "ambient_temp_c": t,
                     "humidity_pct": h,
                     "interaction_level": a,
@@ -843,7 +843,7 @@ class TestContradictionDetection:
             correlation=0.25, sample_count=150,
             avg_warmth=0.6, avg_clarity=0.5, avg_stability=0.5, avg_presence=0.5,
         )
-        new_insights = srs.generate_insights([afternoon_pattern])
+        srs.generate_insights([afternoon_pattern])
 
         # The afternoon insight should have been penalized
         afternoon = srs._insights["the_afternoon_highest_warmth"]

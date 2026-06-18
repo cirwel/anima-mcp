@@ -89,7 +89,7 @@ class TestGradient:
 # ---------------------------------------------------------------------------
 # ResonanceState + ResonanceEra tests
 # ---------------------------------------------------------------------------
-from anima_mcp.display.eras.resonance import ResonanceEra, ResonanceState
+from anima_mcp.display.eras.resonance import ResonanceEra, ResonanceState  # noqa: E402
 
 
 class TestResonanceState:
@@ -136,7 +136,7 @@ class TestChooseGesture:
 # ---------------------------------------------------------------------------
 # generate_color tests
 # ---------------------------------------------------------------------------
-import colorsys
+import colorsys  # noqa: E402
 
 
 class TestGenerateColor:
@@ -200,7 +200,7 @@ class TestGenerateColor:
 # ---------------------------------------------------------------------------
 # place_mark tests
 # ---------------------------------------------------------------------------
-import random
+import random  # noqa: E402
 
 
 class FakeCanvas:
@@ -397,7 +397,7 @@ class TestAnimaDrivenField:
 # ---------------------------------------------------------------------------
 # Field persistence tests
 # ---------------------------------------------------------------------------
-import json
+import json  # noqa: E402
 
 
 class TestStabilityRegularity:

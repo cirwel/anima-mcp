@@ -19,7 +19,6 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-import pytest
 
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "db_maintenance.sh"

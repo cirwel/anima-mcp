@@ -880,7 +880,6 @@ class MindMixin:
         attention_focus = agency_shm.get("attention_focus", None)
 
         last_motivation = None
-        last_reward = None
         prev_action_values = getattr(self, '_prev_agency_values', {})
         try:
             from ..agency import get_action_selector
@@ -890,7 +889,6 @@ class MindMixin:
                 last_out = selector._outcome_history[-1]
                 last_action_type = last_action_type or last_out.action.action_type.value
                 last_motivation = last_out.action.motivation
-                last_reward = last_out.reward
             # Fall back to server-side only if SHM has no data
             if not action_values:
                 stats = selector.get_action_stats()

@@ -333,7 +333,6 @@ class TestFullLoopSimulation:
                 activity="active",
             )
 
-            strengths = pw.get_all_strengths(ctx)
             outcome = 0.1 if i % 3 == 0 else -0.05
             pw.reinforce(ctx, "focus_attention", outcome)
 

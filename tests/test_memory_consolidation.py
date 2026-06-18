@@ -343,7 +343,7 @@ class TestReflectIntegration:
         summaries_path.write_text(json.dumps({"summaries": summaries}))
 
         # Run reflect — it should pick up the trend
-        result = reflection.reflect()
+        reflection.reflect()
 
         # Check that trend insight was created
         trend_insights = [

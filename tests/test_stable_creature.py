@@ -204,7 +204,6 @@ class TestGovernanceIntervalParsing:
 
     def test_custom_governance_interval_valid(self):
         """Custom valid value is accepted."""
-        DEFAULT_GOVERNANCE_INTERVAL = 180.0
         MIN_GOVERNANCE_INTERVAL = 30.0
         _interval_env = "60"
         _interval_raw = float(_interval_env)
@@ -214,7 +213,6 @@ class TestGovernanceIntervalParsing:
 
     def test_governance_interval_clamped_to_minimum(self):
         """Values below MIN_GOVERNANCE_INTERVAL are clamped."""
-        DEFAULT_GOVERNANCE_INTERVAL = 180.0
         MIN_GOVERNANCE_INTERVAL = 30.0
         _interval_env = "5"
         _interval_raw = float(_interval_env)
@@ -239,7 +237,6 @@ class TestGovernanceIntervalParsing:
 
     def test_governance_interval_float_value(self):
         """Float env var value is parsed correctly."""
-        DEFAULT_GOVERNANCE_INTERVAL = 180.0
         MIN_GOVERNANCE_INTERVAL = 30.0
         _interval_env = "45.5"
         _interval_raw = float(_interval_env)
@@ -249,7 +246,6 @@ class TestGovernanceIntervalParsing:
 
     def test_governance_interval_zero_clamped(self):
         """Zero value is clamped to minimum."""
-        DEFAULT_GOVERNANCE_INTERVAL = 180.0
         MIN_GOVERNANCE_INTERVAL = 30.0
         _interval_env = "0"
         _interval_raw = float(_interval_env)
@@ -259,7 +255,6 @@ class TestGovernanceIntervalParsing:
 
     def test_governance_interval_negative_clamped(self):
         """Negative value is clamped to minimum."""
-        DEFAULT_GOVERNANCE_INTERVAL = 180.0
         MIN_GOVERNANCE_INTERVAL = 30.0
         _interval_env = "-100"
         _interval_raw = float(_interval_env)
@@ -1179,7 +1174,6 @@ class TestShutdownSequence:
         self_model = None
         voice = None
         store = None
-        bridge = None
         exp_filter = None
         pathways = None
         exp_marks = None
@@ -1531,7 +1525,7 @@ class TestPatternApplyInterval:
 
         if time.time() - last_pattern_apply > 3600:
             try:
-                adjustments = activity_manager.apply_learned_patterns(
+                activity_manager.apply_learned_patterns(
                     adaptive_model=None,
                     self_model=None,
                 )

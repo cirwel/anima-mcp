@@ -20,7 +20,7 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not HAS_PIL, reason="PIL required for renderer tests")
 
-from anima_mcp.display.renderer import (
+from anima_mcp.display.renderer import (  # noqa: E402
     DisplayConfig,
     PilRenderer,
     NoopRenderer,
@@ -31,7 +31,7 @@ from anima_mcp.display.renderer import (
     BLACK,
     WHITE,
 )
-from anima_mcp.display.face import FaceState, EyeState, MouthState
+from anima_mcp.display.face import FaceState, EyeState, MouthState  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

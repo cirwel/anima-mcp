@@ -213,7 +213,7 @@ class TestExecuteWorkflow:
             with patch.object(orchestrator, "_execute_anima_step", side_effect=tracking_execute):
                 step_a = WorkflowStep(name="a", server="anima", tool="get_state", arguments={})
                 step_b = WorkflowStep(name="b", server="anima", tool="get_state", arguments={}, depends_on=["a"])
-                result = await orchestrator.execute_workflow([step_b, step_a])
+                await orchestrator.execute_workflow([step_b, step_a])
 
         assert call_order.index("a") < call_order.index("b")
 

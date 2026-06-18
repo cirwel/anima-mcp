@@ -73,7 +73,6 @@ class TestExpressionGeneratorGenerate:
             assert len(result) <= 3
 
     def test_single_pattern(self):
-        gen = ExpressionGenerator(seed=42)
         # Run many times to find a single pattern
         found_single = False
         for _ in range(100):
@@ -85,7 +84,6 @@ class TestExpressionGeneratorGenerate:
         assert found_single
 
     def test_pair_pattern_unique_tokens(self):
-        gen = ExpressionGenerator(seed=42)
         found_pair = False
         for i in range(100):
             gen_test = ExpressionGenerator(seed=i)
@@ -96,7 +94,6 @@ class TestExpressionGeneratorGenerate:
         assert found_pair
 
     def test_repetition_pattern_same_token(self):
-        gen = ExpressionGenerator(seed=42)
         found_rep = False
         for i in range(200):
             gen_test = ExpressionGenerator(seed=i)

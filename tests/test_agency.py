@@ -27,7 +27,7 @@ class TestAgencyPersistence:
     def test_init_creates_tables(self, tmp_db):
         """Test that init creates the required tables."""
         import sqlite3
-        sel = ActionSelector(db_path=tmp_db)
+        ActionSelector(db_path=tmp_db)
         conn = sqlite3.connect(tmp_db)
         # Check tables exist
         tables = conn.execute(

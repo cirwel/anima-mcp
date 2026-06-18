@@ -7,7 +7,6 @@ Run with: pytest tests/test_knowledge_base.py -v
 
 import json
 import math
-import time
 
 import pytest
 

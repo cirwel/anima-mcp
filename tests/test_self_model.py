@@ -137,7 +137,6 @@ class TestSelfModel:
 
     def test_observe_interaction_positive(self, model):
         """Test that clarity increase supports interaction belief."""
-        initial = model._beliefs["interaction_clarity_boost"].confidence
         model.observe_interaction(clarity_before=0.4, clarity_after=0.7)
         assert model._beliefs["interaction_clarity_boost"].supporting_count == 1
 

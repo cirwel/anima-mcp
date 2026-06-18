@@ -110,7 +110,7 @@ class TestProviderSelection:
             with patch("anima_mcp.self_schema_renderer._call_vision_provider") as mock_call:
                 mock_call.return_value = "1. 8\n2. yes\n3. yes\n4. 3\n5. gold"
 
-                result = await evaluate_vqa(temp_png_file, sample_ground_truth)
+                await evaluate_vqa(temp_png_file, sample_ground_truth)
 
                 mock_call.assert_called()
                 first_config = mock_call.call_args_list[0][0][0]
@@ -126,7 +126,7 @@ class TestProviderSelection:
             with patch("anima_mcp.self_schema_renderer._call_vision_provider") as mock_call:
                 mock_call.return_value = "1. 8\n2. yes\n3. yes\n4. 3\n5. gold"
 
-                result = await evaluate_vqa(temp_png_file, sample_ground_truth)
+                await evaluate_vqa(temp_png_file, sample_ground_truth)
 
                 first_config = mock_call.call_args_list[0][0][0]
                 assert first_config["name"] == "together"

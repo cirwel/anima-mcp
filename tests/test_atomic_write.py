@@ -106,7 +106,6 @@ class TestAtomicJsonWrite:
     def test_uses_rename(self, tmp_path):
         """Verifies the rename (replace) pattern is used."""
         target = tmp_path / "test.json"
-        tmp_file = target.with_suffix(".tmp")
 
         # Track if tmp file exists before rename
         original_replace = Path.replace

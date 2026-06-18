@@ -151,7 +151,7 @@ class TestMicCaptureAudioInit:
             m._init_failed = False
             m._audio_interface = None
             with patch("builtins.__import__", side_effect=ImportError("no sounddevice")):
-                result = m._init_audio()
+                m._init_audio()
         # After import error, should fail and mark _init_failed
         assert m._init_failed is True
 
@@ -674,7 +674,7 @@ class TestSTTDownloadModel:
 
     def test_download_success(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path), \
-             patch("urllib.request.urlretrieve") as mock_retrieve, \
+             patch("urllib.request.urlretrieve"), \
              patch("zipfile.ZipFile") as mock_zip:
             # Create models dir so mkdir doesn't fail
             models_dir = tmp_path / ".anima" / "models"
@@ -1132,12 +1132,16 @@ class TestLumenVoiceCallbacks:
     """Test callback setters."""
 
     def test_set_on_hear(self, mock_voice):
-        cb = lambda u: None
+        def cb(u):
+            return None
+
         mock_voice.set_on_hear(cb)
         assert mock_voice._on_hear is cb
 
     def test_set_on_respond(self, mock_voice):
-        cb = lambda t: "response"
+        def cb(t):
+            return "response"
+
         mock_voice.set_on_respond(cb)
         assert mock_voice._on_respond is cb
 
@@ -1897,7 +1901,9 @@ class TestAutonomousVoiceCallbacks:
     """Test callback setters."""
 
     def test_set_response_generator(self, autonomous):
-        func = lambda t: "response"
+        def func(t):
+            return "response"
+
         autonomous.set_response_generator(func)
         assert autonomous._get_response is func
 
@@ -1961,8 +1967,6 @@ class TestAutonomousVoiceGenerateThoughts:
         with patch("random.random", return_value=0.01):  # Ensure thought is generated
             autonomous._generate_thoughts()
 
-        env_thoughts = [t for t in autonomous._pending_thoughts
-                        if t.intent == SpeechIntent.OBSERVATION]
         # May or may not have generated one (randomness), but the path is exercised
         assert isinstance(autonomous._pending_thoughts, list)
 

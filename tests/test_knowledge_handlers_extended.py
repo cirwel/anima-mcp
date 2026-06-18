@@ -66,12 +66,6 @@ class TestGetGrowthExtended:
             progress=0.4,
             milestones=["m1", "m2"],
         )
-        goal_achieved = SimpleNamespace(
-            status=SimpleNamespace(value="achieved"),
-            description="finished",
-            progress=1.0,
-            milestones=["done"],
-        )
         memory = SimpleNamespace(
             description="A meaningful exchange",
             category="social",

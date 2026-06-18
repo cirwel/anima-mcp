@@ -39,7 +39,7 @@ class TestSharedMemoryInit:
     def test_creates_parent_directory(self, tmp_path):
         """Init creates parent directory if it does not exist."""
         filepath = tmp_path / "sub" / "dir" / "state.json"
-        client = SharedMemoryClient(filepath=filepath)
+        SharedMemoryClient(filepath=filepath)
         assert filepath.parent.exists()
 
     def test_existing_directory_ok(self, tmp_path):
@@ -358,7 +358,6 @@ class TestConcurrentAccess:
         """If lock cannot be acquired after retries, read returns None."""
         filepath = tmp_path / "state.json"
         filepath.write_text('{"data": {"ok": true}}')
-        lock_path = filepath.with_suffix(".lock")
 
         reader = SharedMemoryClient(mode="read", filepath=filepath)
 

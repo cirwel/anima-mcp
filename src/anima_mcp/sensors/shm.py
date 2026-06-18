@@ -18,7 +18,6 @@ both services did. Routing the server through SHM eliminates the
 contention class.
 """
 
-import os
 from typing import Optional
 
 from .base import SensorBackend, SensorReadings

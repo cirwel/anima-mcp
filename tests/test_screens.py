@@ -20,13 +20,13 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not HAS_PIL, reason="PIL required for screen tests")
 
-from anima_mcp.display.screens import (
+from anima_mcp.display.screens import (  # noqa: E402
     ScreenMode,
     ScreenState,
     ScreenRenderer,
 )
-from anima_mcp.display.renderer import PilRenderer
-from anima_mcp.display.face import FaceState, EyeState, MouthState
+from anima_mcp.display.renderer import PilRenderer  # noqa: E402
+from anima_mcp.display.face import FaceState, EyeState, MouthState  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +578,7 @@ class TestScreenRendererTransition:
         screen_renderer._state.transition_progress = 0.5
         screen_renderer._state.previous_image = None
         new_img = Image.new("RGB", (240, 240), (255, 255, 255))
-        result = screen_renderer._apply_transition(new_img)
+        screen_renderer._apply_transition(new_img)
         assert screen_renderer._state.transition_progress == 1.0
 
     def test_apply_transition_blends(self, screen_renderer):

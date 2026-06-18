@@ -120,7 +120,7 @@ class TestGetShmClient:
         """_get_shm_client creates a new client when ctx is None."""
         from anima_mcp.accessors import _get_shm_client
         ctx_ref._ctx = None
-        result = _get_shm_client()
+        _get_shm_client()
         MockSHM.assert_called_once_with(mode="read", backend="file")
 
     @patch("anima_mcp.accessors.SharedMemoryClient")
@@ -128,7 +128,7 @@ class TestGetShmClient:
         """_get_shm_client lazily initializes on context."""
         from anima_mcp.accessors import _get_shm_client
         ctx = make_ctx()
-        result = _get_shm_client()
+        _get_shm_client()
         assert ctx.shm_client is MockSHM.return_value
 
     def test_returns_existing_client(self):
@@ -164,7 +164,7 @@ class TestGetServerBridge:
     def test_returns_none_when_no_unitares_url(self):
         """_get_server_bridge returns None when UNITARES_URL not set."""
         from anima_mcp.accessors import _get_server_bridge
-        ctx = make_ctx()
+        make_ctx()
         # Ensure UNITARES_URL not in env
         os.environ.pop("UNITARES_URL", None)
         assert _get_server_bridge() is None
@@ -200,7 +200,7 @@ class TestGetServerBridge:
 
         bridge_inst = MockBridge.return_value
         with patch("anima_mcp.accessors._get_store", return_value=store):
-            result = _get_server_bridge()
+            _get_server_bridge()
 
         bridge_inst.set_agent_id.assert_called_once_with("abcd1234-5678")
         bridge_inst.set_session_id.assert_called_once_with("anima-server-abcd1234")
@@ -216,7 +216,7 @@ class TestGetSchemaHub:
         """_get_schema_hub returns a transient SchemaHub when ctx is None."""
         from anima_mcp.accessors import _get_schema_hub
         ctx_ref._ctx = None
-        result = _get_schema_hub()
+        _get_schema_hub()
         MockHub.assert_called_once()
 
     @patch("anima_mcp.accessors.SchemaHub")
@@ -224,7 +224,7 @@ class TestGetSchemaHub:
         """_get_schema_hub lazily creates SchemaHub on context."""
         from anima_mcp.accessors import _get_schema_hub
         ctx = make_ctx()
-        result = _get_schema_hub()
+        _get_schema_hub()
         assert ctx.schema_hub is MockHub.return_value
 
     def test_returns_existing_hub(self):
@@ -246,7 +246,7 @@ class TestGetCalibrationDrift:
         """_get_calibration_drift returns fresh CalibrationDrift when ctx is None."""
         from anima_mcp.accessors import _get_calibration_drift
         ctx_ref._ctx = None
-        result = _get_calibration_drift()
+        _get_calibration_drift()
         MockDrift.assert_called_once()
 
     @patch("anima_mcp.accessors.CalibrationDrift")
@@ -262,7 +262,7 @@ class TestGetCalibrationDrift:
             # Force the path check
             MockPath.home.return_value / ".anima" / "calibration_drift.json"
 
-            result = _get_calibration_drift()
+            _get_calibration_drift()
 
         assert ctx.calibration_drift is not None
 
@@ -284,7 +284,7 @@ class TestGetCalibrationDrift:
         MockDrift.load.return_value = loaded_drift
 
         with patch.object(Path, 'exists', return_value=True):
-            result = _get_calibration_drift()
+            _get_calibration_drift()
 
         MockDrift.load.assert_called_once()
         assert ctx.calibration_drift is loaded_drift
@@ -298,7 +298,7 @@ class TestGetCalibrationDrift:
         MockDrift.load.side_effect = ValueError("corrupt file")
 
         with patch.object(Path, 'exists', return_value=True):
-            result = _get_calibration_drift()
+            _get_calibration_drift()
 
         # Should have created a fresh one after load failed
         assert ctx.calibration_drift is not None
@@ -349,7 +349,7 @@ class TestGetSelfhoodContext:
     def test_includes_preference_weights(self):
         """_get_selfhood_context includes preference weights when available."""
         from anima_mcp.accessors import _get_selfhood_context
-        ctx = make_ctx()
+        make_ctx()
 
         pref_warmth = SimpleNamespace(influence_weight=1.1)
         pref_clarity = SimpleNamespace(influence_weight=0.9)
@@ -399,7 +399,7 @@ class TestGetMetacogMonitor:
     def test_thread_safety(self, MockMM):
         """_get_metacog_monitor is thread-safe (only one instance created)."""
         from anima_mcp.accessors import _get_metacog_monitor
-        ctx = make_ctx()
+        make_ctx()
 
         results = []
         barrier = threading.Barrier(5)
@@ -516,7 +516,7 @@ class TestPassthroughAccessors:
         from anima_mcp.accessors import _get_display
         ctx_ref._ctx = None
         with patch("anima_mcp.accessors.get_display") as mock:
-            result = _get_display()
+            _get_display()
         mock.assert_called_once()
 
     def test_get_display_lazy_init(self):
@@ -524,7 +524,7 @@ class TestPassthroughAccessors:
         from anima_mcp.accessors import _get_display
         ctx = make_ctx()
         with patch("anima_mcp.accessors.get_display") as mock:
-            result = _get_display()
+            _get_display()
         assert ctx.display is mock.return_value
 
     def test_get_last_shm_data_none_when_no_ctx(self):
@@ -653,7 +653,7 @@ class TestGetReadingsAndAnima:
                                        mock_cal, mock_antic, mock_warm, mock_drift):
         """_get_readings_and_anima uses shared memory when data is fresh."""
         from anima_mcp.accessors import _get_readings_and_anima
-        ctx = make_ctx()
+        make_ctx()
 
         now = datetime.now().astimezone()
         shm_data = {
@@ -687,7 +687,7 @@ class TestGetReadingsAndAnima:
                                                     mock_cal, mock_antic, mock_warm, mock_drift):
         """_get_readings_and_anima falls back to sensors when SHM is empty."""
         from anima_mcp.accessors import _get_readings_and_anima
-        ctx = make_ctx()
+        make_ctx()
 
         mock_shm.return_value.read.return_value = None
         sensor = MagicMock()
@@ -710,7 +710,7 @@ class TestGetReadingsAndAnima:
     def test_returns_none_none_when_sensors_unavailable(self, mock_shm, mock_broker, mock_sensors):
         """_get_readings_and_anima returns (None, None) when sensors return None."""
         from anima_mcp.accessors import _get_readings_and_anima
-        ctx = make_ctx()
+        make_ctx()
 
         mock_shm.return_value.read.return_value = None
         mock_sensors.return_value = None
@@ -724,7 +724,7 @@ class TestGetReadingsAndAnima:
     def test_stale_shm_triggers_sensor_fallback(self, mock_shm):
         """_get_readings_and_anima considers old timestamps stale."""
         from anima_mcp.accessors import _get_readings_and_anima
-        ctx = make_ctx()
+        make_ctx()
 
         # Timestamp from 30 seconds ago (> SHM_STALE_THRESHOLD_SECONDS of 15)
         old_time = datetime.now().astimezone() - timedelta(seconds=30)

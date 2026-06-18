@@ -351,7 +351,7 @@ class TestGetMessagesForLumen:
         old = board.add_message("old", MESSAGE_TYPE_USER, author="user")
         old_ts = old.timestamp
         # Make the next message slightly newer
-        new = board.add_message("new", MESSAGE_TYPE_USER, author="user")
+        board.add_message("new", MESSAGE_TYPE_USER, author="user")
         msgs = board.get_messages_for_lumen(since_timestamp=old_ts)
         # Only messages strictly after old_ts
         assert all(m.timestamp > old_ts for m in msgs)

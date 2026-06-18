@@ -51,7 +51,6 @@ class TestCorrelationCalculation:
                 "light_lux": random.random() * 1000,
             })
 
-        initial_confidence = model._beliefs[belief_id].confidence
         model._test_correlation_belief(belief_id, "led_lux")
         # Random data may or may not correlate, but shouldn't crash
         # Just verify it ran without error

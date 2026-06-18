@@ -226,7 +226,7 @@ class TestPersistence:
             pass
 
     def test_init_db_creates_table(self):
-        ta = TrajectoryAwareness(buffer_size=30, db_path=self.db_path)
+        TrajectoryAwareness(buffer_size=30, db_path=self.db_path)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='trajectory_events'"

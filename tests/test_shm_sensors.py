@@ -4,13 +4,10 @@ instantiated PiSensors and opened /dev/i2c-1 alongside the broker;
 concurrent ownership left BMP280 silent at 0x77 for ~42h on 2026-04-26.
 """
 
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from anima_mcp.sensors import get_sensors
-from anima_mcp.sensors.base import SensorBackend
 from anima_mcp.sensors.mock import MockSensors
 from anima_mcp.sensors.shm import SHMSensors
 

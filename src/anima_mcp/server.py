@@ -1797,7 +1797,6 @@ def run_http_server(host: str, port: int):
 
             # Await bridge close here (async context) — sleep()'s fire-and-forget
             # can't reliably close it when the loop is about to stop.
-            from .accessors import _get_server_bridge
             bridge = _get_server_bridge()
             if bridge:
                 try:
