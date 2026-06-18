@@ -24,8 +24,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov aiohttp
-          pip install -e .
+          pip install -e ".[dev]"
+
+      - name: Run lint
+        run: |
+          ruff check .
+
+      - name: Run type check
+        run: |
+          mypy
 
       - name: Run core anima tests
         run: |
