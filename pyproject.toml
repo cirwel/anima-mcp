@@ -106,6 +106,21 @@ exclude_lines = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/anima_mcp"]
 
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+files = [
+    "src/anima_mcp/atomic_write.py",
+    "src/anima_mcp/ctx_ref.py",
+    "src/anima_mcp/health.py",
+    "src/anima_mcp/messages.py",
+    "src/anima_mcp/server_context.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+show_error_codes = true
+warn_unused_configs = true
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3,<10.0.0",

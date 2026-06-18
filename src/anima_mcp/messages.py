@@ -185,14 +185,14 @@ class MessageBoard:
     MAX_QUESTIONS = 50      # Curiosity questions (rare, important)
     MAX_VISITORS = 50       # User/agent messages (important to keep)
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._messages_file = _get_persistent_path()
         self._messages: List[Message] = []
         self._last_load_time: float = 0.0
         self._file_mtime: float = 0.0
         self._load()
 
-    def _load(self, force: bool = False):
+    def _load(self, force: bool = False) -> None:
         """Load messages from persistent storage."""
         # Check file modification time - only reload if changed
         if not force and self._messages_file.exists():
@@ -273,7 +273,7 @@ class MessageBoard:
         self._messages = observations + questions + answers + regular_visitors
         self._messages.sort(key=lambda m: m.timestamp)
 
-    def add_observation(self, text: str, author: str = "lumen") -> Message:
+    def add_observation(self, text: str, author: str = "lumen") -> Optional[Message]:
         """Add an auto-generated observation from Lumen.
 
         Deduplication strategy:

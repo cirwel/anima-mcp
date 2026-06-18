@@ -13,14 +13,14 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 
 def atomic_json_write(
-    path: Union[str, Path],
+    path: str | Path,
     data: Any,
     *,
-    indent: int = None,
+    indent: int | None = None,
 ) -> None:
     """Write data as JSON to path atomically.
 
