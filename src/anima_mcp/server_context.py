@@ -90,6 +90,11 @@ class ServerContext:
     sm_prev_warmth: float | None = None
     sm_pending_prediction: dict | None = None
     sm_clarity_before_interaction: float | None = None
+    # Self-model liveness telemetry (surfaced via diagnostics). If these stay at
+    # 0 / 0.0 while the loop runs, cross-iteration learning has silently broken
+    # (the class of bug fixed in ab984f9). A live system increments these.
+    sm_observation_count: int = 0
+    sm_last_observation_time: float = 0.0
 
     # LED proprioception
     led_proprioception: dict | None = None

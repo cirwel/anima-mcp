@@ -305,6 +305,13 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
                 # No successful UNITARES check-in within 5 min → running on local fallback
                 "unitares_stale": (age is None) or (age > 300),
             }
+            # Self-model liveness — observation_count stuck at 0 while the loop
+            # runs means cross-iteration learning has silently broken (ab984f9).
+            sm_last = _c.sm_last_observation_time or 0.0
+            result["self_model"] = {
+                "observation_count": _c.sm_observation_count,
+                "last_observation_age_s": round(_gt.time() - sm_last, 1) if sm_last > 0 else None,
+            }
     except Exception:
         pass
 

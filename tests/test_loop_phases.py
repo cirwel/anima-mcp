@@ -1084,3 +1084,75 @@ class TestSelfReflect:
 
         mock_refl.assert_called_once_with(db_path="anima.db")
         system.drain_broker_reflection.assert_called_once_with(None)
+
+
+# ---------------------------------------------------------------------------
+# run_self_model_phase — regression guard for the orphaned-write bug (ab984f9)
+# ---------------------------------------------------------------------------
+
+class TestRunSelfModelPhase:
+    """The self-model loop block wrote cross-iteration trackers to bare locals
+    while reading them from _ctx, so observe_stability_change /
+    observe_warmth_change / verify_prediction never fired for ~3 months. These
+    tests pin the contract: the trackers must persist on _ctx, and the
+    observations must fire when state actually moves.
+    """
+
+    def test_persists_prev_state_on_ctx_and_fires_observations(self):
+        from anima_mcp.loop_phases import run_self_model_phase
+
+        ctx = make_ctx()
+        sm = MagicMock()
+        sm.predict_own_response.return_value = None
+        with patch("anima_mcp.self_model.get_self_model", return_value=sm):
+            # First call seeds prev_* (they start as None → no observation yet).
+            run_self_model_phase(make_anima(stability=0.50, warmth=0.50), None, None, 2.0, 1)
+            assert ctx.sm_prev_stability == 0.50, "prev_stability must persist on _ctx (the bug wrote a bare local)"
+            assert ctx.sm_prev_warmth == 0.50, "prev_warmth must persist on _ctx"
+            sm.observe_stability_change.assert_not_called()
+            sm.observe_warmth_change.assert_not_called()
+
+            # Second call: both move > 0.05 → cross-iteration observations must fire.
+            run_self_model_phase(make_anima(stability=0.70, warmth=0.70), None, None, 2.0, 2)
+            sm.observe_stability_change.assert_called_once()
+            sm.observe_warmth_change.assert_called_once()
+
+    def test_records_liveness_telemetry(self):
+        from anima_mcp.loop_phases import run_self_model_phase
+
+        ctx = make_ctx()
+        assert ctx.sm_observation_count == 0
+        sm = MagicMock()
+        sm.predict_own_response.return_value = None
+        with patch("anima_mcp.self_model.get_self_model", return_value=sm):
+            run_self_model_phase(make_anima(stability=0.50, warmth=0.50), None, None, 2.0, 1)
+            run_self_model_phase(make_anima(stability=0.70, warmth=0.70), None, None, 2.0, 2)
+        # Two observations fired (stability + warmth) → counter and timestamp move.
+        assert ctx.sm_observation_count >= 2
+        assert ctx.sm_last_observation_time > 0
+
+    def test_verifies_pending_prediction(self):
+        from anima_mcp.loop_phases import run_self_model_phase
+
+        ctx = make_ctx()
+        ctx.sm_pending_prediction = {
+            "context": "stability_drop",
+            "prediction": {"belief": "fast_recovery"},
+            "stability_before": 0.40,
+            "warmth_before": 0.50,
+            "clarity_before": 0.50,
+        }
+        sm = MagicMock()
+        sm.predict_own_response.return_value = None
+        with patch("anima_mcp.self_model.get_self_model", return_value=sm):
+            run_self_model_phase(make_anima(stability=0.60), None, None, 2.0, 1)
+        sm.verify_prediction.assert_called_once()
+        assert ctx.sm_pending_prediction is None
+        assert ctx.sm_observation_count >= 1
+
+    def test_no_ctx_is_safe(self):
+        from anima_mcp.loop_phases import run_self_model_phase
+
+        ctx_ref._ctx = None
+        # Must not raise when there is no installed context.
+        run_self_model_phase(make_anima(), None, None, 2.0, 1)

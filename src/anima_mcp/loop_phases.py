@@ -725,6 +725,169 @@ async def extract_and_validate_schema(anima, readings, identity):
         logger.warning("[G_t] Extraction error (non-fatal): %s", e)
 
 
+def run_self_model_phase(anima, readings, prediction_error, base_delay: float, loop_count: int) -> None:
+    """Self-model belief updates from experience — extracted from _update_display_loop().
+
+    CONTRACT (regression-guarded by test_loop_phases): the cross-iteration
+    trackers live on ``_ctx`` (sm_prev_stability, sm_prev_warmth,
+    sm_pending_prediction) so they persist across loop iterations. Assigning them
+    to bare locals instead silently disables observe_stability_change /
+    observe_warmth_change / verify_prediction — the bug fixed in ab984f9 that ran
+    undetected for ~3 months. ``_ctx.sm_observation_count`` /
+    ``sm_last_observation_time`` record that cross-iteration learning is actually
+    firing and are surfaced by ``diagnostics()`` so a recurrence is observable.
+
+    Caller is responsible for the throttle/skip guard
+    (``loop_count % SELF_MODEL_INTERVAL == 0`` etc.).
+    """
+    import time as _time
+    from .ctx_ref import get_ctx
+    from .self_model import get_self_model
+    from .server_state import (
+        SELF_DIALOGUE_LOG_THROTTLE,
+        ERROR_LOG_THROTTLE,
+        STATUS_LOG_THROTTLE,
+    )
+
+    _ctx = get_ctx()
+    if _ctx is None or anima is None:
+        return
+
+    def _record_obs() -> None:
+        # Mark that a cross-iteration observation actually fired (liveness signal).
+        _ctx.sm_observation_count += 1
+        _ctx.sm_last_observation_time = _time.time()
+
+    try:
+        sm = get_self_model()
+
+        # 0. Verify any pending self-prediction from previous iteration
+        if _ctx.sm_pending_prediction is not None:
+            actual = {}
+            ctx = _ctx.sm_pending_prediction["context"]
+            if ctx == "light_change":
+                actual["surprise_likelihood"] = prediction_error.surprise if prediction_error else 0.0
+                # Normalize warmth delta to [0,1] magnitude for comparison
+                # with belief value (correlation strength 0-1).
+                # delta=0 → 0.5 (no effect), delta=±0.25 → 1.0 (strong effect)
+                raw_delta = anima.warmth - _ctx.sm_pending_prediction["warmth_before"]
+                actual["warmth_change"] = min(1.0, max(0.0, abs(raw_delta) * 2 + 0.5))
+            elif ctx == "temp_change":
+                actual["surprise_likelihood"] = prediction_error.surprise if prediction_error else 0.0
+                raw_delta = anima.clarity - _ctx.sm_pending_prediction["clarity_before"]
+                actual["clarity_change"] = min(1.0, max(0.0, abs(raw_delta) * 2 + 0.5))
+            elif ctx == "stability_drop":
+                # Fast recovery = stability improved back within one cycle
+                recovery = anima.stability - _ctx.sm_pending_prediction.get("stability_before", 0.5)
+                actual["fast_recovery"] = min(1.0, max(0.0, recovery + 0.5))  # Center around 0.5
+            if actual:
+                sm.verify_prediction(ctx, _ctx.sm_pending_prediction["prediction"], actual)
+                _record_obs()
+            _ctx.sm_pending_prediction = None
+
+        # 1. Observe surprise events
+        surprise_level = prediction_error.surprise if prediction_error else 0.0
+        surprise_sources = prediction_error.surprise_sources if prediction_error and hasattr(prediction_error, 'surprise_sources') else []
+        if surprise_level > 0.1 and surprise_sources:
+            sm.observe_surprise(surprise_level, surprise_sources)
+
+            # 1b. Make self-prediction for next verification cycle
+            # Determine context from surprise sources
+            pred_context = None
+            if "light" in surprise_sources:
+                pred_context = "light_change"
+            elif "ambient_temp" in surprise_sources:
+                pred_context = "temp_change"
+            if pred_context:
+                pred = sm.predict_own_response(pred_context)
+                if pred:
+                    _ctx.sm_pending_prediction = {
+                        "context": pred_context,
+                        "prediction": pred,
+                        "warmth_before": anima.warmth,
+                        "clarity_before": anima.clarity,
+                    }
+
+        # 2. Observe stability changes (track across iterations)
+        if _ctx.sm_prev_stability is not None:
+            stability_delta = abs(anima.stability - _ctx.sm_prev_stability)
+            if stability_delta > 0.05:
+                sm.observe_stability_change(
+                    _ctx.sm_prev_stability, anima.stability,
+                    duration_seconds=base_delay * 5
+                )
+                _record_obs()
+                # Predict recovery if stability dropped significantly
+                if anima.stability < _ctx.sm_prev_stability - 0.1 and _ctx.sm_pending_prediction is None:
+                    pred = sm.predict_own_response("stability_drop")
+                    if pred:
+                        _ctx.sm_pending_prediction = {
+                            "context": "stability_drop",
+                            "prediction": pred,
+                            "stability_before": anima.stability,
+                            "warmth_before": anima.warmth,
+                            "clarity_before": anima.clarity,
+                        }
+        _ctx.sm_prev_stability = anima.stability
+
+        # 2b. Observe warmth changes (track across iterations)
+        if _ctx.sm_prev_warmth is not None:
+            warmth_delta = abs(anima.warmth - _ctx.sm_prev_warmth)
+            if warmth_delta > 0.05:
+                sm.observe_warmth_change(
+                    _ctx.sm_prev_warmth, anima.warmth,
+                    duration_seconds=base_delay * 5
+                )
+                _record_obs()
+        _ctx.sm_prev_warmth = anima.warmth
+
+        # 3. Observe time-of-day patterns (every ~5 min)
+        if loop_count % SELF_DIALOGUE_LOG_THROTTLE == 0:
+            from datetime import datetime
+            sm.observe_time_pattern(
+                hour=datetime.now().hour,
+                warmth=anima.warmth,
+                clarity=anima.clarity,
+            )
+
+        # 4. Complete interaction observation (clarity before vs after)
+        if _ctx.sm_clarity_before_interaction is not None:
+            sm.observe_interaction(
+                clarity_before=_ctx.sm_clarity_before_interaction,
+                clarity_after=anima.clarity,
+            )
+            _ctx.sm_clarity_before_interaction = None
+
+        # 5. Observe sensor-anima correlations (for temp_clarity, light_warmth beliefs)
+        # Use world light (not raw lux) so Lumen learns whether environmental
+        # light correlates with warmth. Raw lux is LED-dominated — proprioception
+        # is handled separately by observe_led_lux below.
+        if readings:
+            sensor_vals = {}
+            if readings.ambient_temp_c is not None:
+                sensor_vals["ambient_temp"] = readings.ambient_temp_c
+            if readings.light_lux is not None:
+                sensor_vals["light"] = readings.light_lux
+            if sensor_vals:
+                sm.observe_correlation(
+                    sensor_values=sensor_vals,
+                    anima_values={"clarity": anima.clarity, "warmth": anima.warmth},
+                )
+
+        # 6. LED-lux proprioception: discover that own LEDs affect own sensor
+        if readings and readings.led_brightness is not None:
+            sm.observe_led_lux(readings.led_brightness, readings.light_lux)
+
+        # Save periodically (every ~10 min)
+        if loop_count % ERROR_LOG_THROTTLE == 0:
+            sm.save()
+
+    except Exception as e:
+        if loop_count % STATUS_LOG_THROTTLE == 1:
+            import sys
+            print(f"[SelfModel] Error (non-fatal): {e}", file=sys.stderr, flush=True)
+
+
 async def self_reflect():
     """Lumen reflects on accumulated experience to learn about itself.
 
