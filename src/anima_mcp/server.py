@@ -670,7 +670,7 @@ async def _update_display_loop():
                         if pred_context:
                             pred = sm.predict_own_response(pred_context)
                             if pred:
-                                _sm_pending_prediction = {
+                                _ctx.sm_pending_prediction = {
                                     "context": pred_context,
                                     "prediction": pred,
                                     "warmth_before": anima.warmth,
@@ -689,14 +689,14 @@ async def _update_display_loop():
                             if anima.stability < _ctx.sm_prev_stability - 0.1 and _ctx.sm_pending_prediction is None:
                                 pred = sm.predict_own_response("stability_drop")
                                 if pred:
-                                    _sm_pending_prediction = {
+                                    _ctx.sm_pending_prediction = {
                                         "context": "stability_drop",
                                         "prediction": pred,
                                         "stability_before": anima.stability,
                                         "warmth_before": anima.warmth,
                                         "clarity_before": anima.clarity,
                                     }
-                    _sm_prev_stability = anima.stability
+                    _ctx.sm_prev_stability = anima.stability
 
                     # 2b. Observe warmth changes (track across iterations)
                     if _ctx.sm_prev_warmth is not None:
@@ -706,7 +706,7 @@ async def _update_display_loop():
                                 _ctx.sm_prev_warmth, anima.warmth,
                                 duration_seconds=base_delay * 5
                             )
-                    _sm_prev_warmth = anima.warmth
+                    _ctx.sm_prev_warmth = anima.warmth
 
                     # 3. Observe time-of-day patterns (every ~5 min)
                     if loop_count % SELF_DIALOGUE_LOG_THROTTLE == 0:

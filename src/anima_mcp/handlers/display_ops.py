@@ -288,6 +288,26 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
     if drawing_info:
         result["drawing"] = drawing_info
 
+    # Governance / UNITARES reachability — surfaces silent local-fallback.
+    # get_health() reports governance=ok whenever decisions are produced, even
+    # local-only ones, so a prolonged UNITARES outage is otherwise invisible here.
+    try:
+        from ..ctx_ref import get_ctx
+        import time as _gt
+        _c = get_ctx()
+        if _c is not None:
+            last_dec = _c.last_governance_decision or {}
+            last_ok = _c.last_unitares_success_time or 0.0
+            age = round(_gt.time() - last_ok, 1) if last_ok > 0 else None
+            result["governance"] = {
+                "last_decision_source": last_dec.get("source"),
+                "unitares_last_success_age_s": age,
+                # No successful UNITARES check-in within 5 min → running on local fallback
+                "unitares_stale": (age is None) or (age > 300),
+            }
+    except Exception:
+        pass
+
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
