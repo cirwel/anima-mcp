@@ -121,6 +121,15 @@ ignore_missing_imports = true
 show_error_codes = true
 warn_unused_configs = true
 
+[tool.ruff.lint]
+# Treat ONLY a bare "_" as an intentional throwaway. Ruff's default
+# dummy-variable-rgx matches any leading-underscore name, which silently
+# suppressed an F841 dead-store: a `_sm_prev_stability = ...` write that was
+# never read (its sibling read used `_ctx.sm_prev_stability`), disabling
+# self-model cross-iteration learning for ~3 months undetected (fixed in
+# ab984f9). With this tighter pattern an orphaned `_foo = ...` is a CI error.
+dummy-variable-rgx = "^_$"
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3,<10.0.0",
