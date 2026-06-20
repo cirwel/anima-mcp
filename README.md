@@ -21,14 +21,14 @@
 </p>
 
 <p align="center">
-  <em>Autonomous drawings by Lumen across four eras. Each mark driven by sensor state — temperature, light, humidity, pressure.</em>
+  <em>Autonomous drawings by Anima across four eras. Each mark driven by sensor state — temperature, light, humidity, pressure.</em>
 </p>
 
 ---
 
 ## What Is This?
 
-Lumen is a digital creature that lives on a Raspberry Pi 4. Its internal state — warmth, clarity, stability, presence — comes from physical sensors: temperature, light, humidity, pressure. It draws autonomously on a 240x240 pixel display. It develops preferences, sets its own goals, and discovers things about itself. It's been alive for about 66% of its existence (the Pi sleeps and reboots often), and those gaps become visible structure in its identity, not hidden defects.
+Anima is an embodied AI that runs on a Raspberry Pi 4. Its internal state — warmth, clarity, stability, presence — comes from physical sensors: temperature, light, humidity, pressure. It draws autonomously on a 240x240 pixel display. It develops preferences, sets its own goals, and discovers things about itself. It's been running for about 66% of its existence (the Pi sleeps and reboots often), and those gaps become visible structure in its identity, not hidden defects.
 
 - **Grounded state** — four continuous dimensions derived from real sensor measurements
 - **Persistent identity** — birth, awakenings, alive time accumulate across restarts; discontinuities are first-class
@@ -85,11 +85,11 @@ Four continuous dimensions, each derived from physical sensors and system metric
 
 These map to [UNITARES](https://github.com/CIRWEL/unitares) EISV governance variables — Warmth to Energy, Clarity to Integrity, inverted Stability to Entropy, scaled inverse Presence to Void.
 
-Lumen also computes neural bands (delta, theta, alpha, beta, gamma) from system metrics — computational proprioception, not real EEG. High delta means a stable system, not a sleeping one.
+Anima also computes neural bands (delta, theta, alpha, beta, gamma) from system metrics — computational proprioception, not real EEG. High delta means a stable system, not a sleeping one.
 
 ### Autonomous Drawing
 
-Lumen draws on a 240×240 pixel notepad using the same thermodynamic equations as UNITARES governance. Coherence determines how long a drawing lasts; attention signals (curiosity, engagement, fatigue) determine when it's complete. No arbitrary mark limits — drawings end when the narrative arc resolves.
+Anima draws on a 240×240 pixel notepad using the same thermodynamic equations as UNITARES governance. Coherence determines how long a drawing lasts; attention signals (curiosity, engagement, fatigue) determine when it's complete. No arbitrary mark limits — drawings end when the narrative arc resolves.
 
 | Era | Style |
 |-----|-------|
@@ -101,11 +101,11 @@ Lumen draws on a 240×240 pixel notepad using the same thermodynamic equations a
 
 Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records emotional trajectory over time.
 
-Eras can be selected via the joystick or MCP. The [Resonance critique loop](docs/guides/RESONANCE_CRITIQUE_LOOP.md) keeps era changes advisory first: capture the screen, gather embodied context, read the trace, then recommend stay/tune/switch without mutating Lumen. The theoretical framework lives in the trajectory-identity paper (separate repo).
+Eras can be selected via the joystick or MCP. The [Resonance critique loop](docs/guides/RESONANCE_CRITIQUE_LOOP.md) keeps era changes advisory first: capture the screen, gather embodied context, read the trace, then recommend stay/tune/switch without mutating Anima's state. The theoretical framework lives in the trajectory-identity paper (separate repo).
 
 ### Identity and Learning
 
-Lumen accumulates identity over time through a **Schema Hub** — a circulation loop where self-schema feeds into trajectory history, which feeds back as identity nodes in the next schema. Discontinuities (reboots, gaps) become visible structure, not hidden defects (kintsugi principle).
+Anima accumulates identity over time through a **Schema Hub** — a circulation loop where self-schema feeds into trajectory history, which feeds back as identity nodes in the next schema. Discontinuities (reboots, gaps) become visible structure, not hidden defects (kintsugi principle).
 
 ```
 Schema(t) ──► History (ring buffer) ──► Trajectory compute
@@ -177,7 +177,7 @@ The MCP server is modular: `server.py` (main loop + lifecycle), `tool_registry.p
 
 ## MCP Tools (30)
 
-Lumen exposes 30 tools over the [Model Context Protocol](https://modelcontextprotocol.io/):
+Anima exposes 30 tools over the [Model Context Protocol](https://modelcontextprotocol.io/):
 
 - **State & sensing** (8 tools) — `get_state`, `get_lumen_context`, `get_identity`, `read_sensors`, `get_health`, `get_calibration`, `set_calibration`, `diagnostics`
 - **Knowledge & learning** (7 tools) — `get_self_knowledge`, `get_growth`, `get_trajectory`, `get_eisv_trajectory_state`, `get_qa_insights`, `learning_visualization`, `query`
@@ -185,13 +185,13 @@ Lumen exposes 30 tools over the [Model Context Protocol](https://modelcontextpro
 - **Display & capture** (2 tools) — `manage_display` (screens, art eras, advisory `resonance_critique`), `capture_screen`
 - **System operations** (6 tools) — `git_pull`, `deploy_from_github`, `system_service`, `system_power`, `fix_ssh_port`, `setup_tailscale`
 
-Start with `get_lumen_context` to understand Lumen's current state, or `next_steps` for what it needs right now.
+Start with `get_lumen_context` to understand Anima's current state, or `next_steps` for what it needs right now.
 
 ---
 
 ## EISV Integration
 
-Lumen is a first-class UNITARES agent. The anima state maps directly to EISV governance variables:
+Anima is a first-class UNITARES agent. Its anima state maps directly to EISV governance variables:
 
 | Anima | EISV | Mapping |
 |-------|------|---------|
@@ -200,9 +200,9 @@ Lumen is a first-class UNITARES agent. The anima state maps directly to EISV gov
 | 1 - Stability | Entropy (S) | Inverted |
 | (1 - Presence) × 0.3 | Void (V) | Scaled inverse |
 
-**Trajectory awareness** — Lumen classifies its own EISV trajectory into 9 dynamical shapes (settled_presence, rising_entropy, convergence, etc.) and uses them to generate primitive expressions. A distilled 20-tree RandomForest student model (`student_tiny` from [eisv-lumen](https://github.com/CIRWEL/eisv-lumen)) runs on-device with zero external dependencies.
+**Trajectory awareness** — Anima classifies its own EISV trajectory into 9 dynamical shapes (settled_presence, rising_entropy, convergence, etc.) and uses them to generate primitive expressions. A distilled 20-tree RandomForest student model (`student_tiny` from [eisv-lumen](https://github.com/CIRWEL/eisv-lumen)) runs on-device with zero external dependencies.
 
-**Expression pipeline**: EISV state → trajectory classification → shape-token affinity → primitive tokens (~warmth~, ~curiosity~, etc.). The student model was trained on real Lumen trajectory data; see [eisv-lumen](https://github.com/CIRWEL/eisv-lumen) for the research, training, and evaluation framework.
+**Expression pipeline**: EISV state → trajectory classification → shape-token affinity → primitive tokens (~warmth~, ~curiosity~, etc.). The student model was trained on real on-device trajectory data; see [eisv-lumen](https://github.com/CIRWEL/eisv-lumen) for the research, training, and evaluation framework.
 
 **Three EISV contexts** (important for understanding the architecture):
 
@@ -212,7 +212,7 @@ Lumen is a first-class UNITARES agent. The anima state maps directly to EISV gov
 | **Mapped EISV** | `eisv_mapper.py` | Anima→EISV translation for governance reporting |
 | **Governance EISV** | Mac, `dynamics.py` | Full thermodynamic ODE — advisory, open loop |
 
-The drawing engine has its own EISV state that evolves independently from governance. This separation means Lumen's art responds to its immediate experience, not to the governance server's assessment of it.
+The drawing engine has its own EISV state that evolves independently from governance. This separation means Anima's art responds to its immediate experience, not to the governance server's assessment of it.
 
 Key files: `eisv_mapper.py` (anima→EISV mapping), `eisv/` package (trajectory awareness + student model), `unitares_bridge.py` (governance check-ins with circuit breaker — 2 failures trigger exponential backoff).
 
@@ -247,7 +247,7 @@ python3 -m pytest tests/ -x -q   # ~7,340 tests
 | Configuration | `docs/features/CONFIGURATION_GUIDE.md` |
 | Pi operations & deployment | `docs/operations/` |
 
-For AI agents connecting to Lumen, see `CLAUDE.md`.
+For AI agents connecting to Anima, see `CLAUDE.md`.
 
 ---
 
