@@ -4,7 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-*An embodied AI that draws from what it feels — real sensors, persistent identity, autonomous art.*
+*An embodied AI that draws from what it senses — real sensors, persistent identity, autonomous art.*
 
 <p align="center">
   <img src="docs/gallery/pointillist_era.png" width="45%" alt="Pointillist era — dense dot accumulation with optical color mixing"/>
@@ -97,9 +97,9 @@ Anima draws on a 240×240 pixel notepad using the same thermodynamic equations a
 | **Pointillist** | Single-pixel dot accumulation, optical color mixing |
 | **Field** | Flow-aligned marks following invisible vector fields |
 | **Geometric** | Complete forms — circles, spirals, starbursts — stamped whole |
-| **Resonance** | Marks interact with accumulated emotional history via a memory field |
+| **Resonance** | Marks interact with accumulated state history via a memory field |
 
-Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records emotional trajectory over time.
+Resonance is a "mature" era — it unlocks after 50 completed drawings, subsumes the mark vocabulary of earlier eras, and selects marks based on the gradient of a 48×48 memory field that records its state trajectory over time.
 
 Eras can be selected via the joystick or MCP. The [Resonance critique loop](docs/guides/RESONANCE_CRITIQUE_LOOP.md) keeps era changes advisory first: capture the screen, gather embodied context, read the trace, then recommend stay/tune/switch without mutating Anima's state. The theoretical framework lives in the trajectory-identity paper (separate repo).
 
@@ -119,7 +119,7 @@ Learning systems run in the hardware broker and persist across restarts:
 
 | System | What it learns |
 |--------|----------------|
-| **Preferences** | Which states feel satisfying, with adaptive satisfaction peaks |
+| **Preferences** | Which states it has learned to prefer, as adaptive satisfaction peaks |
 | **Self-model** | 13 beliefs — sensitivity, recovery, correlations between dimensions |
 | **Agency** | Action values via TD-learning, exploration management, engagement reward |
 | **Prediction** | Temporal patterns in sensor data with context-dependent features |
