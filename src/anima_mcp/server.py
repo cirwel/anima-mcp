@@ -1100,9 +1100,9 @@ async def _update_display_loop():
                 except Exception as e:
                     logger.debug("[Lumen/Unified] Reflection error: %s", e)
 
-            # Lumen self-answers: Every 1800 iterations (~60 minutes), answer own old questions
+            # Lumen self-answers: check periodically, but only after the age
+            # gate in server_state gives external answers priority.
             # Uses learned insights/beliefs/preferences — no LLM needed
-            # Questions must be at least 10 minutes old (external answers get priority)
             if loop_count % SELF_ANSWER_INTERVAL == 0 and readings and anima and identity:
                 try:
                     await safe_call_async(

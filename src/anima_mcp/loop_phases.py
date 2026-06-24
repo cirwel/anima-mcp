@@ -605,16 +605,36 @@ async def lumen_self_answer(anima, readings, identity):
     preferences that Lumen has actually learned through experience.
     """
     import time
-    from .messages import get_unanswered_questions, add_agent_message
+    from .messages import (
+        MESSAGE_TYPE_AGENT,
+        MESSAGE_TYPE_QUESTION,
+        add_agent_message,
+        get_board,
+    )
+    from .server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
 
-    unanswered = get_unanswered_questions(limit=10)
+    board = get_board()
+    board._load(force=True)
+    board.repair_orphaned_answered()
+
+    answered_ids = {
+        m.responds_to for m in board._messages
+        if m.msg_type == MESSAGE_TYPE_AGENT and m.responds_to
+    }
+    unanswered = [
+        m for m in board._messages
+        if m.msg_type == MESSAGE_TYPE_QUESTION and m.message_id not in answered_ids
+    ]
     if not unanswered:
         return
 
-    # Filter to questions older than 10 minutes (external answers get priority)
-    min_age = 600  # seconds
+    # Expiry unblocks new questions; the linked-answer check still lets Lumen
+    # self-answer later if no external response arrived.
     now = time.time()
-    old_enough = [q for q in unanswered if (now - q.timestamp) >= min_age]
+    old_enough = [
+        q for q in unanswered
+        if (now - q.timestamp) >= SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
+    ]
     if not old_enough:
         return
 
