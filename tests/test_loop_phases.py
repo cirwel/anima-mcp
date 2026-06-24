@@ -730,20 +730,24 @@ class TestLumenSelfAnswer:
         """lumen_self_answer does nothing when no unanswered questions."""
         from anima_mcp.loop_phases import lumen_self_answer
 
-        with patch("anima_mcp.messages.get_unanswered_questions", return_value=[]):
+        board = SimpleNamespace(_messages=[], _load=MagicMock(), repair_orphaned_answered=lambda: 0)
+        with patch("anima_mcp.messages.get_board", return_value=board):
             await lumen_self_answer(make_anima(), make_readings(), make_identity())
 
     @pytest.mark.asyncio
     async def test_skips_recent_questions(self):
-        """lumen_self_answer skips questions younger than 10 minutes."""
+        """lumen_self_answer skips questions inside the external-answer window."""
         from anima_mcp.loop_phases import lumen_self_answer
+        from anima_mcp.server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
 
         recent_q = SimpleNamespace(
             text="how am I?",
-            timestamp=_time.time(),  # Just now
+            timestamp=_time.time() - (SELF_ANSWER_MIN_QUESTION_AGE_SECONDS - 1),
             message_id="q1",
+            msg_type="question",
         )
-        with patch("anima_mcp.messages.get_unanswered_questions", return_value=[recent_q]), \
+        board = SimpleNamespace(_messages=[recent_q], _load=MagicMock(), repair_orphaned_answered=lambda: 0)
+        with patch("anima_mcp.messages.get_board", return_value=board), \
              patch("anima_mcp.messages.add_agent_message") as mock_add:
             await lumen_self_answer(make_anima(), make_readings(), make_identity())
 
@@ -751,15 +755,18 @@ class TestLumenSelfAnswer:
 
     @pytest.mark.asyncio
     async def test_answers_old_question(self):
-        """lumen_self_answer answers questions older than 10 minutes."""
+        """lumen_self_answer answers questions beyond the external-answer window."""
         from anima_mcp.loop_phases import lumen_self_answer
+        from anima_mcp.server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
 
         old_q = SimpleNamespace(
             text="how do I feel right now?",
-            timestamp=_time.time() - 700,  # 11+ minutes ago
+            timestamp=_time.time() - (SELF_ANSWER_MIN_QUESTION_AGE_SECONDS + 1),
             message_id="q2",
+            msg_type="question",
         )
-        with patch("anima_mcp.messages.get_unanswered_questions", return_value=[old_q]), \
+        board = SimpleNamespace(_messages=[old_q], _load=MagicMock(), repair_orphaned_answered=lambda: 0)
+        with patch("anima_mcp.messages.get_board", return_value=board), \
              patch("anima_mcp.loop_phases.grounded_self_answer", return_value="I feel warm"), \
              patch("anima_mcp.messages.add_agent_message", return_value=MagicMock()) as mock_add, \
              patch("anima_mcp.knowledge.extract_insight_from_answer", new_callable=AsyncMock):
@@ -773,18 +780,67 @@ class TestLumenSelfAnswer:
     async def test_skips_when_no_answer(self):
         """lumen_self_answer skips when grounded_self_answer returns None."""
         from anima_mcp.loop_phases import lumen_self_answer
+        from anima_mcp.server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
 
         old_q = SimpleNamespace(
             text="what is the meaning of existence?",
-            timestamp=_time.time() - 700,
+            timestamp=_time.time() - (SELF_ANSWER_MIN_QUESTION_AGE_SECONDS + 1),
             message_id="q3",
+            msg_type="question",
         )
-        with patch("anima_mcp.messages.get_unanswered_questions", return_value=[old_q]), \
+        board = SimpleNamespace(_messages=[old_q], _load=MagicMock(), repair_orphaned_answered=lambda: 0)
+        with patch("anima_mcp.messages.get_board", return_value=board), \
              patch("anima_mcp.loop_phases.grounded_self_answer", return_value=None), \
              patch("anima_mcp.messages.add_agent_message") as mock_add:
             await lumen_self_answer(make_anima(), make_readings(), make_identity())
 
         mock_add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_question_with_linked_answer(self):
+        """lumen_self_answer does not add a second answer to already answered questions."""
+        from anima_mcp.loop_phases import lumen_self_answer
+        from anima_mcp.server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
+
+        old_q = SimpleNamespace(
+            text="why am I curious?",
+            timestamp=_time.time() - (SELF_ANSWER_MIN_QUESTION_AGE_SECONDS + 1),
+            message_id="q4",
+            msg_type="question",
+        )
+        existing_answer = SimpleNamespace(msg_type="agent", responds_to="q4")
+        board = SimpleNamespace(
+            _messages=[old_q, existing_answer],
+            _load=MagicMock(),
+            repair_orphaned_answered=lambda: 0,
+        )
+        with patch("anima_mcp.messages.get_board", return_value=board), \
+             patch("anima_mcp.messages.add_agent_message") as mock_add:
+            await lumen_self_answer(make_anima(), make_readings(), make_identity())
+
+        mock_add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_answers_expired_question_without_linked_answer(self):
+        """Expiry unblocks backlog but does not prevent eventual self-answering."""
+        from anima_mcp.loop_phases import lumen_self_answer
+        from anima_mcp.server_state import SELF_ANSWER_MIN_QUESTION_AGE_SECONDS
+
+        expired_q = SimpleNamespace(
+            text="why did no one answer?",
+            timestamp=_time.time() - (SELF_ANSWER_MIN_QUESTION_AGE_SECONDS + 1),
+            message_id="q5",
+            msg_type="question",
+            answered=True,
+        )
+        board = SimpleNamespace(_messages=[expired_q], _load=MagicMock(), repair_orphaned_answered=lambda: 0)
+        with patch("anima_mcp.messages.get_board", return_value=board), \
+             patch("anima_mcp.loop_phases.grounded_self_answer", return_value="I can still learn from waiting"), \
+             patch("anima_mcp.messages.add_agent_message", return_value=MagicMock()) as mock_add, \
+             patch("anima_mcp.knowledge.extract_insight_from_answer", new_callable=AsyncMock):
+            await lumen_self_answer(make_anima(), make_readings(), make_identity())
+
+        mock_add.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
