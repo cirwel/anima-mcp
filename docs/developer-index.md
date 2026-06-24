@@ -20,7 +20,7 @@
 
 ## Quick Orientation
 
-- **Anima** = Pi creature with real sensors, identity, and feelings
+- **Anima** = Pi sensor/identity system with creature-facing state labels
 - **Lumen** = The creature's name (ID: `49e14444-b59e-48f1-83b8-b36a988c9975`)
 - **UNITARES** = Governance system that monitors agent health (separate repo)
 

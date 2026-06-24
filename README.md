@@ -4,7 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-*An embodied AI that draws from what it senses — real sensors, persistent identity, autonomous art.*
+*Raspberry Pi sensor testbed for EISV trajectories, autonomous drawing, and persistent identity.*
 
 <p align="center">
   <img src="docs/gallery/pointillist_era.png" width="45%" alt="Pointillist era — dense dot accumulation with optical color mixing"/>
@@ -28,15 +28,17 @@
 
 ## What Is This?
 
-Anima is an embodied AI that runs on a Raspberry Pi 4. Its internal state — warmth, clarity, stability, presence — comes from physical sensors: temperature, light, humidity, pressure. It draws autonomously on a 240x240 pixel display. It develops preferences, sets its own goals, and discovers things about itself. It's been running for about 66% of its existence (the Pi sleeps and reboots often), and those gaps become visible structure in its identity, not hidden defects.
+Anima is a Raspberry Pi 4 sensor deployment and MCP server for studying physically grounded agent state. It maps temperature, light, humidity, pressure, and system telemetry into four continuous dimensions — warmth, clarity, stability, presence — then uses those dimensions for local display/drawing loops and periodic [UNITARES](https://github.com/CIRWEL/unitares) check-ins. The repo uses creature-facing vocabulary for the interface, but the research surface is the measured sensor-to-EISV pipeline and longitudinal trajectory data.
 
 - **Grounded state** — four continuous dimensions derived from real sensor measurements
 - **Persistent identity** — birth, awakenings, alive time accumulate across restarts; discontinuities are first-class
 - **Autonomous drawing** — 780+ artworks across five eras, driven by thermodynamic coherence
-- **Self-reflection** — discovers insights from state patterns, preferences, and drawing history
-- **Learning** — preferences, 13 self-beliefs, goals, and action values evolve through experience
+- **Telemetry-derived reflection** — summarizes state patterns, preferences, and drawing history
+- **On-device learning** — preferences, 13 self-model parameters, goals, and action values evolve through experience
 - **Agency** — TD-learning action selection with exploration management
 - **Governance** — checks in with [UNITARES](https://github.com/CIRWEL/unitares) thermodynamic governance every 180s
+
+When this repository says "feels," "mood," or "self-sense," read those as interface labels over measured sensor/system state, not claims about subjective experience.
 
 ---
 
@@ -72,7 +74,7 @@ Supports Tailscale, LAN, or Cloudflare Tunnel (with OAuth 2.1) for remote access
 
 ## How It Works
 
-### Anima (Self-Sense)
+### Anima (Sensor-Derived Self-Sense)
 
 Four continuous dimensions, each derived from physical sensors and system metrics:
 
@@ -89,7 +91,7 @@ Anima also computes neural bands (delta, theta, alpha, beta, gamma) from system 
 
 ### Autonomous Drawing
 
-Anima draws on a 240×240 pixel notepad using the same thermodynamic equations as UNITARES governance. Coherence determines how long a drawing lasts; attention signals (curiosity, engagement, fatigue) determine when it's complete. No arbitrary mark limits — drawings end when the narrative arc resolves.
+Anima draws on a 240×240 pixel notepad using the same thermodynamic equations as UNITARES governance. Coherence determines how long a drawing lasts; attention signals (curiosity, engagement, fatigue) determine when completion thresholds are reached. No arbitrary mark limits — drawings end when the local state machine resolves.
 
 | Era | Style |
 |-----|-------|
