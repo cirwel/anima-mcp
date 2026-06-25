@@ -15,6 +15,12 @@ from .ctx_ref import get_ctx as _get_ctx, set_ctx as _set_ctx_ref
 
 logger = logging.getLogger("anima.server")
 
+# Strong refs for fire-and-forget shutdown tasks. asyncio only holds a weak
+# reference to a bare create_task() result, so without this the task can be
+# garbage-collected mid-await before bridge.close() completes (RUF006 / Watcher
+# P001). The done-callback discards the ref once the task finishes.
+_SHUTDOWN_TASKS: set = set()
+
 
 def _set_ctx(ctx):
     """Set _ctx in ctx_ref (canonical) and server.py (backward compat)."""
@@ -382,7 +388,9 @@ def sleep():
             import asyncio
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(bridge.close())
+                _close_task = loop.create_task(bridge.close())
+                _SHUTDOWN_TASKS.add(_close_task)
+                _close_task.add_done_callback(_SHUTDOWN_TASKS.discard)
             else:
                 loop.run_until_complete(bridge.close())
         except Exception as e:
