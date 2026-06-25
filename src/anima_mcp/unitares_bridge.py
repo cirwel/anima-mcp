@@ -162,7 +162,26 @@ class UnitaresBridge:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
             self._http_session = None
-        
+
+    async def _reset_session(self):
+        """Drop the pooled HTTP session after a connection failure.
+
+        The reusable session's TCPConnector caches DNS for ttl_dns_cache (300s),
+        so a transient network/DNS blip (e.g. Tailscale MagicDNS dropping out)
+        can leave the connector pinned to a stale/failed resolution. Tearing the
+        session down forces _get_session() to rebuild the connector with a fresh
+        DNS lookup on the next attempt, so the client self-heals once the path
+        recovers instead of needing a process restart.
+        """
+        session = self._http_session
+        self._http_session = None
+        self._session_loop = None
+        if session is not None and not session.closed:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
     async def check_availability(self) -> bool:
         """
         Check if UNITARES server is available.
@@ -254,6 +273,8 @@ class UnitaresBridge:
             self._circuit_failures += 1
             self._last_availability_check = current_time
             self._maybe_open_circuit(current_time)
+            # Rebuild the session so the next probe re-resolves DNS (self-heal)
+            await self._reset_session()
             return False
 
         except ImportError:
@@ -264,6 +285,7 @@ class UnitaresBridge:
             self._available = False
             self._circuit_failures += 1
             self._maybe_open_circuit(time.time())
+            await self._reset_session()
             return False
 
     def _maybe_open_circuit(self, current_time: float) -> None:
@@ -344,6 +366,8 @@ class UnitaresBridge:
                 import time
                 self._circuit_failures += 1
                 self._maybe_open_circuit(time.time())
+                # Rebuild the session so the next check-in re-resolves DNS (self-heal)
+                await self._reset_session()
                 return self._local_governance(anima, readings, eisv, error=str(e))
         else:
             # Use local governance

@@ -357,6 +357,46 @@ async def test_check_availability_handles_401_and_opens_circuit():
 
 
 @pytest.mark.asyncio
+async def test_check_availability_resets_session_on_connection_failure():
+    """A connection/DNS failure should drop the pooled session so the next
+    probe rebuilds the connector and re-resolves DNS (self-heal)."""
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp")
+    bridge._circuit_threshold = 1
+
+    mock_session = AsyncMock()
+    mock_session.get = MagicMock(side_effect=OSError("Name or service not known"))
+    mock_session.post = MagicMock(side_effect=OSError("Name or service not known"))
+
+    reset_spy = AsyncMock()
+    with patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", reset_spy):
+        available = await bridge.check_availability()
+
+    assert available is False
+    assert bridge._circuit_open_until > 0
+    reset_spy.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_availability_401_does_not_reset_session():
+    """An auth (401) failure is not a connectivity problem — it should NOT
+    churn the session, since re-resolving DNS won't fix authorization."""
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp")
+    bridge._circuit_threshold = 1
+
+    mock_session = AsyncMock()
+    mock_session.get = MagicMock(return_value=_mock_http_response(status=401, body="unauthorized"))
+
+    reset_spy = AsyncMock()
+    with patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", reset_spy):
+        available = await bridge.check_availability()
+
+    assert available is False
+    reset_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_call_unitares_returns_parsed_governance_payload():
     """_call_unitares should unwrap MCP tool content and map fields."""
     bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
