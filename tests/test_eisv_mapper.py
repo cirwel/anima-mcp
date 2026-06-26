@@ -81,8 +81,9 @@ def test_eisv_basic_mapping():
     # Entropy should be inverse of stability
     assert abs(eisv.entropy - (1.0 - 0.8)) < 0.1
     
-    # Void should be scaled inverse of presence: (1 - 0.7) * 0.3 = 0.09
-    assert abs(eisv.void - (1.0 - 0.7) * 0.3) < 0.05
+    # Valence is the signed E-I imbalance (+hot / -careful)
+    assert abs(eisv.valence - (eisv.energy - eisv.integrity)) < 1e-9
+    assert -1.0 <= eisv.valence <= 1.0
 
 
 def test_eisv_with_neural_signals():
@@ -125,7 +126,7 @@ def test_eisv_range_clamping():
     assert 0.0 <= eisv.energy <= 1.0
     assert 0.0 <= eisv.integrity <= 1.0
     assert 0.0 <= eisv.entropy <= 1.0
-    assert 0.0 <= eisv.void <= 1.0
+    assert -1.0 <= eisv.valence <= 1.0
 
 
 def test_eisv_neural_weight_adjustment():
@@ -209,9 +210,9 @@ def test_eisv_to_dict():
         energy=0.7,
         integrity=0.6,
         entropy=0.3,
-        void=0.2
+        valence=0.2
     )
-    
+
     d = eisv.to_dict()
     
     assert d["E"] == 0.7

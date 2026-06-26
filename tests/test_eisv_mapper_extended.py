@@ -58,13 +58,13 @@ def _readings(**kwargs) -> SensorReadings:
 
 class TestEISVMetricsRepr:
     def test_repr_format(self):
-        m = EISVMetrics(energy=0.5, integrity=0.7, entropy=0.3, void=0.1)
+        m = EISVMetrics(energy=0.5, integrity=0.7, entropy=0.3, valence=0.1)
         r = repr(m)
         assert "EISV(" in r
         assert "E=0.50" in r
         assert "I=0.70" in r
         assert "S=0.30" in r
-        assert "V=0.10" in r
+        assert "V=+0.10" in r  # signed valence
 
 
 # ── compute_ethical_drift ──
@@ -225,7 +225,7 @@ class TestGenerateStatusText:
         assert "Gamma=0.20" in text
 
     def test_with_eisv_adds_eisv_line(self):
-        eisv = EISVMetrics(energy=0.5, integrity=0.7, entropy=0.3, void=0.1)
+        eisv = EISVMetrics(energy=0.5, integrity=0.7, entropy=0.3, valence=0.1)
         text = generate_status_text(_anima(), eisv=eisv)
         assert "EISV:" in text
         assert "E=0.50" in text

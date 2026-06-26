@@ -271,7 +271,7 @@ class TestAnimaToGovernanceWiring:
         assert 0 <= eisv.energy <= 1
         assert 0 <= eisv.integrity <= 1
         assert 0 <= eisv.entropy <= 1
-        assert 0 <= eisv.void <= 1
+        assert -1.0 <= eisv.valence <= 1.0
 
     @pytest.mark.asyncio
     async def test_bridge_check_in_produces_decision(self):

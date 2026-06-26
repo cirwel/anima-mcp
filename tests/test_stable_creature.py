@@ -428,7 +428,7 @@ class TestEISVMapping:
         assert 0.0 <= eisv.energy <= 1.0
         assert 0.0 <= eisv.integrity <= 1.0
         assert 0.0 <= eisv.entropy <= 1.0
-        assert 0.0 <= eisv.void <= 1.0
+        assert -1.0 <= eisv.valence <= 1.0
 
     def test_eisv_to_dict(self):
         """EISV to_dict has expected keys."""

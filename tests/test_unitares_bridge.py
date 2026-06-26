@@ -206,7 +206,7 @@ async def test_decision_includes_eisv():
     assert 0.0 <= decision["eisv"]["E"] <= 1.0
     assert 0.0 <= decision["eisv"]["I"] <= 1.0
     assert 0.0 <= decision["eisv"]["S"] <= 1.0
-    assert 0.0 <= decision["eisv"]["V"] <= 1.0
+    assert -1.0 <= decision["eisv"]["V"] <= 1.0  # V is signed valence
 
 
 @pytest.mark.asyncio
@@ -411,7 +411,7 @@ async def test_call_unitares_returns_parsed_governance_payload():
 
     anima = create_test_anima()
     readings = create_test_readings()
-    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, void=0.2)
+    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, valence=0.2)
 
     with patch.object(bridge, "_get_session", return_value=mock_session), patch(
         "anima_mcp.unitares_bridge.estimate_complexity", return_value=0.2
@@ -439,7 +439,7 @@ async def test_call_unitares_raises_on_http_error():
 
     anima = create_test_anima()
     readings = create_test_readings()
-    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, void=0.2)
+    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, valence=0.2)
 
     with patch.object(bridge, "_get_session", return_value=mock_session), patch(
         "anima_mcp.unitares_bridge.estimate_complexity", return_value=0.2

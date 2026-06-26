@@ -144,7 +144,7 @@ class TestProprioceptionBranches:
         adv = NextStepsAdvocate()
         anima = make_anima(warmth=0.5, clarity=0.5, stability=0.5, presence=0.5)
         readings = make_readings()
-        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, void=0.1)
+        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, valence=0.1)
         steps = adv.analyze_current_state(anima=anima, readings=readings, eisv=eisv)
         entropy_steps = [s for s in steps if "entropy" in s.feeling.lower()]
         assert len(entropy_steps) >= 1
@@ -154,7 +154,7 @@ class TestProprioceptionBranches:
         adv = NextStepsAdvocate()
         anima = make_anima(warmth=0.5, clarity=0.5, stability=0.5, presence=0.5)
         readings = make_readings()
-        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.3, void=0.1)
+        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.3, valence=0.1)
         steps = adv.analyze_current_state(anima=anima, readings=readings, eisv=eisv)
         entropy_steps = [s for s in steps if "entropy" in s.feeling.lower()]
         assert len(entropy_steps) == 0
@@ -287,7 +287,7 @@ class TestSortAndCaching:
         adv = NextStepsAdvocate()
         anima = make_anima(warmth=0.5, clarity=0.2, stability=0.5, presence=0.5)
         readings = make_readings()
-        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, void=0.1)
+        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, valence=0.1)
         steps = adv.analyze_current_state(
             anima=anima, readings=readings, eisv=eisv,
             display_available=False, unitares_connected=False,
@@ -331,7 +331,7 @@ class TestGetNextStepsSummary:
         adv = NextStepsAdvocate()
         anima = make_anima(warmth=0.5, clarity=0.2, stability=0.5, presence=0.5)
         readings = make_readings()
-        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, void=0.1)
+        eisv = EISVMetrics(energy=0.5, integrity=0.5, entropy=0.7, valence=0.1)
         steps = adv.analyze_current_state(
             anima=anima, readings=readings, eisv=eisv,
             display_available=False, unitares_connected=False,

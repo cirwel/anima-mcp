@@ -4,8 +4,13 @@ Map anima state (physical + neural) to EISV metrics for UNITARES governance.
 Creates bridge between anima-mcp creature and unitares-governance system.
 
 This module implements the mapping from anima proprioception (warmth, clarity,
-stability, presence) to EISV metrics (Energy, Integrity, Entropy, Void) used
+stability, presence) to EISV metrics (Energy, Integrity, Entropy, Valence) used
 by UNITARES governance framework.
+
+V is Valence — the signed E-I imbalance shared with governance (positive =
+running hot, E>I; negative = running careful, I>E), NOT the older "Void"
+(inverse-presence) reading. Reported as telemetry; the mapping is an
+instantaneous readout (no accumulator/decay) so it does not damp.
 """
 
 from dataclasses import dataclass
@@ -21,19 +26,19 @@ class EISVMetrics:
     energy: float      # E: 0-1, activation level
     integrity: float   # I: 0-1, information quality
     entropy: float     # S: 0-1, disorder/chaos
-    void: float        # V: 0-1, accumulated strain
-    
+    valence: float     # V: -1..1, signed E-I imbalance (+hot / -careful)
+
     def to_dict(self) -> dict:
         """Convert to dictionary for MCP/JSON serialization."""
         return {
             "E": self.energy,
             "I": self.integrity,
             "S": self.entropy,
-            "V": self.void,
+            "V": self.valence,
         }
-    
+
     def __repr__(self) -> str:
-        return f"EISV(E={self.energy:.2f}, I={self.integrity:.2f}, S={self.entropy:.2f}, V={self.void:.2f})"
+        return f"EISV(E={self.energy:.2f}, I={self.integrity:.2f}, S={self.entropy:.2f}, V={self.valence:+.2f})"
 
 
 def anima_to_eisv(
@@ -49,7 +54,7 @@ def anima_to_eisv(
     - Energy (E): Warmth + Beta/Gamma power (activation)
     - Integrity (I): Clarity + Alpha power (awareness)
     - Entropy (S): Inverse of Stability (chaos)
-    - Void (V): Inverse of Presence (strain)
+    - Valence (V): Signed E-I imbalance (+running hot / -running careful)
     
     Args:
         anima: Anima state (warmth, clarity, stability, presence)
@@ -93,21 +98,24 @@ def anima_to_eisv(
     # Stability incorporates Theta/Delta (deep stability)
     S = 1.0 - anima.stability
     
-    # Void (V): Inverse of Presence, scaled to governance range.
-    # Governance V is a differential accumulator (dV/dt = κ(E-I) - δV) that
-    # naturally hovers near 0. Lumen's raw (1-presence) is 0.3-0.5 normally.
-    # Scale by 0.3 so governance thresholds (0.15) are meaningful:
-    #   presence 0.7 → V=0.09 (comfortable)
-    #   presence 0.5 → V=0.15 (at threshold)
-    #   presence 0.3 → V=0.21 (past threshold)
-    V = (1.0 - anima.presence) * 0.3
-    
-    # Clamp to [0, 1] range
+    # Clamp E/I/S to [0, 1]
+    E = max(0.0, min(1.0, E))
+    integrity = max(0.0, min(1.0, integrity))
+    S = max(0.0, min(1.0, S))
+
+    # Valence (V): signed E-I imbalance, matching governance Valence semantics
+    # (positive = running hot, E>I; negative = running careful, I>E). Governance V
+    # is a differential accumulator dV/dt = κ(E-I) - δV; this is its instantaneous
+    # readout — no accumulator/decay, so the telemetry does not damp. The older
+    # (1-presence) "Void" mapping only ever reported the positive half and was not
+    # comparable to other agents' V.
+    V = max(-1.0, min(1.0, E - integrity))
+
     return EISVMetrics(
-        energy=max(0.0, min(1.0, E)),
-        integrity=max(0.0, min(1.0, integrity)),
-        entropy=max(0.0, min(1.0, S)),
-        void=max(0.0, min(1.0, V))
+        energy=E,
+        integrity=integrity,
+        entropy=S,
+        valence=V,
     )
 
 
@@ -197,7 +205,7 @@ def generate_status_text(
 
     # Add EISV if provided
     if eisv:
-        status_parts.append(f"EISV: E={eisv.energy:.2f}, I={eisv.integrity:.2f}, S={eisv.entropy:.2f}, V={eisv.void:.2f}")
+        status_parts.append(f"EISV: E={eisv.energy:.2f}, I={eisv.integrity:.2f}, S={eisv.entropy:.2f}, V={eisv.valence:+.2f}")
 
     # Add experiential accumulation summary
     if experiential_summary:

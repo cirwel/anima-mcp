@@ -598,13 +598,14 @@ class UnitaresBridge:
         # UNITARES thresholds (from governance_config.py):
         RISK_THRESHOLD = 0.60
         COHERENCE_THRESHOLD = 0.40
-        VOID_THRESHOLD = 0.15
 
-        # Signed margins: positive = room to threshold, negative = past threshold
+        # Signed margins: positive = room to threshold, negative = past threshold.
+        # V (Valence) is telemetry, not a gate — it carries little outcome signal
+        # and gating on it homogenises agents, so the local fallback no longer
+        # pauses on V (reported in eisv for observability only).
         margins = {
             "risk": RISK_THRESHOLD - eisv.entropy,        # Higher entropy is worse
             "coherence": eisv.integrity - COHERENCE_THRESHOLD,  # Lower integrity is worse
-            "void": VOID_THRESHOLD - eisv.void            # Higher void is worse
         }
 
         # Check if any threshold crossed
