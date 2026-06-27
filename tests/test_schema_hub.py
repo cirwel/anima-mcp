@@ -340,6 +340,52 @@ class TestOnWake:
         result = hub2.on_wake()
         assert result.anima_delta == {}
 
+    def test_persist_writes_history_window(self, tmp_path):
+        """persist_schema records a bounded history window, not just the last snapshot."""
+        persist_path = tmp_path / "schema.json"
+        hub = SchemaHub(persist_path=persist_path)
+        for _ in range(12):
+            hub.compose_schema()
+        assert hub.persist_schema() is True
+
+        data = json.loads(persist_path.read_text())
+        assert "_history" in data
+        assert len(data["_history"]) == 12
+        # Each entry round-trips through the deserializer.
+        assert all(SchemaHub._deserialize_schema(e) is not None for e in data["_history"])
+
+    def test_on_wake_restores_full_history_window(self, tmp_path):
+        """on_wake rebuilds the history ring from the persisted window (floor fix)."""
+        persist_path = tmp_path / "schema.json"
+        hub = SchemaHub(persist_path=persist_path)
+        for _ in range(15):
+            hub.compose_schema()
+        hub.persist_schema()
+
+        hub2 = SchemaHub(persist_path=persist_path)
+        assert len(hub2.schema_history) == 0
+        hub2.on_wake()
+        # Full window restored, not a single snapshot.
+        assert len(hub2.schema_history) == 15
+        # Enough history to compute trajectory immediately rather than wait.
+        assert hub2.last_trajectory is not None
+
+    def test_on_wake_falls_back_to_single_snapshot_for_old_files(self, tmp_path):
+        """Persist files without _history still restore via the single-snapshot path."""
+        persist_path = tmp_path / "schema.json"
+        hub = SchemaHub(persist_path=persist_path)
+        hub.compose_schema()
+        hub.persist_schema()
+
+        # Simulate a pre-history-window persist file.
+        data = json.loads(persist_path.read_text())
+        data.pop("_history", None)
+        persist_path.write_text(json.dumps(data))
+
+        hub2 = SchemaHub(persist_path=persist_path)
+        hub2.on_wake()
+        assert len(hub2.schema_history) == 1
+
 
 # ---------------------------------------------------------------------------
 # 6. SchemaHub._inject_identity_enrichment()

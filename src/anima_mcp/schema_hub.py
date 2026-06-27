@@ -20,6 +20,12 @@ import json
 from .atomic_write import atomic_json_write
 from .self_schema import SelfSchema, SchemaNode, SchemaEdge, extract_self_schema
 
+# Bounded window of schema history persisted to disk so trajectory structure
+# survives a restart, not just the single last snapshot. Without this the
+# schema graph collapses to its base "floor" on reboot until 10+ fresh
+# compositions rebuild the attractor. See persist_schema() / on_wake().
+HISTORY_PERSIST_LIMIT = 50
+
 if TYPE_CHECKING:
     from .identity.store import CreatureIdentity
     from .growth import GrowthSystem
@@ -231,11 +237,55 @@ class SchemaHub:
             except Exception:
                 pass
 
+        # Persist a bounded window of history (not just the last snapshot) so
+        # trajectory structure can be rebuilt immediately on wake instead of
+        # decaying to the base "floor" graph until enough fresh compositions
+        # accumulate.
+        try:
+            window = list(self.schema_history)[-HISTORY_PERSIST_LIMIT:]
+            data["_history"] = [
+                {
+                    "timestamp": s.timestamp.isoformat(),
+                    "nodes": [n.to_dict() for n in s.nodes],
+                    "edges": [e.to_dict() for e in s.edges],
+                }
+                for s in window
+            ]
+        except Exception:
+            pass
+
         try:
             atomic_json_write(self.persist_path, data, indent=2)
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def _deserialize_schema(data: Dict[str, Any]) -> Optional[SelfSchema]:
+        """Reconstruct a SelfSchema from a persisted dict (timestamp/nodes/edges)."""
+        try:
+            nodes = [
+                SchemaNode(
+                    node_id=n["id"],
+                    node_type=n["type"],
+                    label=n["label"],
+                    value=n["value"],
+                    raw_value=n.get("raw_value"),
+                )
+                for n in data.get("nodes", [])
+            ]
+            edges = [
+                SchemaEdge(
+                    source_id=e["source"],
+                    target_id=e["target"],
+                    weight=e["weight"],
+                )
+                for e in data.get("edges", [])
+            ]
+            timestamp = datetime.fromisoformat(data["timestamp"])
+            return SelfSchema(timestamp=timestamp, nodes=nodes, edges=edges)
+        except Exception:
+            return None
 
     def load_previous_schema(self) -> Optional[SelfSchema]:
         """
@@ -251,39 +301,10 @@ class SchemaHub:
 
         try:
             data = json.loads(self.persist_path.read_text())
-
-            # Reconstruct nodes
-            nodes = [
-                SchemaNode(
-                    node_id=n["id"],
-                    node_type=n["type"],
-                    label=n["label"],
-                    value=n["value"],
-                    raw_value=n.get("raw_value"),
-                )
-                for n in data.get("nodes", [])
-            ]
-
-            # Reconstruct edges
-            edges = [
-                SchemaEdge(
-                    source_id=e["source"],
-                    target_id=e["target"],
-                    weight=e["weight"],
-                )
-                for e in data.get("edges", [])
-            ]
-
-            # Parse timestamp
-            timestamp = datetime.fromisoformat(data["timestamp"])
-
-            return SelfSchema(
-                timestamp=timestamp,
-                nodes=nodes,
-                edges=edges,
-            )
         except Exception:
             return None
+
+        return self._deserialize_schema(data)
 
     def compute_gap_delta(self, current_schema: SelfSchema) -> Optional[GapDelta]:
         """
@@ -334,25 +355,46 @@ class SchemaHub:
             self._previous_schema = None
             return None
 
-        # Seed history with previous schema so trajectory feedback
-        # doesn't have to wait for 10+ fresh compositions to appear.
-        if not self.schema_history:
-            self.schema_history.append(previous)
+        try:
+            data = json.loads(self.persist_path.read_text())
+        except Exception:
+            data = {}
 
-        # Restore persisted trajectory so nodes appear immediately on wake
+        # Restore the persisted history window so trajectory structure is
+        # available immediately on wake, instead of collapsing to the base
+        # "floor" graph until 10+ fresh compositions rebuild the attractor.
+        restored_history = False
+        if not self.schema_history:
+            for entry in data.get("_history") or []:
+                restored = self._deserialize_schema(entry)
+                if restored is not None:
+                    self.schema_history.append(restored)
+                    restored_history = True
+            # Fall back to the single last snapshot for older persist files
+            # that predate history-window persistence.
+            if not self.schema_history:
+                self.schema_history.append(previous)
+
+        # Recompute trajectory from the restored window so maturity/attractor/
+        # stability nodes appear on the first composition after wake.
+        if restored_history and len(self.schema_history) >= 10:
+            self.last_trajectory = self._compute_trajectory_from_history()
+            self._schemas_since_trajectory = 0
+
+        # Fall back to the persisted trajectory summary if we could not
+        # recompute from history (sparse window / older persist file).
         if self.last_trajectory is None:
-            try:
-                data = json.loads(self.persist_path.read_text())
-                traj_data = data.get("_trajectory")
-                if traj_data:
+            traj_data = data.get("_trajectory")
+            if traj_data:
+                try:
                     from .trajectory import TrajectorySignature
                     self.last_trajectory = TrajectorySignature(
                         observation_count=traj_data.get("observation_count", 0),
                         attractor=traj_data.get("attractor"),
                         beliefs=traj_data.get("beliefs", {}),
                     )
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
         self._previous_schema = previous  # Store for anima_delta computation
 
