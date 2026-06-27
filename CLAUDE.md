@@ -281,6 +281,7 @@ Lumen draws autonomously on the 240x240 notepad screen. The system has two layer
 | `pointillist` | single, pair, trio | Density zones, optical color mixing, complementary hues | ✅ |
 | `field` | flow_dot, flow_dash, flow_strand | Vector-field flow lines, near-monochromatic | ✅ |
 | `geometric` | 16 shape templates (circle, spiral, starburst, etc.) | Complete forms, stamps whole shapes per mark | ✅ |
+| `resonance` | sediment, flow, scratch | Memory-field: marks deposit into a 48×48 field that decays/diffuses; revisits accumulated regions for layered, resonant forms (pure NumPy) | ✅ |
 
 **All eras are equal peers.** Select via the art eras screen (joystick up/down + button) or MCP. Auto-rotate is a separate toggle (off by default) — when on, `choose_next_era()` rotates through all registered eras on canvas clear. Era name persists in `canvas.json`.
 
@@ -293,6 +294,7 @@ Lumen draws autonomously on the 240x240 notepad screen. The system has two layer
 | `display/eras/pointillist.py` | Pointillist era (dot accumulation) |
 | `display/eras/field.py` | Field era (vector-field flow) |
 | `display/eras/geometric.py` | Geometric era (16 shape templates, adapted from capsule) |
+| `display/eras/resonance.py` | Resonance era (memory-field, 48×48 decaying/diffusing field) |
 
 **Era switching:**
 - **Art eras screen**: Joystick up/down to browse, button to select. Auto-rotate toggle at bottom.
