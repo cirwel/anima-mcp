@@ -1489,6 +1489,13 @@ class DrawingEngine:
             print("[Notepad] Canvas empty, nothing to save", file=sys.stderr, flush=True)
             return None
 
+        # Don't archive sub-threshold canvases to the gallery. Manual saves are
+        # always honored (the user explicitly chose to keep it); autonomous and
+        # shutdown-snapshot saves only land in the gallery once they clear the
+        # recorded-drawing floor, so a few stray marks don't show up as "drawings".
+        if not manual and len(self.canvas.pixels) < MIN_RECORDED_DRAWING_PIXELS:
+            return None
+
         try:
             from PIL import Image
 
@@ -1516,8 +1523,9 @@ class DrawingEngine:
             img.save(tmp_path, format="PNG")
             tmp_path.rename(filepath)
 
-            # Update tracking. Tiny opening snapshots are allowed as files, but
-            # are not counted as completed drawings or fed back into growth.
+            # Update tracking. Sub-threshold canvases only reach here via a
+            # manual save (the user chose to keep it); they are written as files
+            # but not counted as completed drawings or fed back into growth.
             pixel_count = len(self.canvas.pixels)
             record_as_drawing = pixel_count >= MIN_RECORDED_DRAWING_PIXELS
             self.canvas.last_save_time = time.time()

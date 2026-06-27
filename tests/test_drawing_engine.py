@@ -14,6 +14,8 @@ import json
 import pytest
 from unittest.mock import patch
 
+from pathlib import Path
+
 from anima_mcp.display.drawing_engine import (
     CanvasState,
     DrawingState,
@@ -21,6 +23,7 @@ from anima_mcp.display.drawing_engine import (
     DrawingIntent,
     DrawingEngine,
     DrawingEISV,
+    MIN_RECORDED_DRAWING_PIXELS,
 )
 
 from conftest import make_anima
@@ -1411,3 +1414,40 @@ class TestDrawingEISVAlias:
         eisv = DrawingEISV()
         assert eisv.E == 0.4
         assert hasattr(eisv, "curiosity")
+
+
+# ---------------------------------------------------------------------------
+# canvas_save — gallery gating (sub-threshold canvases)
+# ---------------------------------------------------------------------------
+
+class TestCanvasSaveGalleryGating:
+    """A sub-threshold canvas only reaches the gallery via a manual save;
+    autonomous/shutdown snapshots below the floor are not archived."""
+
+    @pytest.fixture
+    def engine(self, tmp_path, monkeypatch):
+        # canvas_save writes to Path.home()/.anima/drawings — redirect HOME.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+                   return_value=tmp_path / "canvas.json"):
+            eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
+        return eng
+
+    def _fill(self, engine, n):
+        w = engine.canvas.width
+        for i in range(n):
+            engine.canvas.draw_pixel(i % w, i // w, (255, 255, 255))
+
+    def test_sub_threshold_autonomous_save_is_skipped(self, engine):
+        self._fill(engine, MIN_RECORDED_DRAWING_PIXELS // 4)
+        assert engine.canvas_save(manual=False) is None
+
+    def test_sub_threshold_manual_save_is_written(self, engine):
+        self._fill(engine, MIN_RECORDED_DRAWING_PIXELS // 4)
+        path = engine.canvas_save(manual=True)
+        assert path is not None and Path(path).exists()
+
+    def test_above_threshold_autonomous_save_is_written(self, engine):
+        self._fill(engine, MIN_RECORDED_DRAWING_PIXELS + 50)
+        path = engine.canvas_save(manual=False)
+        assert path is not None and Path(path).exists()
