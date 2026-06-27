@@ -172,7 +172,7 @@ class TestQuestions:
         calls = []
 
         class FakeGrowth:
-            def mark_explored(self, question, notes=None):
+            def mark_curiosity_explored(self, question, notes=None):
                 calls.append((question, notes))
 
         fake = FakeGrowth()
@@ -188,7 +188,7 @@ class TestQuestions:
         calls = []
 
         class FakeGrowth:
-            def mark_explored(self, question, notes=None):
+            def mark_curiosity_explored(self, question, notes=None):
                 calls.append((question, notes))
 
         monkeypatch.setattr("anima_mcp.accessors._get_growth", lambda: FakeGrowth())
@@ -205,6 +205,14 @@ class TestQuestions:
         board.add_agent_message("Yes", agent_name="human", responds_to=q.message_id)
         unanswered = board.get_unanswered_questions(auto_expire=False)
         assert not any(m.message_id == q.message_id for m in unanswered)
+
+    def test_real_growth_system_has_method_message_path_calls(self):
+        """Guard against fake/real drift: the method messages.py invokes when a
+        question is answered must actually exist on the real GrowthSystem.
+        (A typo here — mark_explored vs mark_curiosity_explored — failed
+        silently in production while passing against the test double.)"""
+        from anima_mcp.growth.base import GrowthSystem
+        assert hasattr(GrowthSystem, "mark_curiosity_explored")
 
 
 class TestTrimming:

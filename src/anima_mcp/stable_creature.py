@@ -367,7 +367,8 @@ def run_creature():
         asyncio.set_event_loop(_bg_loop)
         _bg_loop.run_forever()
 
-    threading.Thread(target=_bg_loop_thread, daemon=True, name="creature-async").start()
+    _bg_thread = threading.Thread(target=_bg_loop_thread, daemon=True, name="creature-async")
+    _bg_thread.start()
 
     # Background thread executor for non-blocking governance/memory calls.
     # Single worker prevents concurrency issues; the main loop submits work
@@ -1285,8 +1286,20 @@ def run_creature():
         except Exception:
             pass
 
+        # Stop the loop and wait for its thread to actually exit before
+        # closing. call_soon_threadsafe(stop) is asynchronous, so closing on
+        # the next line races a still-running loop and raises
+        # "RuntimeError: Cannot close a running event loop".
         _bg_loop.call_soon_threadsafe(_bg_loop.stop)
-        _bg_loop.close()
+        try:
+            _bg_thread.join(timeout=3)
+        except Exception:
+            pass
+        if not _bg_loop.is_running():
+            try:
+                _bg_loop.close()
+            except Exception:
+                pass
         shm_client.clear()  # Clean up shared memory
         print("[StableCreature] Stopped.")
 

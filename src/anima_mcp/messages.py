@@ -397,9 +397,9 @@ class MessageBoard:
                     from .accessors import _get_growth
                     growth = _get_growth()
                     if growth:
-                        growth.mark_explored(question_text, notes=text)
+                        growth.mark_curiosity_explored(question_text, notes=text)
                 except Exception as e:
-                    print(f"[MessageBoard] mark_explored error: {e}", file=sys.stderr, flush=True)
+                    print(f"[MessageBoard] mark_curiosity_explored error: {e}", file=sys.stderr, flush=True)
 
             self._save()
 
