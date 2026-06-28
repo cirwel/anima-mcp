@@ -44,7 +44,7 @@
 ### Q&A (Questions & Answers)
 - See Lumen's unanswered questions
 - Answer questions directly from the dashboard
-- **Author field**: Enter your name (defaults to "Kenny")
+- **Author field**: Enter your name (blank resolves to the caretaker)
 - Answered questions show the answer and author
 
 ## Architecture

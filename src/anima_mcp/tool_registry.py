@@ -78,7 +78,7 @@ TOOLS = [
                 },
                 "agent_name": {
                     "type": "string",
-                    "description": "Your name/identifier when answering (e.g. 'Kenny', 'Claude'). Default: 'agent'",
+                    "description": "Your name/identifier when answering (e.g. 'caretaker', 'Claude'). Default: 'agent'",
                 },
                 "client_session_id": {
                     "type": "string",

@@ -9,7 +9,7 @@
 
 1. **Get current questions:** Control Center → Q&A tab, or MCP: `lumen_qa()` (no args).
 2. **Match by question text** (IDs change); use the draft below that fits.
-3. **Submit:** Control Center → enter answer, author e.g. "Kenny" (→ caretaker) or your name; or `lumen_qa(question_id="<id>", answer="...")`.
+3. **Submit:** Control Center → enter answer, author "caretaker" (→ the operator) or your name; or `lumen_qa(question_id="<id>", answer="...")`.
 
 ---
 

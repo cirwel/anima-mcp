@@ -32,6 +32,11 @@ PI_HOST = os.environ.get("LUMEN_HOST", "lumen-local")  # SSH config alias (local
 LUMEN_HTTP_URL = os.environ.get("LUMEN_HTTP_URL", "")
 LUMEN_HTTP_AUTH = os.environ.get("LUMEN_HTTP_AUTH", "")  # "user:pass" for basic auth
 
+# Canonical operator name is deployment-specific (see server_state.KNOWN_PERSON_ALIASES).
+# Generic default; a deployment sets ANIMA_OPERATOR_NAME to its caretaker's name.
+OPERATOR_NAME = (os.environ.get("ANIMA_OPERATOR_NAME") or "operator").strip()
+OPERATOR_DISPLAY = OPERATOR_NAME.capitalize()
+
 
 def http_call_tool(tool_name: str, arguments: dict = None, timeout: int = 10) -> tuple[bool, str]:
     """Call an MCP tool on Pi's anima-mcp server via HTTP."""
@@ -554,9 +559,9 @@ else:
             data = json.loads(post_data)
             text = data.get('text', '').replace("'", "\\'").replace('"', '\\"')
             author = data.get('author', 'user')
-            # Normalize identity: known person aliases → canonical name
-            if author.lower() in ('kenny', 'caretaker'):
-                author = 'Kenny'  # Canonical person name (normalization happens server-side)
+            # Normalize role aliases → canonical operator name (also done server-side)
+            if author.lower() in ('caretaker', OPERATOR_NAME.lower()):
+                author = OPERATOR_DISPLAY
             author = author.replace("'", "\\'").replace('"', '\\"')
             responds_to = data.get('responds_to', '').replace("'", "\\'").replace('"', '\\"')
 
@@ -603,10 +608,10 @@ print("ok")
             data = json.loads(post_data)
             question_id = data.get('question_id') or data.get('id', '')  # Accept both
             answer_text = data.get('answer', '').replace("'", "\\'").replace('"', '\\"')
-            author = data.get('author', 'Kenny')
-            # Normalize identity: known person aliases → canonical name
-            if author.lower() in ('kenny', 'caretaker'):
-                author = 'Kenny'  # Canonical person name (normalization happens server-side)
+            author = data.get('author', OPERATOR_DISPLAY)
+            # Normalize role aliases → canonical operator name (also done server-side)
+            if author.lower() in ('caretaker', OPERATOR_NAME.lower()):
+                author = OPERATOR_DISPLAY
             author = author.replace("'", "\\'").replace('"', '\\"')
 
             if not answer_text:

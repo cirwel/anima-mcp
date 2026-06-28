@@ -375,7 +375,7 @@ async def rest_answer(request):
         body = await request.json()
         question_id = body.get("question_id") or body.get("id")
         answer = body.get("answer")
-        author = body.get("author", "Kenny")
+        author = body.get("author", "caretaker")
         # Normalize identity: dashboard interactions resolve to person
         _, display_name, _ = normalize_visitor_identity(author, source="dashboard")
         result = await handle_lumen_qa({
