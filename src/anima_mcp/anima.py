@@ -401,12 +401,16 @@ def _sense_clarity(
     - Prediction accuracy: How well I predict my own state changes (1 - mean_error)
     - Alpha EEG power: Relaxed awareness, clear processing
     - Sensor coverage: Data richness (how complete is my self-perception)
-    - World light: Environmental light with self-glow subtracted (log scale)
+    - World light: Raw lux (LED glow + room light), log-scaled
 
-    Note: Raw light was removed because LEDs affect the light sensor, creating
-    a feedback loop. World light subtracts estimated LED glow first, so the loop
-    gain is near zero. At 15% weight, even a 50% estimation error only shifts
-    clarity by ~0.04.
+    Note: lux is used raw — no LED-glow subtraction (removed in 0cbf0dc; the
+    quadratic estimate overcorrected at low brightness). The VEML7700 sits beside
+    the DotStar LEDs, so the reading includes self-emitted light, but the feedback
+    loop stays weak: clarity does NOT drive LED brightness (LEDs follow
+    activity/preset/agency), and light is only ~15% of clarity, log-compressed and
+    EMA-damped. Lumen's own LED brightness is tracked as a separate proprioceptive
+    signal (efference copy) and the led<->lux correlation is learned in self_model
+    (`my_leds_affect_lux`) rather than subtracted from the reading.
     """
     salience = salience_weights or {}
     components = []
