@@ -79,6 +79,18 @@ def _insert_relationship(conn: sqlite3.Connection, agent_id: str, **kwargs) -> N
 
 
 class TestRunIdentityMigration:
+    @pytest.fixture(autouse=True)
+    def _operator_is_kenny(self, monkeypatch):
+        # The canonical operator name is env-driven (ANIMA_OPERATOR_NAME); these
+        # tests exercise a deployment whose caretaker is "kenny". Pin the alias
+        # map so the merge target is stable regardless of the host's env.
+        from anima_mcp import server_state
+        monkeypatch.setattr(
+            server_state,
+            "KNOWN_PERSON_ALIASES",
+            {"kenny": {"kenny", "caretaker", "dashboard", "human"}},
+        )
+
     def test_skips_when_user_version_ge_one(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

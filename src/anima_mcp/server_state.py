@@ -6,6 +6,7 @@ Constants are pure values used across handlers and the main loop.
 Helper functions are stateless utilities for data transformation.
 """
 
+import os
 import subprocess
 from datetime import datetime
 
@@ -54,8 +55,18 @@ META_LEARNING_INTERVAL = 21600  # iterations — ~daily at ~2s/iter
 # All dashboard interactions also resolve to the first person by default.
 # Note: "cirwel" excluded — agents often inherit this macOS username.
 # Only dashboard source reliably identifies the human.
+#
+# The canonical operator name is deployment-specific, so it comes from the
+# environment (`ANIMA_OPERATOR_NAME`) with a generic default. A fresh clone
+# resolves the human to "operator"; a specific deployment sets the env var to
+# its caretaker's name (e.g. ANIMA_OPERATOR_NAME=Kenny). The role aliases
+# ("caretaker", "dashboard", "human") always resolve to that canonical person.
+# NOTE: an existing deployment with person history keyed under a prior canonical
+# name MUST set ANIMA_OPERATOR_NAME to that name, or the growth/relationship
+# record will be created fresh under "operator" instead of matching history.
+OPERATOR_NAME = (os.environ.get("ANIMA_OPERATOR_NAME") or "operator").strip().lower() or "operator"
 KNOWN_PERSON_ALIASES = {
-    "kenny": {"kenny", "caretaker", "dashboard", "human"},
+    OPERATOR_NAME: {OPERATOR_NAME, "caretaker", "dashboard", "human"},
 }
 
 # === Error/status logging throttle intervals ===

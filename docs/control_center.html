@@ -1203,8 +1203,8 @@
                 <div class="message-form-row">
                     <label class="message-form-label" style="min-width: 100px;">
                         Your name
-                        <span class="hint">Kenny = caretaker</span>
-                        <input type="text" id="messageAuthor" value="Kenny" placeholder="e.g. Kenny" class="message-author-input">
+                        <span class="hint">blank = caretaker</span>
+                        <input type="text" id="messageAuthor" value="" placeholder="your name" class="message-author-input">
                     </label>
                     <div style="flex: 1;"></div>
                     <span id="messageStatus"></span>
@@ -1860,7 +1860,7 @@
                         <div class="qa-answer-form">
                             <textarea class="qa-answer-input" id="answer-${q.id}" placeholder="Type your answer..."></textarea>
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px;">
-                                <input type="text" id="author-${q.id}" value="Kenny" placeholder="Your name" class="message-author-input">
+                                <input type="text" id="author-${q.id}" value="" placeholder="Your name" class="message-author-input">
                                 <span id="status-${q.id}" style="font-size: 0.8rem; flex: 1;"></span>
                                 <button class="btn btn-small btn-primary" onclick="submitAnswer('${q.id}')">Answer</button>
                             </div>

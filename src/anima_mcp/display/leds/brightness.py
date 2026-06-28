@@ -1,7 +1,7 @@
 """Brightness pipeline: pulse (breathing) only.
 
 Manual brightness control — no auto-brightness, no gamma, no pulsing-brightness.
-Kenny controls a dimmer; the system just breathes gently.
+The operator controls a dimmer; the system just breathes gently.
 """
 
 import math

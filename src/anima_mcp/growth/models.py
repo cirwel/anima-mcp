@@ -94,7 +94,7 @@ class VisitorRecord:
     Record of a visitor who has interacted with Lumen.
 
     Three tiers of visitor identity:
-    - PERSON: The persistent human (Kenny). Real relationship — both sides
+    - PERSON: The persistent human (the operator). Real relationship — both sides
       have memory. Valence, moments, topics accumulate meaningfully.
     - SELF: Lumen's self-dialogue (agent_id "lumen"). Real relationship —
       both sides have memory continuity.

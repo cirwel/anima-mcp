@@ -1,7 +1,7 @@
 """Lumen health check — plugs into unitares's Vigil via VIGIL_CHECK_PLUGINS.
 
 Loads lazily: unitares is only imported when this module is imported, not at
-anima-mcp startup. Kenny's Vigil launchd sets
+anima-mcp startup. The operator's Vigil launchd sets
 VIGIL_CHECK_PLUGINS=anima_mcp.vigil_checks which triggers registration.
 
 An agnostic unitares user without anima-mcp simply doesn't set the env var;
