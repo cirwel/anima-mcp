@@ -54,7 +54,14 @@ def http_call_tool(tool_name: str, arguments: dict = None, timeout: int = 10) ->
             result = json.loads(resp.read().decode())
             if not result.get("success"):
                 return False, result.get("error", "Tool call failed")
-            return True, json.dumps(result.get("result", result))
+            # The REST envelope's `success` only reports transport/dispatch.
+            # A tool that fails *internally* returns a nested
+            # {"success": false, "error": ...} payload (see anima handlers),
+            # so an outer-only check would report success on a tool error.
+            inner = result.get("result", result)
+            if isinstance(inner, dict) and inner.get("success") is False:
+                return False, inner.get("error", "Tool reported failure")
+            return True, json.dumps(inner)
     except urllib.error.HTTPError as e:
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:
