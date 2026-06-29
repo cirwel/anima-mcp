@@ -159,8 +159,6 @@ class SchemaHub:
             return schema
 
         try:
-            import math
-
             # Existence ratio: how present vs absent (kintsugi texture)
             alive_ratio = identity.alive_ratio()
             schema.nodes.append(SchemaNode(
@@ -171,10 +169,13 @@ class SchemaHub:
                 raw_value=alive_ratio,
             ))
 
-            # Awakening count: times returned from nothing
+            # Awakening count: times returned from nothing.
+            # Asymptotic normalization (count / (count + 100)) so the node
+            # approaches but never reaches 1.0 — every return still nudges the
+            # self-portrait, instead of pinning at the ceiling after ~100 wakes
+            # and depicting Lumen as done becoming.
             awakenings = identity.total_awakenings
-            # Normalize to 0-1 for display (log scale, 100 awakenings = 1.0)
-            normalized = min(1.0, math.log10(max(1, awakenings)) / 2)
+            normalized = awakenings / (awakenings + 100) if awakenings >= 0 else 0.0
             schema.nodes.append(SchemaNode(
                 node_id="meta_awakening_count",
                 node_type="meta",
@@ -183,11 +184,12 @@ class SchemaHub:
                 raw_value=awakenings,
             ))
 
-            # Age in days
+            # Age in days. Asymptotic normalization (days / (days + 100)) for the
+            # same reason: a mature creature should still have headroom to age
+            # rather than saturating at 100 days.
             age_seconds = identity.age_seconds()
             age_days = age_seconds / 86400
-            # Normalize: 100 days = 1.0
-            normalized = min(1.0, age_days / 100)
+            normalized = age_days / (age_days + 100) if age_days >= 0 else 0.0
             schema.nodes.append(SchemaNode(
                 node_id="meta_age_days",
                 node_type="meta",
