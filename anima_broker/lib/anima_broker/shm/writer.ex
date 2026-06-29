@@ -82,6 +82,14 @@ defmodule AnimaBroker.Shm.Writer do
   # Pi both writers agree and the server's `updated_at` freshness checks don't
   # skew. (Phase 0 emitted UTC; harmless only because it wrote a shadow path.)
   # Second precision is fine — freshness is compared in whole seconds.
+  #
+  # CAVEAT: `local_now/0` depends on the runtime timezone and is officially
+  # discouraged (DST gaps/overlaps can make local time jump). We use it anyway
+  # *because* the goal is byte-parity with Python's naive `datetime.now()` —
+  # both writers share the same DST behavior, so a DST jump perturbs the
+  # seconds-scale freshness delta only momentarily, twice a year. If freshness
+  # ever proves brittle around DST, the fix is to switch BOTH writers to a
+  # monotonic/UTC basis together, not to diverge them.
   defp timestamp, do: NaiveDateTime.to_iso8601(NaiveDateTime.local_now())
 
   defp os_pid, do: String.to_integer(System.pid())
