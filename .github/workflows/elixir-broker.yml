@@ -15,6 +15,23 @@ on:
 jobs:
   mix-test:
     runs-on: ubuntu-latest
+    name: mix-test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
+    # 1.19/OTP 28 is the gate — it matches the dev box and the Pi. 1.20 is a
+    # non-blocking forward-check: it surfaces the next minor's new warnings
+    # early (1.20 adds incompatibilities like disallowed raw CR and `require`
+    # no longer compile-time-expanding) without making the PR red over a
+    # future-version issue. Flip `experimental` off once we bump the Pi to 1.20.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.19"
+            otp: "28"
+            experimental: false
+          - elixir: "1.20"
+            otp: "28"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
     defaults:
       run:
         working-directory: anima_broker
@@ -24,9 +41,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          # Match the dev/Pi toolchain (Elixir 1.19 on OTP 28).
-          elixir-version: "1.19"
-          otp-version: "28"
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
 
       - name: Restore deps/_build cache
         uses: actions/cache@v4
@@ -34,8 +50,8 @@ jobs:
           path: |
             anima_broker/deps
             anima_broker/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('anima_broker/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('anima_broker/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
 
       - name: Install dependencies
         run: mix deps.get

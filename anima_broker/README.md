@@ -80,9 +80,36 @@ e.g. run from the repo root with the package installed or `PYTHONPATH=src`.)
 |---------|---------|---------|
 | `ANIMA_SHM_PATH` | `/dev/shm/anima_state.shadow.json` | where the envelope is written |
 | `ANIMA_TICK_MS`  | `2000` | tick interval (ms) |
+| `ANIMA_I2C_BUS`  | _(unset)_ | I2C bus name (e.g. `i2c-1` on the Pi). Unset ⇒ no sensors start; broker still boots and writes the envelope. |
 
-## Next: Phase 1
+## Phase 1 — I2C sensors (implemented)
 
-Add `Circuits.I2C` sensor readers (VEML7700 / AHT20 / BMP280), cross-check
-against the Python broker, then cut the SHM path over to the live file and
-retire the Python broker's sensor ownership.
+`Circuits.I2C`-backed readers, one GenServer per device, each merging its slice
+into `State.Store`:
+
+| Sensor | Addr | Reading keys | Config |
+|--------|------|--------------|--------|
+| `Sensors.VEML7700` | 0x10 | `light_lux` | gain 1x, 200ms (matches Python; `0.0288` lx/count) |
+| `Sensors.AHT20`    | 0x38 | `ambient_temp_c`, `humidity_pct` | trigger + 20-bit decode |
+| `Sensors.BMP280`   | 0x76 | `pressure_hpa`, `pressure_temp_c` | datasheet float compensation |
+
+Drivers depend on the `AnimaBroker.Hardware.I2C` behaviour, not on `Circuits.I2C`
+directly, so the conversion/compensation math is unit-tested with a fake bus
+(`test/support/fake_i2c.ex`) — no hardware needed. BMP280's signed/unsigned
+calibration mix and the datasheet Appendix-A reference vector are covered in
+`test/anima_broker/sensors/bmp280_test.exs`.
+
+`Shm.Writer` now emits **local** `updated_at` (`NaiveDateTime.local_now/0`),
+matching Python's naive `datetime.now()` so server freshness checks don't skew —
+the prerequisite for live cutover.
+
+### Next: cutover (not in this PR)
+
+Soak alongside the Python broker (~24h, cross-check `read_sensors`), then flip
+`ANIMA_SHM_PATH` to the live `/dev/shm/anima_state.json` and stop the Python
+broker's sensor ownership. Reversible at every step.
+
+### Next: Phase 2
+
+Move UNITARES governance onto OTP (kills the `sync+ThreadPoolExecutor+aiohttp`
+bug). Comes after Phase 1 cutover.
