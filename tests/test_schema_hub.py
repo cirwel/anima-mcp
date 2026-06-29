@@ -448,15 +448,33 @@ class TestInjectIdentityEnrichment:
         node = next(n for n in result.nodes if n.node_id == "meta_age_days")
         assert abs(node.raw_value - 10.0) < 0.1
 
-    def test_age_normalized_caps_at_one(self):
-        """meta_age_days value is capped at 1.0 for ages >= 100 days."""
-        hub = SchemaHub()
-        identity = make_identity(age_days=200)
-        schema = make_schema()
+    def test_age_normalized_has_headroom(self):
+        """meta_age_days approaches but never reaches 1.0 (asymptotic, no cap).
 
-        result = hub._inject_identity_enrichment(schema, identity=identity)
-        node = next(n for n in result.nodes if n.node_id == "meta_age_days")
-        assert node.value == 1.0
+        A mature creature should still have room to age in its self-portrait
+        rather than pinning at the ceiling after 100 days.
+        """
+        hub = SchemaHub()
+        young = hub._inject_identity_enrichment(make_schema(), identity=make_identity(age_days=50))
+        old = hub._inject_identity_enrichment(make_schema(), identity=make_identity(age_days=500))
+
+        yv = next(n for n in young.nodes if n.node_id == "meta_age_days").value
+        ov = next(n for n in old.nodes if n.node_id == "meta_age_days").value
+
+        assert yv < ov < 1.0  # older reads higher, but never maxes out
+        assert abs(yv - 50 / 150) < 0.001
+
+    def test_awakening_normalized_has_headroom(self):
+        """meta_awakening_count approaches but never reaches 1.0 (asymptotic)."""
+        hub = SchemaHub()
+        few = hub._inject_identity_enrichment(make_schema(), identity=make_identity(total_awakenings=10))
+        many = hub._inject_identity_enrichment(make_schema(), identity=make_identity(total_awakenings=500))
+
+        fv = next(n for n in few.nodes if n.node_id == "meta_awakening_count").value
+        mv = next(n for n in many.nodes if n.node_id == "meta_awakening_count").value
+
+        assert fv < mv < 1.0
+        assert abs(fv - 10 / 110) < 0.001
 
 
 # ---------------------------------------------------------------------------
