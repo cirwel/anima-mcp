@@ -76,12 +76,13 @@ defmodule AnimaBroker.Shm.Writer do
     end
   end
 
-  # Python uses datetime.now().isoformat() — naive, no timezone suffix.
-  #
-  # NOTE (Phase 1): this is UTC. Before live cutover, reconcile to the Pi's
-  # LOCAL time so `updated_at` freshness comparisons in the server don't skew.
-  # Safe in Phase 0 because we write to a shadow path nothing depends on.
-  defp timestamp, do: NaiveDateTime.to_iso8601(NaiveDateTime.utc_now())
+  # Python writes `datetime.now().isoformat()` — naive LOCAL time, no tz suffix.
+  # `NaiveDateTime.local_now/0` matches that: it reads the OS clock in the
+  # system-local timezone (the same one Python's naive `now()` uses), so on the
+  # Pi both writers agree and the server's `updated_at` freshness checks don't
+  # skew. (Phase 0 emitted UTC; harmless only because it wrote a shadow path.)
+  # Second precision is fine — freshness is compared in whole seconds.
+  defp timestamp, do: NaiveDateTime.to_iso8601(NaiveDateTime.local_now())
 
   defp os_pid, do: String.to_integer(System.pid())
 end

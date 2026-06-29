@@ -23,7 +23,11 @@ defmodule AnimaBroker.Shm.WriterTest do
 
   test "writes a contract-shaped envelope" do
     path = tmp_path()
-    on_exit(fn -> File.rm(path); File.rm(path <> ".tmp") end)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(path <> ".tmp")
+    end)
 
     assert :ok = Writer.write(path, @data)
 
@@ -37,7 +41,11 @@ defmodule AnimaBroker.Shm.WriterTest do
 
   test "leaves no temp file behind (atomic rename completed)" do
     path = tmp_path()
-    on_exit(fn -> File.rm(path); File.rm(path <> ".tmp") end)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(path <> ".tmp")
+    end)
 
     assert :ok = Writer.write(path, @data)
     assert File.exists?(path)
@@ -57,7 +65,11 @@ defmodule AnimaBroker.Shm.WriterTest do
 
   test "overwrites an existing file atomically" do
     path = tmp_path()
-    on_exit(fn -> File.rm(path); File.rm(path <> ".tmp") end)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(path <> ".tmp")
+    end)
 
     assert :ok = Writer.write(path, %{"v" => 1})
     assert :ok = Writer.write(path, %{"v" => 2})

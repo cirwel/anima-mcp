@@ -42,7 +42,7 @@ defmodule AnimaBroker.State.Store do
       "wifi_connected" => nil,
       "activity" => %{"level" => "unknown", "reason" => "boot"},
       "learning" => %{},
-      "broker" => %{"impl" => "elixir", "phase" => 0, "ticks" => 0}
+      "broker" => %{"impl" => "elixir", "phase" => 1, "ticks" => 0}
     }
   end
 
