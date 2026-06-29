@@ -5,5 +5,9 @@ import Config
 if config_env() != :test do
   config :anima_broker,
     shm_path: System.get_env("ANIMA_SHM_PATH") || "/dev/shm/anima_state.shadow.json",
-    tick_interval_ms: String.to_integer(System.get_env("ANIMA_TICK_MS") || "2000")
+    tick_interval_ms: String.to_integer(System.get_env("ANIMA_TICK_MS") || "2000"),
+    # I2C sensors only start when a bus is named (e.g. ANIMA_I2C_BUS=i2c-1 on the
+    # Pi). Unset => no sensors (dev/CI), broker still boots and writes the
+    # envelope. nil rather than "" so the supervisor's is_nil check is clean.
+    i2c_bus: System.get_env("ANIMA_I2C_BUS")
 end

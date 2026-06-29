@@ -20,7 +20,11 @@ defmodule AnimaBroker.Tick do
   @impl true
   def handle_info(:tick, %{ticks: n}) do
     ticks = n + 1
-    AnimaBroker.State.Store.merge(%{"broker" => %{"impl" => "elixir", "phase" => 0, "ticks" => ticks}})
+
+    AnimaBroker.State.Store.merge(%{
+      "broker" => %{"impl" => "elixir", "phase" => 1, "ticks" => ticks}
+    })
+
     _ = AnimaBroker.Shm.Writer.flush()
     schedule()
     {:noreply, %{ticks: ticks}}
