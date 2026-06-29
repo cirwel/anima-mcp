@@ -41,7 +41,7 @@ jobs:
       run:
         working-directory: anima_broker
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -50,7 +50,7 @@ jobs:
           otp-version: ${{ matrix.otp }}
 
       - name: Restore deps/_build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             anima_broker/deps
