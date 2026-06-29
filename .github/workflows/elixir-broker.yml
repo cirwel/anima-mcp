@@ -16,15 +16,20 @@ jobs:
   mix-test:
     runs-on: ubuntu-latest
     name: mix-test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
-    # 1.19/OTP 28 is the gate — it matches the dev box and the Pi. 1.20 is a
-    # non-blocking forward-check: it surfaces the next minor's new warnings
-    # early (1.20 adds incompatibilities like disallowed raw CR and `require`
-    # no longer compile-time-expanding) without making the PR red over a
-    # future-version issue. Flip `experimental` off once we bump the Pi to 1.20.
+    # Gates (blocking): the two combos we actually ship/develop on —
+    #   * 1.18 / OTP 27  — Lumen's Pi (the deploy target; verified on-device)
+    #   * 1.19 / OTP 28  — the dev box
+    # 1.20 / OTP 28 is a non-blocking forward-check: it surfaces the next
+    # minor's new warnings early (e.g. it caught an unused `require`) without
+    # making the PR red over a future-version issue. Flip `experimental` off
+    # once the Pi moves to 1.20.
     strategy:
       fail-fast: false
       matrix:
         include:
+          - elixir: "1.18"
+            otp: "27"
+            experimental: false
           - elixir: "1.19"
             otp: "28"
             experimental: false

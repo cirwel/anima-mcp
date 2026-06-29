@@ -91,7 +91,7 @@ into `State.Store`:
 |--------|------|--------------|--------|
 | `Sensors.VEML7700` | 0x10 | `light_lux` | gain 1x, 200ms (matches Python; `0.0288` lx/count) |
 | `Sensors.AHT20`    | 0x38 | `ambient_temp_c`, `humidity_pct` | trigger + 20-bit decode |
-| `Sensors.BMP280`   | 0x76 | `pressure_hpa`, `pressure_temp_c` | datasheet float compensation |
+| `Sensors.BMP280`   | 0x77 | `pressure_hpa`, `pressure_temp_c` | datasheet float compensation (0x77 = HAT/adafruit default; override `:address` for 0x76) |
 
 Drivers depend on the `AnimaBroker.Hardware.I2C` behaviour, not on `Circuits.I2C`
 directly, so the conversion/compensation math is unit-tested with a fake bus
