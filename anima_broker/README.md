@@ -61,14 +61,18 @@ Phase 0 is "done" when the Python reader parses the Elixir-written file:
 
 ```bash
 # 1. run the Elixir broker so it writes the shadow file
+#    (on a host without /dev/shm, e.g. macOS, ANIMA_SHM_PATH=/tmp/... mix run --no-halt)
 mix run --no-halt &
 
-# 2. from the Python repo root, point the reader at the shadow file
-python3 -c "from anima_mcp.shared_memory import SharedMemoryReader; \
-import pprint; pprint.pp(SharedMemoryReader('/dev/shm/anima_state.shadow.json').read())"
+# 2. from the Python repo root, point the reader at the shadow file.
+#    The class is SharedMemoryClient (read mode); .read() returns the `data` body.
+python3 -c "from pathlib import Path; \
+from anima_mcp.shared_memory import SharedMemoryClient; \
+import pprint; pprint.pp(SharedMemoryClient(mode='read', filepath=Path('/dev/shm/anima_state.shadow.json')).read())"
 ```
 
-(Reader class/arg names per `anima_mcp/shared_memory.py`.)
+(Class/arg names per `anima_mcp/shared_memory.py` — `src/` must be importable,
+e.g. run from the repo root with the package installed or `PYTHONPATH=src`.)
 
 ## Configuration
 
