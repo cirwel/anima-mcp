@@ -22,7 +22,11 @@ defmodule AnimaBroker.Sensors.BMP280 do
   alias AnimaBroker.Hardware.I2C
   alias AnimaBroker.State.Store
 
-  @address 0x76
+  # BMP280 responds at 0x76 (SDO low) or 0x77 (SDO high). The BrainCraft HAT —
+  # like the adafruit_bmp280 default (`Adafruit_BMP280_I2C(i2c)` → 0x77) — wires
+  # it at 0x77; the live Pi confirmed it (reads at 0x77, EIO at 0x76). Override
+  # with the `:address` option for a board strapped to 0x76.
+  @address 0x77
 
   # Calibration block: 24 bytes starting at 0x88.
   @reg_calib 0x88

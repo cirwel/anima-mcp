@@ -100,7 +100,7 @@ defmodule AnimaBroker.Sensors.BMP280Test do
       {:ok, calib} = BMP280.parse_calibration(calib_bin())
       bus = %{responses: %{{:write_read, 0xF7, 6} => {:ok, raw_bin()}}}
 
-      assert {:ok, %{temp_c: t, pressure_hpa: p}} = BMP280.read_once(FakeI2C, bus, 0x76, calib)
+      assert {:ok, %{temp_c: t, pressure_hpa: p}} = BMP280.read_once(FakeI2C, bus, 0x77, calib)
       assert_in_delta t, 25.08, 0.01
       assert_in_delta p, 1006.53, 0.01
     end
@@ -109,7 +109,7 @@ defmodule AnimaBroker.Sensors.BMP280Test do
   describe "read_calibration with a fake bus" do
     test "reads 24 bytes from 0x88 and parses" do
       bus = %{responses: %{{:write_read, 0x88, 24} => {:ok, calib_bin()}}}
-      assert {:ok, c} = BMP280.read_calibration(FakeI2C, bus, 0x76)
+      assert {:ok, c} = BMP280.read_calibration(FakeI2C, bus, 0x77)
       assert c.dig_t3 == @t3
     end
   end
