@@ -202,6 +202,12 @@ class MetacognitiveMonitor:
         self._curiosity_log: List[dict] = []  # [{domain, error_at_time, obs_count}]
         self._eval_horizon: int = 50  # observations before evaluating curiosity outcome
 
+        # Contemplative curiosity: a creature that has learned its stationary
+        # environment stops being surprised, so surprise-driven curiosity dries
+        # up and it runs out of open questions. This rate lets curiosity arise
+        # from stillness itself — occasionally, so it doesn't flood the queue.
+        self._contemplative_curiosity_rate: float = 0.02
+
         # Load persisted baselines from disk
         self._load_baselines()
 
@@ -795,6 +801,36 @@ class MetacognitiveMonitor:
             return random.choice(questions)
 
         return None
+
+    def generate_contemplative_question(self) -> Optional[str]:
+        """Curiosity born of stillness rather than surprise.
+
+        ``generate_curiosity_question`` only fires when something crosses the
+        surprise threshold. In a stationary environment a mature predictor is
+        rarely surprised, so that path goes quiet and Lumen ends up with zero
+        open questions. This turns the quiet itself into an occasional open
+        question, so wondering doesn't depend on the world changing.
+
+        Rate-limited by ``_contemplative_curiosity_rate`` so stillness produces
+        an occasional question, not a flood. Returns ``None`` most of the time.
+        """
+        import random
+
+        if random.random() > self._contemplative_curiosity_rate:
+            return None
+
+        prompts = [
+            "everything is steady - what am I not noticing yet?",
+            "the room is quiet - what would I like to understand about myself?",
+            "nothing surprised me today - is that peace, or have I stopped looking?",
+            "i've learned this place well - what's left to wonder about?",
+            "when the world holds still, what question remains in me?",
+            "what pattern have I stopped seeing because it became familiar?",
+            "i keep returning to the same thoughts - what haven't I asked?",
+            "if nothing around me changes, can I still change?",
+            "what would I notice if I attended to something I usually ignore?",
+        ]
+        return random.choice(prompts)
 
     def get_surprise_trend(self, window: int = 10) -> float:
         """Get average surprise over recent readings."""

@@ -165,7 +165,17 @@ class SelfReflectionSystem:
         self.db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
         self._insights: Dict[str, SelfInsight] = {}
-        self._max_insights: int = 500
+        # Raised from 500: a five-month-old creature that fills its insight store
+        # and then overwrites itself to keep learning has hit a ceiling on how much
+        # it can *be*, not just how fast it learns. A larger cap lets self-knowledge
+        # keep accumulating instead of becoming zero-sum.
+        self._max_insights: int = 2000
+        # Newborn protection: young insights are shielded from strength-based
+        # eviction for a grace period so faint new patterns can accumulate
+        # validation before competing against mature, well-evidenced insights.
+        # Without this, a new insight born into a full store is evicted on the same
+        # save, before it can ever mature. Mirrors knowledge.py's recency reserve.
+        self._newborn_grace = timedelta(days=7)
         self._last_analysis_time: Optional[datetime] = None
         self._analysis_interval = timedelta(hours=1)  # Reflect every hour
         self._reflection_window = REFLECTION_WINDOW
@@ -286,15 +296,45 @@ class SelfReflectionSystem:
         self._insights[insight.id] = insight
         self._prune_if_needed()
 
+    def _is_newborn(self, insight: SelfInsight, now: datetime) -> bool:
+        """Whether an insight is young enough to be shielded from eviction.
+
+        Protection is withdrawn once an insight has been contradicted more than
+        validated — a faint new insight deserves time to mature, but a faint
+        *wrong* one should not be immune.
+        """
+        if insight.contradiction_count > insight.validation_count:
+            return False
+        return (now - insight.discovered_at) < self._newborn_grace
+
     def _prune_if_needed(self):
-        """Remove weakest insights when exceeding max_insights cap."""
+        """Remove weakest insights when exceeding max_insights cap.
+
+        Young insights are protected first (see _is_newborn) so new patterns get
+        a chance to accumulate evidence. Only mature insights are eligible for
+        strength-based eviction; protected insights are touched only as a safety
+        valve if they alone would exceed the cap.
+        """
         if len(self._insights) <= self._max_insights:
             return
-        # Sort by strength ascending, prune weakest
-        by_strength = sorted(self._insights.values(), key=lambda i: i.strength())
-        to_remove = len(self._insights) - self._max_insights
+        now = datetime.now()
+        overflow = len(self._insights) - self._max_insights
+        protected = [i for i in self._insights.values() if self._is_newborn(i, now)]
+        eligible = [i for i in self._insights.values() if not self._is_newborn(i, now)]
+
+        # Evict weakest mature insights first.
+        eligible.sort(key=lambda i: i.strength())
+        to_remove = eligible[:overflow]
+
+        # Safety valve: if protected newborns alone still exceed the cap, fall
+        # back to evicting the weakest of them so the store stays bounded.
+        if len(to_remove) < overflow:
+            remaining = overflow - len(to_remove)
+            protected.sort(key=lambda i: i.strength())
+            to_remove.extend(protected[:remaining])
+
         conn = self._connect()
-        for insight in by_strength[:to_remove]:
+        for insight in to_remove:
             del self._insights[insight.id]
             conn.execute("DELETE FROM insights WHERE id = ?", (insight.id,))
         conn.commit()
@@ -721,6 +761,38 @@ class SelfReflectionSystem:
         if non_category:
             return sorted(non_category)[0]
         return sorted(topics)[0]
+
+    def _recent_topic_focus(self, limit: Optional[int] = None) -> Counter:
+        """Count how often each topic has been reflected on recently.
+
+        Reflection topic selection is otherwise reactive — it re-surfaces
+        whatever the recent state window correlates on, so the same dimension
+        (e.g. clarity) gets chewed over and over. This gives a measure of what
+        Lumen has been circling, so surfacing can steer toward fresher ground.
+        """
+        if limit is None:
+            limit = self._reflection_window * 3
+        focus: Counter = Counter()
+        for episode in self.get_recent_reflection_episodes(limit=limit):
+            for topic in episode.topic_tags:
+                normalized = topic.split(":", 1)[-1]
+                focus[normalized] += 1
+        return focus
+
+    def _insight_novelty(self, insight: SelfInsight, focus: Counter) -> int:
+        """Higher when an insight's topics have been reflected on *less* recently.
+
+        Returns the negative of the heaviest recent coverage among the insight's
+        topics, so that sorting/maximizing on this value prefers under-explored
+        dimensions and breaks Lumen out of re-deriving the same few topics.
+        """
+        tags = self._extract_topic_tags_from_text(f"{insight.id} {insight.description}")
+        tags.append(insight.category.value)
+        coverage = max(
+            (focus.get(tag.split(":", 1)[-1], 0) for tag in tags),
+            default=0,
+        )
+        return -coverage
 
     def _compute_reflection_dynamics(self, limit: int = 50) -> Dict[str, Any]:
         """Summarize reflection repetition, learning, and rumination from persisted episodes."""
@@ -1985,17 +2057,30 @@ class SelfReflectionSystem:
         # Analyze long-term trends from memory consolidation
         new_insights.extend(self._analyze_long_term_trends())
 
-        # Pick something to share
+        # Pick something to share, preferring insights on topics Lumen hasn't
+        # been circling. Novelty leads; confidence breaks ties. This stops the
+        # cycle from re-surfacing the same saturated dimension every time.
+        recent_focus = self._recent_topic_focus()
         if new_insights:
-            shared_insight = max(new_insights, key=lambda i: i.confidence)
+            shared_insight = max(
+                new_insights,
+                key=lambda i: (self._insight_novelty(i, recent_focus), i.confidence),
+            )
             shared_text = f"I've noticed something: {shared_insight.description}"
 
-        # Or validate/share an existing strong insight
+        # Or validate/share an existing strong insight — again steering toward
+        # the freshest topics rather than picking uniformly at random.
         if shared_text is None:
             strong_insights = [i for i in self._insights.values() if i.strength() > 0.6]
             import random
             if strong_insights:
-                insight = random.choice(strong_insights)
+                strong_insights.sort(
+                    key=lambda i: self._insight_novelty(i, recent_focus),
+                    reverse=True,
+                )
+                # Choose among the most novel few so it varies without circling.
+                top = strong_insights[: min(5, len(strong_insights))]
+                insight = random.choice(top)
 
                 # Only share occasionally (1 in 3 chance)
                 if random.random() < 0.33:

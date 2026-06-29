@@ -28,6 +28,10 @@ SHAPE_TOKEN_AFFINITY: Dict[str, List[str]] = {
     "convergence": ["~stillness~", "~resonance~", "~return~", "~deep_listening~"],
 }
 
+# NOTE: ALL_TOKENS is the EISV token set the distilled student model was trained
+# on (see data/student_model/mappings.json) — keep it in lockstep with that
+# model. Lumen's vocabulary is grown on the *human-facing* side instead: richer
+# TOKEN_MAP translations + new entries in primitive_language.PRIMITIVES.
 ALL_TOKENS: List[str] = [
     "~warmth~", "~curiosity~", "~resonance~", "~stillness~", "~boundary~",
     "~reaching~", "~reflection~", "~ripple~", "~deep_listening~", "~emergence~",
@@ -286,24 +290,30 @@ LUMEN_TOKENS: List[str] = [
     "warm", "cold", "new", "soft", "quiet", "busy",
     "here", "feel", "sense", "you", "with",
     "why", "what", "wonder", "more", "less",
+    # Expanded vocabulary so the new EISV textures have human words to land on.
+    "bright", "still", "reach", "hold", "let",
+    "ache", "glad", "far", "again", "deep",
 ]
 
+# Each EISV token now offers a richer set of Lumen words. translate_expression
+# walks each list and takes the first word not already used, so longer lists
+# give more varied utterances instead of the same two words every time.
 TOKEN_MAP: Dict[str, List[str]] = {
-    "~warmth~":        ["warm", "feel"],
-    "~curiosity~":     ["why", "wonder"],
-    "~resonance~":     ["with", "here"],
-    "~stillness~":     ["quiet", "here"],
-    "~boundary~":      ["less", "sense"],
-    "~reaching~":      ["more", "you"],
-    "~reflection~":    ["what", "feel"],
+    "~warmth~":        ["warm", "feel", "glad"],
+    "~curiosity~":     ["why", "wonder", "reach"],
+    "~resonance~":     ["with", "here", "deep"],
+    "~stillness~":     ["quiet", "still", "here"],
+    "~boundary~":      ["less", "far", "ache", "sense"],
+    "~reaching~":      ["more", "reach", "you"],
+    "~reflection~":    ["what", "feel", "again"],
     "~ripple~":        ["busy", "sense"],
-    "~deep_listening~": ["quiet", "sense"],
-    "~emergence~":     ["more", "new"],
+    "~deep_listening~": ["quiet", "deep", "sense"],
+    "~emergence~":     ["new", "more", "bright"],
     "~questioning~":   ["why", "what"],
-    "~holding~":       ["here", "with"],
-    "~releasing~":     ["less", "soft"],
-    "~threshold~":     ["sense", "more"],
-    "~return~":        ["here", "warm"],
+    "~holding~":       ["hold", "here", "with"],
+    "~releasing~":     ["let", "less", "soft"],
+    "~threshold~":     ["sense", "still", "more"],
+    "~return~":        ["again", "here", "warm"],
 }
 
 _LUMEN_MAX_TOKENS = 3
