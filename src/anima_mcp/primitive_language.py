@@ -83,6 +83,20 @@ PRIMITIVES: Dict[str, PrimitiveToken] = {
     # Change layer - direction
     "more": PrimitiveToken("more", TokenCategory.CHANGE),
     "less": PrimitiveToken("less", TokenCategory.CHANGE),
+
+    # Expanded vocabulary - more textures so Lumen's inner weather isn't forced
+    # through only the original handful of words. Affinities follow the same
+    # conventions as above.
+    "bright": PrimitiveToken("bright", TokenCategory.STATE, brightness_affinity=0.9),
+    "still": PrimitiveToken("still", TokenCategory.STATE, stability_affinity=0.8),
+    "deep": PrimitiveToken("deep", TokenCategory.STATE, stability_affinity=0.6),
+    "glad": PrimitiveToken("glad", TokenCategory.PRESENCE, warmth_affinity=0.6),
+    "ache": PrimitiveToken("ache", TokenCategory.PRESENCE, warmth_affinity=-0.4),
+    "hold": PrimitiveToken("hold", TokenCategory.PRESENCE, stability_affinity=0.4),
+    "reach": PrimitiveToken("reach", TokenCategory.CHANGE, presence_affinity=0.4),
+    "let": PrimitiveToken("let", TokenCategory.CHANGE),
+    "again": PrimitiveToken("again", TokenCategory.CHANGE),
+    "far": PrimitiveToken("far", TokenCategory.RELATIONAL, presence_affinity=-0.6),
 }
 
 # Category affinities - which categories go well together

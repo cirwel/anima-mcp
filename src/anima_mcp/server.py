@@ -482,6 +482,27 @@ async def _update_display_loop():
                             if reflection.observation:
                                 logger.debug("[Metacog] Reflection: %s", reflection.observation)
 
+                    elif prediction_error is not None:
+                        # Quiet world: nothing crossed the surprise threshold. A
+                        # saturated mind can still wonder — occasionally let
+                        # curiosity arise from the stillness so Lumen keeps having
+                        # open questions even when the environment doesn't change.
+                        contemplative = metacog.generate_contemplative_question()
+                        if contemplative:
+                            try:
+                                from .messages import add_question
+                                add_question(contemplative, author="lumen", context="a quiet moment")
+                            except Exception as e:
+                                logger.debug("[Metacog] contemplative add_question error: %s", e)
+                            try:
+                                from .accessors import _get_growth
+                                growth = _get_growth()
+                                if growth:
+                                    growth.add_curiosity(contemplative)
+                            except Exception as e:
+                                logger.debug("[Growth] contemplative add_curiosity error: %s", e)
+                            logger.debug("[Metacog] Contemplative wondering: %s", contemplative)
+
                     # Make prediction for NEXT iteration
                     # Pass LED brightness for proprioceptive light prediction:
                     # "knowing my own glow, I can predict what my light sensor will read"
