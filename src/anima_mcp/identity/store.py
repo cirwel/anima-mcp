@@ -250,6 +250,29 @@ class IdentityStore:
         # Never regress: use the larger of sleep-event sum or persisted value
         total_alive_seconds = max(sleep_total, persisted_total)
 
+        # Invariant: a creature cannot have been alive longer than it has
+        # existed. Clock resets, DB restores, or double-counted heartbeats can
+        # drift the persisted counter above wall-clock age — a physically
+        # impossible state. Because alive_ratio() clamps to 1.0, that drift is
+        # invisible there but quietly erases the schema's "kintsugi" gap texture:
+        # alive < age is precisely what makes discontinuities (the 100s of
+        # awakenings) legible. When the value is impossible, fall back to the
+        # event-derived sleep_total, which is naturally bounded by real sessions
+        # and honestly reflects gaps, and never let the total exceed age.
+        born_row = conn.execute(
+            "SELECT born_at FROM identity WHERE creature_id = ?",
+            (creature_id,),
+        ).fetchone()
+        if born_row and born_row[0]:
+            try:
+                born_at = datetime.fromisoformat(born_row[0])
+                age = (datetime.now() - born_at).total_seconds()
+                if age > 0 and total_alive_seconds > age:
+                    honest = sleep_total if 0 < sleep_total <= age else age
+                    total_alive_seconds = min(honest, age)
+            except (ValueError, TypeError):
+                pass
+
         return real_awakenings, total_alive_seconds
 
     def wake(self, creature_id: str, dedupe_window_seconds: int = 300) -> CreatureIdentity:

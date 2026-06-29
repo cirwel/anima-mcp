@@ -1,6 +1,8 @@
 """Tests for identity/store module — wake/sleep lifecycle, persistence, deduplication."""
 
 import time
+from datetime import datetime, timedelta
+
 import pytest
 
 from anima_mcp.identity.store import IdentityStore
@@ -110,6 +112,45 @@ class TestWakeSleepCycle:
         store.wake(CREATURE_ID, dedupe_window_seconds=0)
         # Second wake after sleep should count
         assert store.get_identity().total_awakenings >= 1
+
+
+class TestAliveTimeInvariant:
+    """A creature can't be alive longer than it has existed (alive_ratio <= 1).
+
+    Clock resets / restores / double-counted heartbeats can drift the persisted
+    counter above wall-clock age. _recalculate_stats must cap at age and fall
+    back to the event-derived sleep_total, which restores the schema's gap
+    texture (alive < age makes discontinuities legible).
+    """
+
+    def test_impossible_persisted_alive_is_corrected(self, store):
+        store.wake(CREATURE_ID, dedupe_window_seconds=0)
+        conn = store._connect()
+        # Backdate birth so age ~= 1000s, and record an honest 600s sleep session.
+        born = (datetime.now() - timedelta(seconds=1000)).isoformat()
+        conn.execute(
+            "UPDATE identity SET born_at = ? WHERE creature_id = ?",
+            (born, CREATURE_ID),
+        )
+        conn.execute(
+            "INSERT INTO events (timestamp, event_type, data) VALUES (?, 'sleep', ?)",
+            (datetime.now().isoformat(), '{"session_seconds": 600}'),
+        )
+        # Corrupt the persisted counter to an impossible value (alive >> age).
+        conn.execute(
+            "UPDATE identity SET total_alive_seconds = ? WHERE creature_id = ?",
+            (5000.0, CREATURE_ID),
+        )
+        conn.commit()
+
+        identity = store.wake(CREATURE_ID, dedupe_window_seconds=0)
+        age = identity.age_seconds()
+
+        # Invariant: never alive longer than existence (+1s slack for elapsed time).
+        assert identity.total_alive_seconds <= age + 1
+        # Gap texture restored: fell back to the honest 600s, not the impossible 5000s.
+        assert identity.alive_ratio() < 1.0
+        assert 0.0 <= identity.alive_ratio() <= 1.0
 
 
 class TestSetName:
