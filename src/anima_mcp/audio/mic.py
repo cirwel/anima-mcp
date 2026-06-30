@@ -51,6 +51,11 @@ class MicCapture:
         self._silence_threshold = 500  # RMS threshold for silence
         self._speech_timeout = 1.5  # Seconds of silence before stopping
 
+        # Acoustic channel (hearing wire, Stage 1): expose the most-recent RMS
+        # sound LEVEL (no content). Computed already for VAD; we just keep it
+        # instead of discarding it. Updated on every callback.
+        self._last_rms: float = 0.0
+
         # Callbacks
         self._on_speech_start: Optional[Callable] = None
         self._on_speech_end: Optional[Callable[[bytes], None]] = None
@@ -144,6 +149,10 @@ class MicCapture:
             # Calculate RMS for VAD
             rms = np.sqrt(np.mean(audio_data ** 2)) * 32768
 
+            # Rescue the sound level for the acoustic channel (no content).
+            # Does not affect VAD below.
+            self._last_rms = float(rms)
+
             timestamp = time.time()
             duration = frames / self._sample_rate
 
@@ -224,6 +233,21 @@ class MicCapture:
     def on_speech_end(self, callback: Callable[[bytes], None]):
         """Set callback for when speech ends (receives audio bytes)."""
         self._on_speech_end = callback
+
+    def get_sound_level(self) -> float:
+        """Most-recent RMS sound level (acoustic channel, no content).
+
+        This is a single scalar derived from the same RMS the VAD computes —
+        not audio, not transcription, not reconstructible. Returns 0.0 before
+        the first callback. Reading it has no side effects and does not affect
+        VAD.
+        """
+        return self._last_rms
+
+    @property
+    def sound_level(self) -> float:
+        """Alias for get_sound_level() — most-recent RMS sound level."""
+        return self._last_rms
 
     @property
     def sample_rate(self) -> int:

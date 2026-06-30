@@ -623,9 +623,21 @@ class SelfModel:
                     belief.value += (actual_value - predicted_value) * 0.1
                     belief.value = max(0.0, min(1.0, belief.value))
 
-    def get_self_description(self) -> str:
-        """Generate natural language self-description based on beliefs."""
+    def get_self_description(self, hearing_available: Optional[bool] = None) -> str:
+        """Generate natural language self-description based on beliefs.
+
+        Args:
+            hearing_available: proprioceptive hearing state (Stage 0 of the
+                hearing wire). When explicitly False, Lumen surfaces an
+                understated note that it cannot currently hear — mute is a
+                sensed fact, not a silent dead channel. When None (default)
+                or True, hearing is not mentioned.
+        """
         descriptions = []
+
+        # Mute-as-sensed-state: understated, surfaced before learned beliefs.
+        if hearing_available is False:
+            descriptions.append("I cannot currently hear")
 
         for belief_id, belief in self._beliefs.items():
             if belief.confidence < 0.4:

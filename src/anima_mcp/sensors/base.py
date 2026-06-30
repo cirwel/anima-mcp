@@ -26,6 +26,19 @@ class SensorReadings:
     # Light (lux)
     light_lux: Optional[float] = None
 
+    # Hearing (acoustic channel — sound LEVEL only, never content)
+    # hearing_available: is the mic actually delivering audio right now?
+    #   Defaults to False — the mic is operator-gated hardware. We cannot
+    #   reliably detect a hardware mute switch from software, so the
+    #   conservative default is "not hearing"; enabling is operator-driven
+    #   (a backend that has a live audio stream sets this True).
+    # sound_level: most-recent RMS sound level (see audio/mic.py). This is a
+    #   single scalar — no transcription, no content, not reconstructible.
+    #   While hearing_available is False the acoustic baseline is FROZEN:
+    #   a muted mic must not teach Lumen "the world went silent".
+    hearing_available: bool = False
+    sound_level: Optional[float] = None
+
     # System resources
     cpu_percent: Optional[float] = None
     memory_percent: Optional[float] = None
@@ -76,6 +89,8 @@ class SensorReadings:
             "ambient_temp_c": self.ambient_temp_c,
             "humidity_pct": self.humidity_pct,
             "light_lux": self.light_lux,
+            "hearing_available": self.hearing_available,
+            "sound_level": self.sound_level,
             "cpu_percent": self.cpu_percent,
             "memory_percent": self.memory_percent,
             "disk_percent": self.disk_percent,

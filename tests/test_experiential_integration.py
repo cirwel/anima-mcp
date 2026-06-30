@@ -15,7 +15,7 @@ from anima_mcp.weighted_pathways import (
     WeightedPathways,
     discretize_context,
 )
-from anima_mcp.experiential_filter import ExperientialFilter
+from anima_mcp.experiential_filter import ExperientialFilter, DIMENSIONS
 from anima_mcp.experiential_marks import ExperientialMarks
 
 
@@ -348,7 +348,7 @@ class TestFullLoopSimulation:
 
         ef.save()
         ef2 = ExperientialFilter(persistence_path=tmp_filter_path)
-        assert ef2.get_stats()["dimensions"] == 7
+        assert ef2.get_stats()["dimensions"] == len(DIMENSIONS)
 
         pw.close()
         em.close()

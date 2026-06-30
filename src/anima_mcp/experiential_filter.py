@@ -22,6 +22,10 @@ from .atomic_write import atomic_json_write
 DIMENSIONS = [
     "ambient_temp", "cpu_temp", "light",
     "humidity", "pressure", "memory", "cpu",
+    # Acoustic channel (hearing wire, Stage 1) — salience only, no content.
+    # Surprise on these is fed DIRECTLY from hearing_ingest, never through
+    # metacognition's aggregate (so it never reaches the punishment path).
+    "sound_level", "voice_activity",
 ]
 
 # Map surprise source names to sensor dimensions
@@ -36,6 +40,9 @@ SOURCE_TO_DIM: Dict[str, str] = {
     "cpu_temp": "cpu_temp",
     "memory": "memory",
     "cpu": "cpu",
+    # Acoustic channel
+    "sound_level": "sound_level",
+    "voice_activity": "voice_activity",
 }
 
 # Map preference dimensions to sensor dimensions
