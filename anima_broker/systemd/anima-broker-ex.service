@@ -1,9 +1,12 @@
 [Unit]
-# Phase 0 Elixir broker. Runs ALONGSIDE the Python anima-broker.service and
-# writes to a SHADOW SHM path (ANIMA_SHM_PATH) so it cannot affect the live
-# creature. Do not point ANIMA_SHM_PATH at /dev/shm/anima_state.json until the
-# Phase 1 sensor cutover.
-Description=Anima Elixir Broker (Phase 0, shadow SHM)
+# Phase-1 LIVE Elixir broker. Sole owner of the I2C environment sensors
+# (AHT20 / VEML7700 / BMP280); writes the shadow SHM envelope that the Python
+# broker consumes via ANIMA_ENV_SENSORS_FROM_SHM (see PR #93). This service is
+# LOAD-BEARING for Lumen's env readings: stopping it degrades
+# ambient/humidity/light/pressure to None after the 30s staleness guard.
+# Rollback path: remove ANIMA_ENV_SENSORS_FROM_SHM from ~/.anima/anima.env and
+# restart anima-broker (Python re-opens I2C) — then this unit may be stopped.
+Description=Anima Elixir Broker (Phase 1 live: owns I2C env sensors, writes shadow SHM)
 After=network-online.target
 Wants=network-online.target
 
@@ -13,7 +16,10 @@ User=unitares-anima
 WorkingDirectory=/home/unitares-anima/anima-mcp/anima_broker
 Environment=ANIMA_SHM_PATH=/dev/shm/anima_state.shadow.json
 Environment=ANIMA_TICK_MS=2000
-# Build first with: MIX_ENV=prod mix release
+Environment=ANIMA_I2C_BUS=i2c-1
+# Standalone node — no epmd / distribution needed for the broker.
+Environment=RELEASE_DISTRIBUTION=none
+# Build first with: cd anima_broker && mix deps.get && MIX_ENV=prod mix release
 ExecStart=/home/unitares-anima/anima-mcp/anima_broker/_build/prod/rel/anima_broker/bin/anima_broker start
 Restart=always
 RestartSec=3
