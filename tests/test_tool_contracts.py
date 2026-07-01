@@ -127,10 +127,10 @@ def test_governance_bridge_tool_names_are_valid():
     # These are the tool names called on the UNITARES governance MCP server.
     # If any of these change in governance-mcp, the bridge will silently fail.
     expected_tools = {
-        "process_agent_update",
+        "sync_state",  # advertised alias of process_agent_update (unitares c737b24c)
         "identity",
         "update_agent_metadata",
-        "outcome_event",
+        "record_result",  # advertised alias of outcome_event (unitares c737b24c)
     }
 
     # Verify they appear as string literals in unitares_bridge.py
