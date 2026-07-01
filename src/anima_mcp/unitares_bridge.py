@@ -490,7 +490,7 @@ class UnitaresBridge:
                 "id": 1,
                 "method": "tools/call",
                 "params": {
-                    "name": "process_agent_update",
+                    "name": "sync_state",  # advertised alias; raw twin dropped from wire (unitares c737b24c)
                     "arguments": update_arguments
                 }
             }
@@ -901,7 +901,7 @@ class UnitaresBridge:
                 "id": 1,
                 "method": "tools/call",
                 "params": {
-                    "name": "outcome_event",
+                    "name": "record_result",  # advertised alias; raw twin dropped from wire (unitares c737b24c)
                     "arguments": arguments,
                 }
             }
