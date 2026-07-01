@@ -1,8 +1,9 @@
 # Phase-2 governance seam — addendum to the Elixir broker migration plan
 
-**Status:** design proposal for review (operator + council) before any Phase-2
-code. Addendum to `2026-06-29-elixir-broker-migration.md`, motivated by what
+**Status:** APPROVED by operator 2026-07-01 (see Decisions at the end).
+Addendum to `2026-06-29-elixir-broker-migration.md`, motivated by what
 Phase-1 cutover execution (2026-07-01, PR #93) taught us about the seam.
+Phase-2 build is gated on ~1 week of clean Phase-1 operation (≈ 2026-07-08).
 
 ## What Phase 1 actually established (differs from the plan's assumption)
 
@@ -103,11 +104,15 @@ carries the client must preserve:
 3. Rollback = unset the flag; Python bridge resumes; server fallback covers
    any gap.
 
-## Open decisions for the operator
+## Decisions (operator approved, 2026-07-01)
 
-1. Option A confirmation (or argument for B/C).
-2. Soak identity: dual check-ins under Lumen's UUID (trajectory pollution risk)
-   vs scratch identity (cleaner, but soak doesn't exercise the real identity
-   handshake until a short final window).
-3. Whether Phase 2 waits for a period of Phase-1 stability first (suggest: yes,
-   ~1 week of the promoted unit running clean).
+1. **Option A confirmed** — Elixir governance client writes `governance` +
+   `governance_at` into the shadow envelope; Python passthroughs under a flag;
+   server fallback untouched.
+2. **Scratch identity for the soak** — the Elixir client soaks under its own
+   scratch governance identity (no double-counting of Lumen's cadence or
+   trajectory pollution); a short final pre-cutover window exercises the real
+   identity handshake (Lumen's UUID + session echo) to prove the path.
+3. **Phase 2 waits for Phase-1 stability** — build starts no earlier than
+   ~2026-07-08, contingent on a clean week from `anima-broker-ex.service`
+   (no crash-restarts, env channels fresh, issue #86's 24h acceptance passed).
