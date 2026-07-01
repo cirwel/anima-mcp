@@ -12,6 +12,7 @@ Hardware:
 Neural signals derived from Pi's computational state (computational proprioception).
 """
 
+import os
 import sys
 import psutil
 from datetime import datetime
@@ -50,6 +51,17 @@ class PiSensors(SensorBackend):
         self._last_pressure = None
         self._smoothed_lux: Optional[float] = None  # EMA for light sensor
 
+        # Phase-1 Elixir broker cutover: when set, the three I2C environment
+        # sensors (AHT20 / VEML7700 / BMP280) are NOT initialized here — the
+        # Elixir broker owns them and publishes their channels to this SHM
+        # shadow path. System stats, throttle, and neural bands are unaffected.
+        # Rollback: unset the env var and restart; this process re-opens I2C.
+        _shadow = os.environ.get("ANIMA_ENV_SENSORS_FROM_SHM", "").strip()
+        self._env_shadow_path: Optional[Path] = Path(_shadow) if _shadow else None
+        self._env_shadow_stale_s = float(
+            os.environ.get("ANIMA_ENV_SHADOW_STALE_SECONDS", "30")
+        )
+
         # Consecutive failure tracking per sensor
         self._failure_counts: dict[str, int] = {
             "aht20": 0,
@@ -74,6 +86,16 @@ class PiSensors(SensorBackend):
 
     def _init_sensors(self):
         """Initialize available sensors with retry logic."""
+        if self._env_shadow_path:
+            # Elixir broker owns the env sensors; never open /dev/i2c-1 here.
+            print(
+                f"[PiSensors] env sensors from SHM shadow: {self._env_shadow_path} "
+                "(I2C not opened)",
+                file=sys.stderr, flush=True,
+            )
+            self._brain_hat = None
+            return
+
         from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
         
         # Retry config for sensor initialization
@@ -156,6 +178,10 @@ class PiSensors(SensorBackend):
 
     def _record_failure(self, sensor_name: str) -> None:
         """Record a sensor read failure and attempt re-init if threshold exceeded."""
+        if self._env_shadow_path:
+            # Shadow mode: there is no local I2C device to re-init, and a
+            # re-init attempt would re-open the bus the Elixir broker owns.
+            return
         import time as _time
 
         self._failure_counts[sensor_name] = self._failure_counts.get(sensor_name, 0) + 1
@@ -331,6 +357,27 @@ class PiSensors(SensorBackend):
             pass
         return {}
 
+    def _read_env_shadow(self) -> Optional[dict]:
+        """Read the Elixir broker's shadow SHM envelope and return its readings.
+
+        Returns None when the file is missing, unparseable, or stale — the same
+        contract as an I2C read failure, so callers degrade identically. Both
+        writers use naive local ISO timestamps (reconciled for cutover), so the
+        freshness comparison is local-vs-local.
+        """
+        import json
+        try:
+            with open(self._env_shadow_path, "r") as f:
+                envelope = json.load(f)
+            updated_at = datetime.fromisoformat(str(envelope.get("updated_at")))
+            age = abs((datetime.now() - updated_at).total_seconds())
+            if age > self._env_shadow_stale_s:
+                return None
+            readings = envelope.get("data", {}).get("readings", {})
+            return readings if isinstance(readings, dict) else None
+        except Exception:
+            return None
+
     def read(self) -> SensorReadings:
         """Read all available sensors."""
         now = datetime.now()
@@ -338,79 +385,100 @@ class PiSensors(SensorBackend):
         # CPU temp (always available on Pi)
         cpu_temp = self._read_cpu_temp()
 
-        # AHT20 sensor (temperature + humidity) with retry + re-init
+        # Environment sensors (AHT20 / VEML7700 / BMP280): either published by
+        # the Elixir broker via the shadow SHM file, or read directly over I2C.
         ambient_temp = None
         humidity = None
-        if self._aht:
-            from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
-            read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
-
-            def read_aht():
-                return (self._aht.temperature, self._aht.relative_humidity)
-
-            result = safe_call(
-                lambda: retry_with_backoff(read_aht, config=read_config),
-                default=None
-            )
-            if result:
-                ambient_temp, humidity = result
-                self._record_success("aht20")
-            else:
-                self._record_failure("aht20")
-        else:
-            # Sensor object is None -- try periodic re-init
-            self._record_failure("aht20")
-
-        # Light sensor with retry + re-init
         light = None
-        if self._light_sensor:
-            from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
-            read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
+        pressure = None
+        pressure_temp = None
 
-            def read_light():
-                return self._light_sensor.lux
-
-            light = safe_call(
-                lambda: retry_with_backoff(read_light, config=read_config),
-                default=None
-            )
+        if self._env_shadow_path:
+            shadow = self._read_env_shadow() or {}
+            ambient_temp = shadow.get("ambient_temp_c")
+            humidity = shadow.get("humidity_pct")
+            light = shadow.get("light_lux")
             if light is not None:
-                self._record_success("veml7700")
-                # EMA smoothing — sensor is close to LEDs, raw values swing wildly
+                # Same EMA as the I2C path — sensor is close to LEDs, raw
+                # values swing wildly; consumers expect the smoothed series.
                 if self._smoothed_lux is None:
                     self._smoothed_lux = light
                 else:
                     self._smoothed_lux = 0.8 * self._smoothed_lux + 0.2 * light
                 light = self._smoothed_lux
-            else:
-                self._record_failure("veml7700")
-        else:
-            # Sensor object is None -- try periodic re-init
-            self._record_failure("veml7700")
-
-        # BMP280 pressure/temperature sensor with retry + re-init
-        pressure = None
-        pressure_temp = None
-        if self._bmp280:
-            from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
-            read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
-
-            def read_bmp():
-                return (self._bmp280.pressure, self._bmp280.temperature)
-
-            result = safe_call(
-                lambda: retry_with_backoff(read_bmp, config=read_config),
-                default=None
-            )
-            if result:
-                pressure, pressure_temp = result
+            pressure = shadow.get("pressure_hpa")
+            pressure_temp = shadow.get("pressure_temp_c")
+            if pressure is not None:
                 self._last_pressure = pressure
-                self._record_success("bmp280")
-            else:
-                self._record_failure("bmp280")
         else:
-            # Sensor object is None -- try periodic re-init
-            self._record_failure("bmp280")
+            # AHT20 sensor (temperature + humidity) with retry + re-init
+            if self._aht:
+                from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
+                read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
+
+                def read_aht():
+                    return (self._aht.temperature, self._aht.relative_humidity)
+
+                result = safe_call(
+                    lambda: retry_with_backoff(read_aht, config=read_config),
+                    default=None
+                )
+                if result:
+                    ambient_temp, humidity = result
+                    self._record_success("aht20")
+                else:
+                    self._record_failure("aht20")
+            else:
+                # Sensor object is None -- try periodic re-init
+                self._record_failure("aht20")
+
+            # Light sensor with retry + re-init
+            if self._light_sensor:
+                from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
+                read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
+
+                def read_light():
+                    return self._light_sensor.lux
+
+                light = safe_call(
+                    lambda: retry_with_backoff(read_light, config=read_config),
+                    default=None
+                )
+                if light is not None:
+                    self._record_success("veml7700")
+                    # EMA smoothing — sensor is close to LEDs, raw values swing wildly
+                    if self._smoothed_lux is None:
+                        self._smoothed_lux = light
+                    else:
+                        self._smoothed_lux = 0.8 * self._smoothed_lux + 0.2 * light
+                    light = self._smoothed_lux
+                else:
+                    self._record_failure("veml7700")
+            else:
+                # Sensor object is None -- try periodic re-init
+                self._record_failure("veml7700")
+
+            # BMP280 pressure/temperature sensor with retry + re-init
+            if self._bmp280:
+                from ..error_recovery import retry_with_backoff, RetryConfig, safe_call
+                read_config = RetryConfig(max_attempts=2, initial_delay=0.1, max_delay=0.5)
+
+                def read_bmp():
+                    return (self._bmp280.pressure, self._bmp280.temperature)
+
+                result = safe_call(
+                    lambda: retry_with_backoff(read_bmp, config=read_config),
+                    default=None
+                )
+                if result:
+                    pressure, pressure_temp = result
+                    self._last_pressure = pressure
+                    self._record_success("bmp280")
+                else:
+                    self._record_failure("bmp280")
+            else:
+                # Sensor object is None -- try periodic re-init
+                self._record_failure("bmp280")
 
         # System stats
         cpu_percent = psutil.cpu_percent(interval=None)
@@ -484,12 +552,20 @@ class PiSensors(SensorBackend):
 
     def available_sensors(self) -> list[str]:
         sensors = ["cpu_temp_c", "cpu_percent", "memory_percent", "disk_percent"]
-        if self._aht:
-            sensors.extend(["ambient_temp_c", "humidity_pct"])
-        if self._light_sensor:
-            sensors.append("light_lux")
-        if self._bmp280:
-            sensors.extend(["pressure_hpa", "pressure_temp_c"])
+        if self._env_shadow_path:
+            shadow = self._read_env_shadow() or {}
+            sensors.extend(
+                k for k in ("ambient_temp_c", "humidity_pct", "light_lux",
+                            "pressure_hpa", "pressure_temp_c")
+                if shadow.get(k) is not None
+            )
+        else:
+            if self._aht:
+                sensors.extend(["ambient_temp_c", "humidity_pct"])
+            if self._light_sensor:
+                sensors.append("light_lux")
+            if self._bmp280:
+                sensors.extend(["pressure_hpa", "pressure_temp_c"])
         
         # Neural sensors (Computational Proprioception)
         # Frequency bands derived from environment + computation (not physical EEG hardware)
