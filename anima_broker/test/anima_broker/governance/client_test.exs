@@ -110,7 +110,7 @@ defmodule AnimaBroker.Governance.ClientTest do
   defp ok_envelope(result),
     do: {:ok, 200, Jason.encode!(%{"success" => true, "result" => result})}
 
-  defp write_anchor!(id_file, overrides \\ %{}) do
+  defp write_anchor!(id_file, overrides) do
     anchor =
       Map.merge(
         %{

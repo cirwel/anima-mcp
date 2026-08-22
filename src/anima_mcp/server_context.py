@@ -86,6 +86,7 @@ class ServerContext:
     # Agency
     last_action: "Action | None" = None
     last_state_before: dict[str, float] | None = None
+    last_pathway_context: str | None = None
 
     # Primitive language
     last_primitive_utterance: "Utterance | None" = None

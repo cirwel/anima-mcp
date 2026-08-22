@@ -256,7 +256,7 @@ eisv.get("integrity")  # Returns None!
 eisv.get("E")  # Energy
 eisv.get("I")  # Integrity
 eisv.get("S")  # Entropy (Stability)
-eisv.get("V")  # Void
+eisv.get("V")  # Valence: signed E-I imbalance
 ```
 
 ### Color Constants Are Local to Functions in screens.py

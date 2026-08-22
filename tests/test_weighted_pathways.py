@@ -7,6 +7,8 @@ SQLite persistence, and integration with the action selector.
 
 import pytest
 import time
+import json
+import sqlite3
 from unittest.mock import patch
 
 from anima_mcp.weighted_pathways import (
@@ -21,6 +23,7 @@ from anima_mcp.weighted_pathways import (
     discretize_context,
     Pathway,
     WeightedPathways,
+    PATHWAY_REWARD_VERSION,
 )
 
 
@@ -226,6 +229,23 @@ class TestPathway:
         assert pw_bonus.strength == pytest.approx(0.632)
         assert pw_bonus.strength > pw_normal.strength
 
+    def test_non_finite_quality_cannot_corrupt_pathway(self):
+        pw = Pathway(context_key="ctx", action_key="act", strength=0.5)
+
+        with pytest.raises(ValueError, match="finite"):
+            pw.reinforce(float("nan"), time.time())
+
+        assert pw.strength == 0.5
+        assert pw.use_count == 0
+
+    def test_negative_bonus_cannot_reverse_learning_direction(self):
+        pw = Pathway(context_key="ctx", action_key="act", strength=0.5)
+
+        pw.reinforce(0.8, time.time(), lr_bonus=-2.0)
+
+        assert pw.strength == 0.5
+        assert pw.use_count == 1
+
 
 # ---------------------------------------------------------------------------
 # WeightedPathways — core operations
@@ -337,6 +357,40 @@ class TestPersistence:
         assert "pathways" in table_names
         conn.close()
         wp.close()
+
+    def test_rewardless_legacy_pathways_are_preserved_then_neutralized(self, tmp_db):
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("""CREATE TABLE pathways (
+            context_key TEXT NOT NULL,
+            action_key TEXT NOT NULL,
+            strength REAL DEFAULT 0.5,
+            use_count INTEGER DEFAULT 0,
+            last_used REAL DEFAULT 0,
+            total_reward REAL DEFAULT 0,
+            PRIMARY KEY (context_key, action_key)
+        )""")
+        conn.execute(
+            "INSERT INTO pathways VALUES (?, ?, ?, ?, ?, ?)",
+            ("hi|unsat|urg|act", "face_expression", 0.01, 9000, 123.0, 0.0),
+        )
+        conn.commit()
+        conn.close()
+
+        wp = WeightedPathways(db_path=tmp_db)
+
+        assert wp.get_strength("hi|unsat|urg|act", "face_expression") == 0.5
+        assert wp._pathways["hi|unsat|urg|act|face_expression"].use_count == 0
+        conn = sqlite3.connect(tmp_db)
+        version = json.loads(conn.execute(
+            "SELECT data FROM pathways_state WHERE key='reward_model_version'"
+        ).fetchone()[0])
+        legacy = json.loads(conn.execute(
+            "SELECT data FROM pathways_state WHERE key='legacy_rewardless_v1'"
+        ).fetchone()[0])
+        conn.close()
+        wp.close()
+        assert version == PATHWAY_REWARD_VERSION
+        assert legacy[0]["use_count"] == 9000
 
 
 # ---------------------------------------------------------------------------

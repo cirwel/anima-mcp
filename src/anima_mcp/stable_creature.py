@@ -603,7 +603,12 @@ def run_creature():
     last_action = None  # Track last action for outcome recording
     _last_pw_ctx = None  # Track pathway context for outcome reinforcement
     last_state_for_action = None  # State before action for learning
+    # Recovery beliefs are body observations, independent of the optional
+    # legacy agency loop. Keep their own cross-tick state.
+    last_self_model_state = None
+    last_self_model_observed_at = time.monotonic()
     last_learning_save = time.time()  # Track periodic learning saves
+    last_body_update_at = time.monotonic()
     readings = None  # Initialize before loop (first iteration has no prior readings)
     last_pattern_apply = 0  # Track periodic learned pattern application
     last_learning_event_drain = 0.0
@@ -673,10 +678,17 @@ def run_creature():
 
             # 2. Update Anima State (now has correct led_brightness for correction)
             # Layer 2: Apply experiential filter — perception colored by accumulated experience
+            _body_now = time.monotonic()
+            _body_elapsed = max(0.0, _body_now - last_body_update_at)
+            last_body_update_at = _body_now
             _salience = exp_filter.get_all_saliences() if exp_filter else None
             raw_anima = sense_self(readings, salience_weights=_salience)
-            anima = _mood_momentum.smooth(raw_anima)
-            inner_state = _inner_life.update(raw_anima, anima)
+            anima = _mood_momentum.smooth(
+                raw_anima, elapsed_seconds=_body_elapsed,
+            )
+            inner_state = _inner_life.update(
+                raw_anima, anima, elapsed_seconds=_body_elapsed,
+            )
 
             # 2-i-a. Check for social boost signal (server writes on interaction)
             _boost_path = Path("/dev/shm/anima_social_boost")
@@ -856,11 +868,34 @@ def run_creature():
                     # Track surprise for self-beliefs
                     self_model.observe_surprise(pred_error.surprise, pred_error.surprise_sources)
 
-                    # Track stability changes
-                    if last_state_for_action:
-                        prev_stability = last_state_for_action.get("stability", anima.stability)
+                    # Track body recovery on every sample so elapsed time and
+                    # gradual drop/recovery episodes remain observable.
+                    # This used to depend on last_state_for_action, which only
+                    # exists when retired broker agency is explicitly enabled.
+                    _self_model_now = time.monotonic()
+                    if last_self_model_state is not None:
+                        _self_model_dt = max(
+                            0.0, _self_model_now - last_self_model_observed_at
+                        )
                         _recovery_bonus = exp_marks.get_effect("stability_recovery_bonus") if exp_marks else 0.0
-                        self_model.observe_stability_change(prev_stability, anima.stability, UPDATE_INTERVAL, recovery_bonus=_recovery_bonus)
+                        _prev_stability = last_self_model_state["stability"]
+                        _prev_warmth = last_self_model_state["warmth"]
+                        self_model.observe_stability_change(
+                            _prev_stability,
+                            anima.stability,
+                            _self_model_dt,
+                            recovery_bonus=_recovery_bonus,
+                        )
+                        self_model.observe_warmth_change(
+                            _prev_warmth,
+                            anima.warmth,
+                            _self_model_dt,
+                        )
+                    last_self_model_state = {
+                        "stability": anima.stability,
+                        "warmth": anima.warmth,
+                    }
+                    last_self_model_observed_at = _self_model_now
 
                     # Track correlations (raw lux includes LED glow — that's fine,
                     # Lumen's LEDs are part of its environment)

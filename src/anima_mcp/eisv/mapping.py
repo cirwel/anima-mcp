@@ -9,28 +9,24 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List
 
+from ..eisv_mapper import anima_components_to_eisv
+
 
 # ---------------------------------------------------------------------------
 # EISV Mapping
 # ---------------------------------------------------------------------------
-
-def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
-
 
 def anima_to_eisv(
     warmth: float, clarity: float, stability: float, presence: float,
 ) -> Dict[str, float]:
     """Map Anima state scalars to EISV coordinates.
 
-    E = warmth, I = clarity, S = 1-stability, V = (1-presence)*0.3
+    Without neural readings, E = warmth. I = clarity, S = 1-stability,
+    and V = E-I (signed Valence). This is the same mapping used by governance.
     """
-    return {
-        "E": _clamp(warmth),
-        "I": _clamp(clarity),
-        "S": _clamp(1.0 - stability),
-        "V": _clamp((1.0 - presence) * 0.3),
-    }
+    return anima_components_to_eisv(
+        warmth, clarity, stability, presence,
+    ).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +106,8 @@ class TrajectoryShape(str, Enum):
     BASIN_TRANSITION_UP = "basin_transition_up"
     ENTROPY_SPIKE_RECOVERY = "entropy_spike_recovery"
     DRIFT_DISSONANCE = "drift_dissonance"
-    VOID_RISING = "void_rising"
+    VALENCE_RISING = "valence_rising"
+    VOID_RISING = "valence_rising"  # Deprecated source-compatible alias
     CONVERGENCE = "convergence"
 
 
@@ -157,9 +154,9 @@ def classify_trajectory(window: Dict[str, Any]) -> TrajectoryShape:
     if max(drift_vals) > 0.3:
         return TrajectoryShape.DRIFT_DISSONANCE
 
-    # 5. Void rising
+    # 5. Valence rising (Energy gaining on Integrity)
     if mean_dv > _DERIV_THRESHOLD:
-        return TrajectoryShape.VOID_RISING
+        return TrajectoryShape.VALENCE_RISING
 
     # 6. Rising entropy
     if mean_ds > _DERIV_THRESHOLD:

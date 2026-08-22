@@ -7,6 +7,7 @@ Helper functions are stateless utilities for data transformation.
 """
 
 import os
+import math
 import subprocess
 from datetime import datetime
 
@@ -176,3 +177,29 @@ def readings_from_dict(data: dict) -> SensorReadings:
         eeg_beta_power=data.get("eeg_beta_power"),
         eeg_gamma_power=data.get("eeg_gamma_power"),
     )
+
+
+def anima_from_dict(data: dict, readings: SensorReadings):
+    """Reconstruct the broker-owned Anima state without sensing it again.
+
+    The broker publishes both the readings and the already-smoothed anima that
+    it derived from them.  Consumers must use that published state as the
+    authoritative body state; recomputing here creates a second creature with
+    different momentum, anticipation, and calibration history.
+    """
+    from .anima import Anima
+
+    if not isinstance(data, dict):
+        raise ValueError("shared anima state must be an object")
+
+    values = {}
+    for dimension in ("warmth", "clarity", "stability", "presence"):
+        value = data.get(dimension)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"shared anima {dimension} must be numeric")
+        value = float(value)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"shared anima {dimension} must be finite and in [0, 1]")
+        values[dimension] = value
+
+    return Anima(readings=readings, **values)

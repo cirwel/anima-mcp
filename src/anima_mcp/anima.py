@@ -119,7 +119,7 @@ class MoodMomentum:
     def __init__(self):
         self._prev = None
 
-    def smooth(self, anima: Anima) -> Anima:
+    def smooth(self, anima: Anima, elapsed_seconds: float = 2.0) -> Anima:
         if self._prev is None:
             self._prev = {
                 "warmth": anima.warmth, "clarity": anima.clarity,
@@ -127,10 +127,20 @@ class MoodMomentum:
             }
             return anima
 
+        try:
+            elapsed_seconds = float(elapsed_seconds)
+        except (TypeError, ValueError):
+            elapsed_seconds = 2.0
+        if not math.isfinite(elapsed_seconds):
+            elapsed_seconds = 2.0
+        elapsed_seconds = max(0.0, min(60.0, elapsed_seconds))
+        tick_scale = elapsed_seconds / 2.0
+
         smoothed = {}
         for dim in ("warmth", "clarity", "stability", "presence"):
             raw = getattr(anima, dim)
-            alpha = self.ALPHA[dim]
+            base_alpha = self.ALPHA[dim]
+            alpha = 1.0 - (1.0 - base_alpha) ** tick_scale
             smoothed[dim] = alpha * raw + (1 - alpha) * self._prev[dim]
             self._prev[dim] = smoothed[dim]
 
@@ -203,14 +213,21 @@ def sense_self(
     if drift_midpoints:
         calibration = _apply_drift_to_calibration(calibration, drift_midpoints)
 
+    frozen_channel_count = _frozen_channel_count(readings)
     warmth = _sense_warmth(readings, calibration, salience_weights=salience_weights)
     clarity = _sense_clarity(
         readings,
         calibration,
         _resolve_prediction_accuracy(prediction_accuracy),
         salience_weights=salience_weights,
+        frozen_channel_count=frozen_channel_count,
     )
-    stability = _sense_stability(readings, calibration, salience_weights=salience_weights)
+    stability = _sense_stability(
+        readings,
+        calibration,
+        salience_weights=salience_weights,
+        frozen_channel_count=frozen_channel_count,
+    )
     presence = _sense_presence(readings, calibration, salience_weights=salience_weights)
 
     # Clamp to valid range — defensive against edge cases in weighted averages
@@ -282,15 +299,23 @@ def sense_self_with_memory(
     if drift_midpoints:
         calibration = _apply_drift_to_calibration(calibration, drift_midpoints)
 
-    # Base sensed state (raw, before memory influence)
+    # Base sensed state (raw, before memory influence). Advance channel
+    # liveness once for this physical sample, not once per derived dimension.
+    frozen_channel_count = _frozen_channel_count(readings)
     raw_warmth = _sense_warmth(readings, calibration, salience_weights=salience_weights)
     raw_clarity = _sense_clarity(
         readings,
         calibration,
         _resolve_prediction_accuracy(prediction_accuracy),
         salience_weights=salience_weights,
+        frozen_channel_count=frozen_channel_count,
     )
-    raw_stability = _sense_stability(readings, calibration, salience_weights=salience_weights)
+    raw_stability = _sense_stability(
+        readings,
+        calibration,
+        salience_weights=salience_weights,
+        frozen_channel_count=frozen_channel_count,
+    )
     raw_presence = _sense_presence(readings, calibration, salience_weights=salience_weights)
 
     warmth, clarity, stability, presence = raw_warmth, raw_clarity, raw_stability, raw_presence
@@ -438,6 +463,8 @@ _FROZEN_REPEAT_THRESHOLD = 60
 _CHANNEL_NAMES = ("cpu_temp_c", "ambient_temp_c", "humidity_pct", "light_lux", "pressure_hpa")
 _last_channel_value: Dict[str, float] = {}
 _channel_repeat_count: Dict[str, int] = {}
+_last_liveness_sample_key: object = None
+_last_frozen_channel_count = 0
 
 
 def _frozen_channel_count(r: SensorReadings) -> int:
@@ -451,6 +478,13 @@ def _frozen_channel_count(r: SensorReadings) -> int:
     freshness gate operates on the envelope timestamp, which stays current
     even when an individual sensor has been dead for days.
     """
+    global _last_liveness_sample_key, _last_frozen_channel_count
+
+    timestamp = getattr(r, "timestamp", None)
+    sample_key = ("timestamp", timestamp) if timestamp is not None else ("object", id(r))
+    if sample_key == _last_liveness_sample_key:
+        return _last_frozen_channel_count
+
     frozen = 0
     for name in _CHANNEL_NAMES:
         value = getattr(r, name, None)
@@ -465,13 +499,18 @@ def _frozen_channel_count(r: SensorReadings) -> int:
             _channel_repeat_count[name] = 0
         if _channel_repeat_count[name] >= _FROZEN_REPEAT_THRESHOLD:
             frozen += 1
+    _last_liveness_sample_key = sample_key
+    _last_frozen_channel_count = frozen
     return frozen
 
 
 def _reset_channel_liveness() -> None:
     """Clear the liveness tracker (tests, and any deliberate re-baseline)."""
+    global _last_liveness_sample_key, _last_frozen_channel_count
     _last_channel_value.clear()
     _channel_repeat_count.clear()
+    _last_liveness_sample_key = None
+    _last_frozen_channel_count = 0
 
 
 def _sense_clarity(
@@ -480,6 +519,7 @@ def _sense_clarity(
     prediction_accuracy: Optional[float] = None,
     *,
     salience_weights: Optional[Dict[str, float]] = None,
+    frozen_channel_count: Optional[int] = None,
 ) -> float:
     """
     How clearly can the creature perceive its own internal state?
@@ -530,7 +570,10 @@ def _sense_clarity(
             r.cpu_temp_c, r.ambient_temp_c, r.humidity_pct,
             r.light_lux, r.pressure_hpa,
         ] if v is not None
-    ) - _frozen_channel_count(r)
+    ) - (
+        _frozen_channel_count(r)
+        if frozen_channel_count is None else frozen_channel_count
+    )
     coverage = max(0.0, sensor_count) / 5
     components.append(coverage)
     weights.append(cal.clarity_weights.get("sensor_coverage", 0.15))
@@ -575,7 +618,13 @@ def _sense_clarity(
     return round(sum(c * w for c, w in zip(components, weights)) / total_weight, 3)
 
 
-def _sense_stability(r: SensorReadings, cal: NervousSystemCalibration, *, salience_weights: Optional[Dict[str, float]] = None) -> float:
+def _sense_stability(
+    r: SensorReadings,
+    cal: NervousSystemCalibration,
+    *,
+    salience_weights: Optional[Dict[str, float]] = None,
+    frozen_channel_count: Optional[int] = None,
+) -> float:
     """
     How stable/ordered does the environment feel?
 
@@ -613,7 +662,10 @@ def _sense_stability(r: SensorReadings, cal: NervousSystemCalibration, *, salien
     missing = sum(1 for v in [
         r.cpu_temp_c, r.ambient_temp_c, r.humidity_pct,
         r.light_lux, r.pressure_hpa
-    ] if v is None) + _frozen_channel_count(r)
+    ] if v is None) + (
+        _frozen_channel_count(r)
+        if frozen_channel_count is None else frozen_channel_count
+    )
     missing = min(5, missing)
     missing_weight = cal.stability_weights.get("missing_sensors", 0.2)
     instability += (missing / 5) * missing_weight

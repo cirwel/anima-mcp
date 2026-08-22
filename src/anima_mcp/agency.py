@@ -29,6 +29,9 @@ import sys
 from .db_paths import resolve_db_path
 
 
+AGENCY_REWARD_VERSION = 2
+
+
 class ActionType(Enum):
     """Types of actions Lumen can take."""
     # Display actions
@@ -56,6 +59,10 @@ class Action:
     parameters: Dict[str, Any] = field(default_factory=dict)
     timestamp: Optional[datetime] = None
     motivation: str = ""  # Why this action was chosen
+    # None preserves compatibility for historical/offline callers that did
+    # not report execution. The live runtime always records True or False.
+    execution_succeeded: Optional[bool] = None
+    execution_detail: str = ""
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -76,6 +83,104 @@ class ActionOutcome:
 
     # For learning
     reward: float = 0.0  # Computed reward signal
+
+
+def build_agency_inputs(
+    current_state: Dict[str, float],
+    surprise_level: float,
+    surprise_sources: List[str],
+    preferences: Any,
+    shm_data: Optional[dict] = None,
+    self_model: Any = None,
+    pathways: Any = None,
+    *,
+    can_focus: bool = False,
+    can_reflect: bool = False,
+    can_adjust: bool = True,
+    can_led: bool = False,
+    can_speak: bool = False,
+) -> Dict[str, Any]:
+    """Assemble the live selector inputs and capability boundary.
+
+    This keeps the server's wiring inspectable: every learned input is sourced
+    from the same broker snapshot and every candidate action is backed by an
+    actuator available in the server process.
+    """
+    shm_data = shm_data if isinstance(shm_data, dict) else {}
+    inner_life = shm_data.get("inner_life")
+    raw_drives = inner_life.get("drives") if isinstance(inner_life, dict) else None
+    drives: Dict[str, float] = {}
+    if isinstance(raw_drives, dict):
+        for dimension, value in raw_drives.items():
+            if (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+            ):
+                drives[str(dimension)] = max(0.0, min(1.0, float(value)))
+
+    activity_data = shm_data.get("activity")
+    activity = (
+        str(activity_data.get("level", "unknown"))
+        if isinstance(activity_data, dict) else "unknown"
+    )
+
+    self_predictions = None
+    if self_model is not None and surprise_sources:
+        context = None
+        lowered_sources = [str(source).lower() for source in surprise_sources]
+        if any("light" in source or "lux" in source for source in lowered_sources):
+            context = "light_change"
+        elif any("temp" in source for source in lowered_sources):
+            context = "temp_change"
+        elif current_state.get("stability", 1.0) < 0.3:
+            context = "stability_drop"
+        if context:
+            try:
+                self_predictions = self_model.predict_own_response(context)
+            except Exception:
+                self_predictions = None
+
+    pathway_context = None
+    pathway_strengths = None
+    if pathways is not None:
+        try:
+            from .weighted_pathways import discretize_context
+
+            satisfaction = preferences.get_overall_satisfaction(current_state)
+            strongest_drive = max(drives.values()) if drives else 0.0
+            pathway_context = discretize_context(
+                surprise=surprise_level,
+                satisfaction=satisfaction,
+                drive=strongest_drive,
+                activity=activity,
+            )
+            pathway_strengths = pathways.get_all_strengths(pathway_context)
+        except Exception:
+            pathway_context = None
+            pathway_strengths = None
+
+    available_actions = {ActionType.STAY_QUIET, ActionType.ASK_QUESTION}
+    if can_focus and surprise_sources:
+        available_actions.add(ActionType.FOCUS_ATTENTION)
+    if can_reflect:
+        available_actions.add(ActionType.REQUEST_REFLECTION)
+    if can_adjust:
+        available_actions.add(ActionType.ADJUST_SENSITIVITY)
+    if can_led:
+        available_actions.add(ActionType.LED_BRIGHTNESS)
+    if can_speak:
+        available_actions.add(ActionType.SPEAK)
+
+    return {
+        "preferences": preferences,
+        "self_predictions": self_predictions,
+        "drives": drives or None,
+        "pathway_strengths": pathway_strengths,
+        "available_actions": available_actions,
+        "pathway_context": pathway_context,
+        "activity": activity,
+    }
 
 
 def _log_store_binding(db_path: Path) -> None:
@@ -197,6 +302,7 @@ class ActionSelector:
     def _load_state(self):
         try:
             conn = self._get_conn()
+            self._ensure_reward_model_version(conn)
             for row in conn.execute("SELECT action_key, value, count FROM agency_values"):
                 self._action_values[row["action_key"]] = row["value"]
                 self._action_counts[row["action_key"]] = row["count"]
@@ -212,6 +318,64 @@ class ActionSelector:
         except Exception as e:
             print(f"[Agency] DB load error (non-fatal): {e}", file=sys.stderr, flush=True)
 
+    def _ensure_reward_model_version(self, conn: sqlite3.Connection) -> None:
+        """Preserve and reset values learned before execution was observable."""
+        row = conn.execute(
+            "SELECT data FROM agency_state WHERE key = 'reward_model_version'"
+        ).fetchone()
+        try:
+            version = int(json.loads(row["data"])) if row else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            version = None
+
+        legacy_rows = conn.execute(
+            "SELECT action_key, value, count FROM agency_values ORDER BY action_key"
+        ).fetchall()
+        if version is None and not legacy_rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
+                ("reward_model_version", json.dumps(AGENCY_REWARD_VERSION)),
+            )
+            conn.commit()
+            return
+
+        if version is None or version < AGENCY_REWARD_VERSION:
+            exploration_row = conn.execute(
+                "SELECT data FROM agency_state WHERE key = 'exploration_rate'"
+            ).fetchone()
+            try:
+                legacy_exploration_rate = (
+                    json.loads(exploration_row["data"]) if exploration_row else 0.2
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                legacy_exploration_rate = 0.2
+            legacy = {
+                "reward_model_version": version or 1,
+                "action_values": [dict(item) for item in legacy_rows],
+                "exploration_rate": legacy_exploration_rate,
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
+                ("legacy_values_v1", json.dumps(legacy, sort_keys=True)),
+            )
+            conn.execute("DELETE FROM agency_values")
+            conn.execute(
+                "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
+                ("exploration_rate", json.dumps(0.2)),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
+                ("reward_model_version", json.dumps(AGENCY_REWARD_VERSION)),
+            )
+            conn.commit()
+            self._exploration_rate = 0.2
+            print(
+                f"[Agency] Preserved and reset {len(legacy_rows)} legacy action values "
+                f"for reward model v{AGENCY_REWARD_VERSION}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     def _persist_action(self, action_key: str):
         try:
             conn = self._get_conn()
@@ -224,6 +388,10 @@ class ActionSelector:
             conn.execute(
                 "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
                 ("exploration_rate", json.dumps(self._exploration_rate)),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO agency_state (key, data) VALUES (?, ?)",
+                ("reward_model_version", json.dumps(AGENCY_REWARD_VERSION)),
             )
             conn.commit()
         except Exception as e:
@@ -240,6 +408,7 @@ class ActionSelector:
         conflict_rates: Optional[Dict[str, float]] = None,
         drives: Optional[Dict[str, float]] = None,
         pathway_strengths: Optional[Dict[str, float]] = None,
+        available_actions: Optional[set[ActionType]] = None,
     ) -> Action:
         """
         Select an action based on current context.
@@ -248,14 +417,32 @@ class ActionSelector:
         state, preferences, and learned values.
         """
         surprise_sources = surprise_sources or []
+        effective_surprise = max(
+            0.0, min(1.0, surprise_level * self._sensitivity_modifier)
+        )
+        if available_actions is None:
+            available_actions = {
+                ActionType.STAY_QUIET,
+                ActionType.ASK_QUESTION,
+                ActionType.FOCUS_ATTENTION,
+                ActionType.ADJUST_SENSITIVITY,
+                ActionType.REQUEST_REFLECTION,
+                ActionType.LED_BRIGHTNESS,
+            }
+            if can_speak:
+                available_actions.add(ActionType.SPEAK)
+        else:
+            available_actions = set(available_actions)
+        # EXPLORE is a policy mode, not an executable physical action.
+        available_actions.discard(ActionType.EXPLORE)
 
         # Build candidate actions with expected values
         candidates = []
 
         # 1. Question asking (communication)
-        if surprise_level > 0.2:
+        if effective_surprise > 0.2:
             question_value = self._get_action_value("ask_question")
-            question_value += surprise_level * 0.5  # Higher surprise → more likely to ask
+            question_value += effective_surprise * 0.5  # Higher surprise → more likely to ask
             candidates.append((
                 Action(
                     ActionType.ASK_QUESTION,
@@ -313,14 +500,19 @@ class ActionSelector:
         # 4. Exploration vs exploitation
         if random.random() < self._exploration_rate:
             # Explore: try something less common
-            explore_action = self._select_exploration_action(current_state)
-            candidates.append((explore_action, 1.0))  # High value for exploration
+            explore_action = self._select_exploration_action(
+                current_state,
+                available_actions=available_actions,
+                surprise_sources=surprise_sources,
+            )
+            if explore_action is not None:
+                candidates.append((explore_action, 1.0))  # High value for exploration
         else:
             # Exploit: choose based on learned values
             pass  # Use the candidates we've built
 
         # 5. Voice action (if available)
-        if can_speak and surprise_level > 0.4:
+        if can_speak and effective_surprise > 0.4:
             speak_value = self._get_action_value("speak")
             candidates.append((
                 Action(
@@ -328,7 +520,7 @@ class ActionSelector:
                     {"trigger": "surprise"},
                     motivation="High surprise, expressing vocally",
                 ),
-                speak_value + surprise_level * 0.3,
+                speak_value + effective_surprise * 0.3,
             ))
 
         # 6. LED brightness (if unsatisfied with warmth)
@@ -368,6 +560,14 @@ class ActionSelector:
                     self._get_action_value(action_type.value) + strongest_val * 0.4,
                 ))
 
+        # The runtime declares what it can actually execute. Never learn from
+        # a candidate that has no effect in the current process/capability set.
+        candidates = [
+            (action, value)
+            for action, value in candidates
+            if action.action_type in available_actions
+        ]
+
         # 7. Prediction-informed adjustments
         if self_predictions and candidates:
             try:
@@ -394,7 +594,16 @@ class ActionSelector:
 
         # Select action with highest value (with some noise for stochasticity)
         if not candidates:
-            return Action(ActionType.STAY_QUIET, motivation="No action selected")
+            fallback = (
+                ActionType.STAY_QUIET
+                if ActionType.STAY_QUIET in available_actions
+                else min(available_actions, key=lambda item: item.value)
+                if available_actions else ActionType.STAY_QUIET
+            )
+            return self._build_exploration_action(
+                fallback, current_state, surprise_sources,
+                motivation="No scored action available",
+            )
 
         # Apply value tension discount: actions that frequently cause conflicts
         # between anima dimensions get their expected value reduced.
@@ -441,10 +650,31 @@ class ActionSelector:
 
         return base_value + exploration_bonus * self._exploration_rate
 
-    def _select_exploration_action(self, current_state: Dict[str, float]) -> Action:
+    def _select_exploration_action(
+        self,
+        current_state: Dict[str, float],
+        available_actions: Optional[set[ActionType]] = None,
+        surprise_sources: Optional[List[str]] = None,
+    ) -> Optional[Action]:
         """Select an action for exploration (trying something new)."""
-        # Find least-tried action
-        all_action_types = list(ActionType)
+        surprise_sources = surprise_sources or []
+        all_action_types = list(available_actions or {
+            ActionType.STAY_QUIET,
+            ActionType.ASK_QUESTION,
+            ActionType.FOCUS_ATTENTION,
+            ActionType.ADJUST_SENSITIVITY,
+            ActionType.REQUEST_REFLECTION,
+            ActionType.LED_BRIGHTNESS,
+        })
+        all_action_types = [
+            action_type for action_type in all_action_types
+            if action_type != ActionType.EXPLORE
+            and (action_type != ActionType.FOCUS_ATTENTION or surprise_sources)
+        ]
+        if not all_action_types:
+            return None
+
+        # Find least-tried executable action.
         action_counts = [(a, self._action_counts.get(a.value, 0)) for a in all_action_types]
         action_counts.sort(key=lambda x: x[1])
 
@@ -452,11 +682,37 @@ class ActionSelector:
         least_tried = action_counts[:3]
         selected_type = random.choice(least_tried)[0]
 
-        return Action(
+        return self._build_exploration_action(
             selected_type,
-            {"exploration": True},
-            motivation="Exploring new action",
+            current_state,
+            surprise_sources,
+            motivation="Exploring an executable action",
         )
+
+    def _build_exploration_action(
+        self,
+        action_type: ActionType,
+        current_state: Dict[str, float],
+        surprise_sources: List[str],
+        motivation: str,
+    ) -> Action:
+        """Build valid parameters for an action chosen through exploration."""
+        parameters: Dict[str, Any]
+        if action_type == ActionType.ASK_QUESTION:
+            parameters = {"surprise_sources": list(surprise_sources), "exploration": True}
+        elif action_type == ActionType.FOCUS_ATTENTION:
+            parameters = {"sensor": surprise_sources[0], "exploration": True}
+        elif action_type == ActionType.ADJUST_SENSITIVITY:
+            direction = "decrease" if self._sensitivity_modifier > 1.0 else "increase"
+            parameters = {"direction": direction, "exploration": True}
+        elif action_type == ActionType.LED_BRIGHTNESS:
+            direction = "increase" if current_state.get("warmth", 0.5) < 0.5 else "decrease"
+            parameters = {"direction": direction, "exploration": True}
+        elif action_type == ActionType.SPEAK:
+            parameters = {"trigger": "exploration"}
+        else:
+            parameters = {"exploration": True} if action_type != ActionType.STAY_QUIET else {}
+        return Action(action_type, parameters, motivation=motivation)
 
     def record_outcome(
         self,
@@ -467,7 +723,7 @@ class ActionSelector:
         preference_satisfaction_after: float,
         surprise_after: float,
         exploration_floor_reduction: float = 0.0,
-    ):
+    ) -> ActionOutcome:
         """
         Record the outcome of an action for learning.
 
@@ -482,45 +738,47 @@ class ActionSelector:
             surprise_after=surprise_after,
         )
 
-        # Compute reward
-        # Design principle: engagement is intrinsically rewarding, but silence
-        # is a legitimate choice — not penalized. Asymmetric: doing things can
-        # earn a bonus, choosing not to simply earns nothing extra.
-        reward = 0.0
+        executed = action.execution_succeeded is not False
+        if not executed:
+            # A selected action that did not happen has no causal claim on the
+            # subsequent state. Give it an explicit, bounded failure signal.
+            reward = -0.1
+        else:
+            # Preference satisfaction is the primary state-based reward.
+            reward = outcome.preference_satisfaction_change * 2.0
 
-        # Preference satisfaction is primary reward
-        reward += outcome.preference_satisfaction_change * 2.0
+            # Successful engagement can earn a small intrinsic bonus. Silence
+            # remains a legitimate neutral action.
+            engagement_actions = {
+                ActionType.ASK_QUESTION,
+                ActionType.FOCUS_ATTENTION,
+                ActionType.SPEAK,
+                ActionType.REQUEST_REFLECTION,
+            }
+            if action.action_type in engagement_actions:
+                reward += 0.05
 
-        # Curiosity bonus: moderate surprise is interesting.
-        # Reward peaks at ~0.2 surprise and tapers to zero (never negative).
-        # High surprise (overwhelm) and zero surprise (boredom) simply
-        # don't get the curiosity bonus — they aren't punished for it.
-        if surprise_after > 0.02:
-            curiosity_bonus = max(0.0, 0.15 - abs(surprise_after - 0.2) * 0.5)
-            reward += curiosity_bonus
+            baseline_surprise = state_before.get("last_surprise")
+            has_baseline = (
+                not isinstance(baseline_surprise, bool)
+                and isinstance(baseline_surprise, (int, float))
+                and math.isfinite(float(baseline_surprise))
+            )
 
-        # Engagement bonus: actions that interact with the world get a small
-        # intrinsic reward for trying. This makes engagement attractive without
-        # needing to punish stillness.
-        ENGAGEMENT_ACTIONS = {
-            ActionType.ASK_QUESTION, ActionType.FOCUS_ATTENTION,
-            ActionType.SPEAK, ActionType.EXPLORE, ActionType.REQUEST_REFLECTION,
-        }
-        if action.action_type in ENGAGEMENT_ACTIONS:
-            reward += 0.05
+            if action.action_type == ActionType.ASK_QUESTION:
+                # Questions are rewarded only when successfully emitted from
+                # genuine surprise, not simply because the next tick surprised us.
+                question_surprise = float(baseline_surprise) if has_baseline else surprise_after
+                if question_surprise > 0.15:
+                    reward += 0.2
+                    outcome.goal_achieved = True
 
-        # Specific action goals
-        if action.action_type == ActionType.ASK_QUESTION:
-            # Questions are rewarded if they emerge from genuine surprise
-            if surprise_after > 0.15:
-                reward += 0.2
-                outcome.goal_achieved = True
-
-        elif action.action_type == ActionType.FOCUS_ATTENTION:
-            # Focus is rewarded if it leads to learning (reduced surprise over time)
-            if surprise_after < state_before.get("last_surprise", 1.0):
-                reward += 0.3
-                outcome.goal_achieved = True
+            elif action.action_type == ActionType.FOCUS_ATTENTION:
+                # Without a measured before value, a later low surprise cannot
+                # be attributed to focusing.
+                if has_baseline and surprise_after < float(baseline_surprise):
+                    reward += 0.3
+                    outcome.goal_achieved = True
 
         outcome.reward = reward
         self._outcome_history.append(outcome)
@@ -542,6 +800,7 @@ class ActionSelector:
 
         # Persist learned values
         self._persist_action(action_key)
+        return outcome
 
     def get_attention_focus(self) -> Optional[str]:
         """Get current attention focus (which sensor to prioritize)."""

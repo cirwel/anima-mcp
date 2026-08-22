@@ -9,6 +9,10 @@ Covers:
   - meta_learning_update (boost, reduce, floor, conservation)
 """
 
+import math
+
+import pytest
+
 from anima_mcp.preferences import Preference, PreferenceSystem
 
 
@@ -53,6 +57,21 @@ class TestConservation:
         ps.enforce_weight_conservation()
         for p in ps._preferences.values():
             assert abs(p.influence_weight - 1.0) < 0.01
+
+    def test_conservation_keeps_floor_and_exact_sum_under_extreme_weights(self):
+        ps = PreferenceSystem.__new__(PreferenceSystem)
+        ps._preferences = {
+            "warmth": Preference("warmth", influence_weight=1000.0),
+            "clarity": Preference("clarity", influence_weight=0.0),
+            "stability": Preference("stability", influence_weight=-5.0),
+            "presence": Preference("presence", influence_weight=0.01),
+        }
+
+        ps.enforce_weight_conservation()
+
+        values = [pref.influence_weight for pref in ps._preferences.values()]
+        assert sum(values) == pytest.approx(4.0)
+        assert min(values) >= 0.3
 
 
 class TestTrajectoryHealth:
@@ -118,3 +137,28 @@ class TestMetaLearningCycle:
         new_weights = meta_learning_update(weights, correlations, beta=0.005)
         total = sum(new_weights.values())
         assert abs(total - 4.0) < 0.01
+
+    def test_floor_and_conservation_hold_simultaneously_at_extremes(self):
+        from anima_mcp.preferences import meta_learning_update
+
+        new_weights = meta_learning_update(
+            {"warmth": 100.0, "clarity": 0.3, "stability": 0.3, "presence": 0.3},
+            {"warmth": 1.0, "clarity": -1.0, "stability": -1.0, "presence": -1.0},
+            beta=1.0,
+        )
+
+        assert sum(new_weights.values()) == pytest.approx(4.0)
+        assert min(new_weights.values()) >= 0.3
+
+    def test_non_finite_proposal_is_neutralized_at_floor(self):
+        from anima_mcp.preferences import meta_learning_update
+
+        new_weights = meta_learning_update(
+            {"warmth": float("inf"), "clarity": 1.0, "stability": 1.0},
+            {},
+            beta=0.0,
+        )
+
+        assert all(math.isfinite(weight) for weight in new_weights.values())
+        assert new_weights["warmth"] == pytest.approx(0.3)
+        assert sum(new_weights.values()) == pytest.approx(4.0)

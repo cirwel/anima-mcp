@@ -12,6 +12,7 @@ Damping stack (mood vs temperament vs neural): CLAUDE.md "Identity, Continuity, 
 """
 
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -205,8 +206,22 @@ class InnerLife:
             self.save()
             self._last_save = now
 
-    def update(self, raw_anima: Anima, smoothed_anima: Anima) -> InnerState:
-        """Process one tick. Returns snapshot of all three layers."""
+    def update(
+        self,
+        raw_anima: Anima,
+        smoothed_anima: Anima,
+        elapsed_seconds: float = 2.0,
+    ) -> InnerState:
+        """Process one tick using wall-time-corrected temporal dynamics."""
+
+        try:
+            elapsed_seconds = float(elapsed_seconds)
+        except (TypeError, ValueError):
+            elapsed_seconds = 2.0
+        if not math.isfinite(elapsed_seconds):
+            elapsed_seconds = 2.0
+        elapsed_seconds = max(0.0, min(60.0, elapsed_seconds))
+        tick_scale = elapsed_seconds / 2.0
 
         raw = {dim: getattr(raw_anima, dim) for dim in DIMENSIONS}
         mood = {dim: getattr(smoothed_anima, dim) for dim in DIMENSIONS}
@@ -219,7 +234,8 @@ class InnerLife:
             self._temperament = {dim: mood[dim] for dim in DIMENSIONS}
         else:
             for dim in DIMENSIONS:
-                a = TEMPERAMENT_ALPHA[dim]
+                base_alpha = TEMPERAMENT_ALPHA[dim]
+                a = 1.0 - (1.0 - base_alpha) ** tick_scale
                 self._temperament[dim] = a * mood[dim] + (1 - a) * self._temperament[dim]
 
         temperament = {dim: round(self._temperament[dim], 4) for dim in DIMENSIONS}
@@ -236,7 +252,7 @@ class InnerLife:
 
             if temp_val < threshold:
                 deficit = threshold - temp_val
-                rate = DRIVE_ACCUMULATION * (1.0 + deficit * 2.0)
+                rate = DRIVE_ACCUMULATION * tick_scale * (1.0 + deficit * 2.0)
                 # Mood relief: if current mood is already above comfort,
                 # dampen accumulation — conditions improved even if
                 # temperament hasn't caught up yet.
@@ -245,7 +261,7 @@ class InnerLife:
                 self._drives[dim] = min(1.0, self._drives[dim] + rate)
             else:
                 surplus = temp_val - threshold
-                rate = DRIVE_DECAY * (1.0 + surplus * 2.0)
+                rate = DRIVE_DECAY * tick_scale * (1.0 + surplus * 2.0)
                 self._drives[dim] = max(0.0, self._drives[dim] - rate)
 
         # Detect threshold crossings and satisfaction

@@ -10,7 +10,7 @@ import math
 import pytest
 from datetime import datetime
 
-from anima_mcp.self_model import SelfModel
+from anima_mcp.self_model import SelfBelief, SelfModel
 
 
 @pytest.fixture
@@ -153,6 +153,35 @@ class TestCorrelationCalculation:
             model._test_correlation_belief(belief_id, "led_lux")
 
         assert model._beliefs[belief_id].confidence == 0.7
+
+    def test_opposite_signed_windows_are_aggregated_not_last_write_wins(self):
+        belief = SelfBelief(
+            belief_id="correlation",
+            description="signed relationship",
+            confidence=0.5,
+            value=0.5,
+        )
+
+        belief.update_correlation(1.0)
+        after_positive = belief.value
+        belief.update_correlation(-1.0)
+
+        assert after_positive > 0.6
+        assert 0.4 < belief.value < 0.6
+        assert belief.supporting_count == 2
+
+    def test_negative_update_bonus_cannot_reverse_learning(self):
+        belief = SelfBelief(
+            belief_id="correlation",
+            description="signed relationship",
+            confidence=0.6,
+            value=0.7,
+        )
+
+        belief.update_correlation(0.8, update_bonus=-2.0)
+
+        assert belief.confidence == pytest.approx(0.6)
+        assert belief.value == pytest.approx(0.7)
 
 
 class TestBeliefPersistence:

@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Optional, Dict, Tuple, Any
 from collections import deque
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -64,20 +65,33 @@ class Preference:
 
     def current_satisfaction(self, value: float) -> float:
         """How satisfied is this preference given current value?"""
+        center = self.optimal_center if self.optimal_center is not None else (
+            self.optimal_low + self.optimal_high
+        ) / 2
+        center = max(self.optimal_low, min(self.optimal_high, center))
+        span = self.optimal_high - self.optimal_low
+        if span < 0.01:
+            return 1.0 if self.optimal_low <= value <= self.optimal_high else max(
+                0.0, 1.0 - abs(value - center) * 2
+            )
+
+        def _inside_satisfaction(point: float) -> float:
+            return 1.0 - (abs(point - center) / span) * 0.3
+
         if self.optimal_low <= value <= self.optimal_high:
-            # Use learned center if available, else geometric midpoint
-            center = self.optimal_center if self.optimal_center is not None else (self.optimal_low + self.optimal_high) / 2
-            # Clamp center to range
-            center = max(self.optimal_low, min(self.optimal_high, center))
-            span = self.optimal_high - self.optimal_low
-            if span < 0.01:
-                return 1.0
-            distance_from_center = abs(value - center) / span
-            return 1.0 - distance_from_center * 0.3  # Slight preference for center
+            return _inside_satisfaction(value)
         elif value < self.optimal_low:
-            return max(0.0, 1.0 - (self.optimal_low - value) * 2)
+            return max(
+                0.0,
+                _inside_satisfaction(self.optimal_low)
+                - (self.optimal_low - value) * 2,
+            )
         else:
-            return max(0.0, 1.0 - (value - self.optimal_high) * 2)
+            return max(
+                0.0,
+                _inside_satisfaction(self.optimal_high)
+                - (value - self.optimal_high) * 2,
+            )
 
     def update_from_experience(self, state_value: float, outcome_valence: float, learning_rate: float = 0.1):
         """Update preference based on an experience."""
@@ -357,11 +371,12 @@ class PreferenceSystem:
         """
         dims = [p for p in self._preferences.values()
                 if p.dimension in ("warmth", "clarity", "stability", "presence")]
-        total = sum(p.influence_weight for p in dims)
-        if total > 0:
-            scale = target / total
-            for p in dims:
-                p.influence_weight *= scale
+        projected = _project_influence_weights(
+            {p.dimension: p.influence_weight for p in dims},
+            target=target,
+        )
+        for pref in dims:
+            pref.influence_weight = projected[pref.dimension]
 
     def get_overall_satisfaction(self, current_state: Dict[str, float]) -> float:
         """
@@ -376,7 +391,11 @@ class PreferenceSystem:
             if dim in current_state:
                 satisfaction = pref.current_satisfaction(current_state[dim])
                 # Weight by confidence and valence magnitude
-                weight = pref.confidence * (0.5 + abs(pref.valence) * 0.5)
+                weight = (
+                    pref.confidence
+                    * (0.5 + abs(pref.valence) * 0.5)
+                    * max(0.0, pref.influence_weight)
+                )
                 satisfactions.append(satisfaction * weight)
                 weights.append(weight)
 
@@ -413,7 +432,10 @@ class PreferenceSystem:
             return 0.0
 
         pref = self._preferences[dimension]
-        optimal_center = (pref.optimal_low + pref.optimal_high) / 2
+        optimal_center = pref.optimal_center if pref.optimal_center is not None else (
+            pref.optimal_low + pref.optimal_high
+        ) / 2
+        optimal_center = max(pref.optimal_low, min(pref.optimal_high, optimal_center))
 
         if current_value < pref.optimal_low:
             return 1.0  # Want to increase
@@ -495,17 +517,49 @@ def meta_learning_update(
     for dim, w in weights.items():
         corr = correlations.get(dim, 0.0)
         new_w = w * (1.0 + beta * corr)
-        new_w = max(0.3, new_w)  # Floor
         new_weights[dim] = new_w
-    # Conservation: normalize to sum=4.0
-    total = sum(new_weights.values())
-    if total > 0:
-        scale = 4.0 / total
-        new_weights = {d: w * scale for d, w in new_weights.items()}
-    # Re-enforce floors after normalization
-    for d in new_weights:
-        new_weights[d] = max(0.3, new_weights[d])
-    return new_weights
+    return _project_influence_weights(new_weights, target=4.0)
+
+
+def _project_influence_weights(
+    weights: dict,
+    *,
+    target: float = 4.0,
+    floor: float = 0.3,
+) -> dict:
+    """Project weights onto an exact-sum simplex with a per-item floor.
+
+    A scale-then-floor sequence can violate conservation after the floor is
+    re-applied.  This water-filling projection allocates the conserved excess
+    above every dimension's floor in proportion to the proposed excess.
+    """
+    if not weights:
+        return {}
+    target = float(target)
+    floor = float(floor)
+    if not math.isfinite(target) or not math.isfinite(floor) or floor < 0.0:
+        raise ValueError("target and floor must be finite, with a non-negative floor")
+    count = len(weights)
+    minimum_total = count * floor
+    effective_target = max(target, minimum_total)
+    remaining = effective_target - minimum_total
+    excess = {}
+    for dimension, weight in weights.items():
+        try:
+            proposed = float(weight)
+        except (TypeError, ValueError):
+            proposed = floor
+        if not math.isfinite(proposed):
+            proposed = floor
+        excess[dimension] = max(0.0, proposed - floor)
+    excess_total = sum(excess.values())
+    if excess_total <= 1e-12:
+        share = remaining / count
+        return {dimension: floor + share for dimension in weights}
+    return {
+        dimension: floor + remaining * (excess[dimension] / excess_total)
+        for dimension in weights
+    }
 
 
 # Singleton instance

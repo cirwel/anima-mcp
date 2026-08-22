@@ -46,12 +46,18 @@ defmodule AnimaBroker.Governance.EisvMapperTest do
     assert_in_delta hd(eisvs)["I"], @anima["clarity"], 1.0e-9
   end
 
-  test "alpha alone still counts as neural presence for E" do
-    # has_neural keys on beta OR alpha; with alpha-only readings beta/gamma
-    # default to 0, so E is damped by the 0.7 physical weight while I stays clarity.
+  test "alpha alone does not invent a zero activation signal" do
+    # Alpha is the inverse of beta in computational proprioception, not an
+    # independent activation band. Without beta or gamma, the physical warmth
+    # reading remains authoritative instead of being damped by an imaginary 0.
     eisv = EisvMapper.anima_to_eisv(@anima, %{"eeg_alpha_power" => 0.9})
-    assert_in_delta eisv["E"], 0.7 * 0.4, 1.0e-9
+    assert_in_delta eisv["E"], 0.4, 1.0e-9
     assert_in_delta eisv["I"], 0.8, 1.0e-9
+  end
+
+  test "gamma alone is a real activation signal" do
+    eisv = EisvMapper.anima_to_eisv(@anima, %{"eeg_gamma_power" => 0.5})
+    assert_in_delta eisv["E"], 0.7 * 0.4 + 0.3 * (0.4 * 0.5), 1.0e-9
   end
 
   test "complexity matches the Python weights and clamps" do
@@ -89,10 +95,14 @@ defmodule AnimaBroker.Governance.EisvMapperTest do
     # quantity quadratically; and the lux path read Lumen's own LED glow, so its
     # own activity transitions amplified the drift about themselves.
     prev = %{"warmth" => 0.2, "clarity" => 0.8, "stability" => 0.7, "presence" => 0.6}
-    calm = {%{"ambient_temp_c" => 23.1, "light_lux" => 100.0},
-            %{"ambient_temp_c" => 23.0, "light_lux" => 100.0}}
-    stormy = {%{"ambient_temp_c" => 28.0, "light_lux" => 500.0},
-              %{"ambient_temp_c" => 23.0, "light_lux" => 100.0}}
+
+    calm =
+      {%{"ambient_temp_c" => 23.1, "light_lux" => 100.0},
+       %{"ambient_temp_c" => 23.0, "light_lux" => 100.0}}
+
+    stormy =
+      {%{"ambient_temp_c" => 28.0, "light_lux" => 500.0},
+       %{"ambient_temp_c" => 23.0, "light_lux" => 100.0}}
 
     {r1, p1} = calm
     {r2, p2} = stormy

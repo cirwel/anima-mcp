@@ -4,9 +4,19 @@ Tests for agency module.
 Validates action selection, value learning, and SQLite persistence.
 """
 
+import json
+import sqlite3
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from anima_mcp.agency import ActionSelector, ActionType, Action
+from anima_mcp.agency import (
+    AGENCY_REWARD_VERSION,
+    Action,
+    ActionSelector,
+    ActionType,
+    build_agency_inputs,
+)
 
 
 @pytest.fixture
@@ -168,6 +178,35 @@ class TestAgencyPersistence:
         sel2 = ActionSelector(db_path=tmp_db)
         assert sel2._action_values.get("ask_question", 0.5) > 0.5
 
+    def test_legacy_false_success_values_are_preserved_then_reset(self, tmp_db):
+        conn = sqlite3.connect(tmp_db)
+        conn.executescript("""
+            CREATE TABLE agency_values (
+                action_key TEXT PRIMARY KEY, value REAL, count INTEGER
+            );
+            CREATE TABLE agency_state (key TEXT PRIMARY KEY, data TEXT);
+            INSERT INTO agency_values VALUES ('face_expression', 0.91, 400);
+            INSERT INTO agency_state VALUES ('exploration_rate', '0.03');
+        """)
+        conn.commit()
+        conn.close()
+
+        selector = ActionSelector(db_path=tmp_db)
+
+        assert selector._action_values == {}
+        assert selector._action_counts == {}
+        assert selector._exploration_rate == 0.2
+        conn = sqlite3.connect(tmp_db)
+        version = json.loads(conn.execute(
+            "SELECT data FROM agency_state WHERE key='reward_model_version'"
+        ).fetchone()[0])
+        legacy = json.loads(conn.execute(
+            "SELECT data FROM agency_state WHERE key='legacy_values_v1'"
+        ).fetchone()[0])
+        conn.close()
+        assert version == AGENCY_REWARD_VERSION
+        assert legacy["action_values"][0]["action_key"] == "face_expression"
+
 
 class TestActionSelection:
     """Test action selection logic."""
@@ -215,6 +254,40 @@ class TestActionSelection:
         action = selector.select_action(state, surprise_level=0.0)
         key = action.action_type.value
         assert selector._action_counts.get(key, 0) >= 1
+
+    def test_sensitivity_modifier_changes_surprise_threshold(self, selector):
+        state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.5, "presence": 0.5}
+        selector._exploration_rate = 0.0
+        available = {ActionType.STAY_QUIET, ActionType.ASK_QUESTION}
+
+        with patch("anima_mcp.agency.random.gauss", return_value=0.0):
+            quiet = selector.select_action(
+                state, surprise_level=0.18, available_actions=available,
+            )
+            selector.adjust_sensitivity("increase")
+            question = selector.select_action(
+                state, surprise_level=0.18, available_actions=available,
+            )
+
+        assert quiet.action_type == ActionType.STAY_QUIET
+        assert question.action_type == ActionType.ASK_QUESTION
+
+    def test_exploration_only_selects_executable_action_with_valid_parameters(self, selector):
+        selector._exploration_rate = 1.0
+        available = {ActionType.FOCUS_ATTENTION}
+        state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.5, "presence": 0.5}
+
+        with patch("anima_mcp.agency.random.gauss", return_value=0.0):
+            action = selector.select_action(
+                state,
+                surprise_level=0.5,
+                surprise_sources=["ambient_temp"],
+                available_actions=available,
+            )
+
+        assert action.action_type == ActionType.FOCUS_ATTENTION
+        assert action.action_type != ActionType.EXPLORE
+        assert action.parameters["sensor"] == "ambient_temp"
 
 
 class TestRecordOutcome:
@@ -268,3 +341,71 @@ class TestRecordOutcome:
         )
         # Should stay close to 0.5
         assert abs(selector._action_values["stay_quiet"] - 0.5) < 0.1
+
+    def test_failed_execution_is_penalized_and_cannot_claim_state_change(self, selector):
+        action = Action(
+            ActionType.ASK_QUESTION,
+            execution_succeeded=False,
+            execution_detail="board suppressed question",
+        )
+
+        outcome = selector.record_outcome(
+            action,
+            state_before={"warmth": 0.2, "last_surprise": 0.8},
+            state_after={"warmth": 0.9},
+            preference_satisfaction_before=0.1,
+            preference_satisfaction_after=0.9,
+            surprise_after=0.2,
+        )
+
+        assert outcome.reward == -0.1
+        assert outcome.goal_achieved is False
+
+    def test_focus_needs_measured_surprise_baseline_for_goal_reward(self, selector):
+        action = Action(ActionType.FOCUS_ATTENTION, execution_succeeded=True)
+
+        outcome = selector.record_outcome(
+            action,
+            state_before={"warmth": 0.5},
+            state_after={"warmth": 0.5},
+            preference_satisfaction_before=0.5,
+            preference_satisfaction_after=0.5,
+            surprise_after=0.0,
+        )
+
+        assert outcome.goal_achieved is False
+        assert outcome.reward == pytest.approx(0.05)
+
+
+def test_build_agency_inputs_wires_broker_drives_predictions_pathways_and_capabilities():
+    preferences = MagicMock()
+    preferences.get_overall_satisfaction.return_value = 0.6
+    self_model = MagicMock()
+    self_model.predict_own_response.return_value = {"surprise_likelihood": 0.8}
+    pathways = MagicMock()
+    pathways.get_all_strengths.return_value = {"ask_question": 0.7}
+
+    result = build_agency_inputs(
+        current_state={"warmth": 0.4, "clarity": 0.7, "stability": 0.6, "presence": 0.8},
+        surprise_level=0.4,
+        surprise_sources=["light_lux"],
+        preferences=preferences,
+        shm_data={
+            "inner_life": {"drives": {"warmth": 0.3, "clarity": 0.1}},
+            "activity": {"level": "drowsy"},
+        },
+        self_model=self_model,
+        pathways=pathways,
+        can_focus=True,
+        can_reflect=True,
+        can_led=False,
+    )
+
+    assert result["drives"] == {"warmth": 0.3, "clarity": 0.1}
+    assert result["self_predictions"] == {"surprise_likelihood": 0.8}
+    assert result["pathway_context"] == "hi|neut|want|drow"
+    assert result["pathway_strengths"] == {"ask_question": 0.7}
+    assert ActionType.FOCUS_ATTENTION in result["available_actions"]
+    assert ActionType.REQUEST_REFLECTION in result["available_actions"]
+    assert ActionType.LED_BRIGHTNESS not in result["available_actions"]
+    assert ActionType.EXPLORE not in result["available_actions"]

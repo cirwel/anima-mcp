@@ -282,13 +282,21 @@ class TestRestStateAndLayers:
             age_seconds=lambda: 7200,
         )
         store = SimpleNamespace(get_identity=lambda: identity, get_session_alive_seconds=lambda: 600)
-        activity = SimpleNamespace(get_status=lambda: {"level": "active"}, get_sleep_summary=lambda: {"sessions": 1})
+        activity = MagicMock()
+        activity.get_sleep_summary.return_value = {"sessions": 1}
         eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
 
         with patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
              patch("anima_mcp.accessors._get_store", return_value=store), \
              patch("anima_mcp.accessors._get_last_governance_decision", return_value={"action": "proceed", "source": "unitares"}), \
              patch("anima_mcp.accessors._get_activity", return_value=activity), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value={
+                 "activity": {
+                     "level": "drowsy",
+                     "brightness_multiplier": 0.5,
+                     "reason": "broker body state",
+                 },
+             }), \
              patch("anima_mcp.rest_api.extract_neural_bands", return_value={"beta": 0.2}), \
              patch("anima_mcp.rest_api.anima_to_eisv", return_value=eisv):
             response = await rest_api.rest_state(_make_request(path="/state"))
@@ -301,6 +309,8 @@ class TestRestStateAndLayers:
         assert data["api_security"]["token_configured"] is True
         assert data["api_security"]["mode"] == "token"
         assert "age_seconds" in data["governance"]
+        assert data["activity"]["level"] == "drowsy"
+        activity.get_status.assert_not_called()
 
     async def test_rest_layers_includes_schema_hub_data(self, monkeypatch):
         feelings = {"mood": "steady"}

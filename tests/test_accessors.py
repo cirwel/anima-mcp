@@ -643,38 +643,37 @@ class TestGetVoice:
 # ---------------------------------------------------------------------------
 
 class TestGetReadingsAndAnima:
-    @patch("anima_mcp.accessors._get_calibration_drift")
-    @patch("anima_mcp.accessors._get_warm_start_anticipation", return_value=None)
-    @patch("anima_mcp.accessors.anticipate_state")
-    @patch("anima_mcp.accessors.get_calibration")
     @patch("anima_mcp.accessors.sense_self_with_memory")
     @patch("anima_mcp.accessors._readings_from_dict")
     @patch("anima_mcp.accessors._get_shm_client")
-    def test_uses_shm_when_data_fresh(self, mock_shm, mock_rfd, mock_sense,
-                                       mock_cal, mock_antic, mock_warm, mock_drift):
-        """_get_readings_and_anima uses shared memory when data is fresh."""
+    def test_uses_broker_anima_when_shm_data_fresh(self, mock_shm, mock_rfd, mock_sense):
+        """Fresh SHM returns the exact broker-owned anima, without re-sensing."""
         from anima_mcp.accessors import _get_readings_and_anima
         make_ctx()
 
         now = datetime.now().astimezone()
         shm_data = {
             "readings": {"cpu_temp_c": 55},
-            "anima": {"warmth": 0.5},
+            "anima": {
+                "warmth": 0.51,
+                "clarity": 0.62,
+                "stability": 0.73,
+                "presence": 0.84,
+            },
             "timestamp": now.isoformat(),
         }
         mock_shm.return_value.read.return_value = shm_data
         mock_rfd.return_value = MagicMock()
-        mock_sense.return_value = MagicMock()
-        mock_cal.return_value = MagicMock()
-        mock_antic.return_value = MagicMock()
-        mock_drift.return_value = MagicMock(get_midpoints=MagicMock(return_value={}))
 
         readings, anima = _get_readings_and_anima(fallback_to_sensors=True)
 
-        assert readings is not None
-        assert anima is not None
+        assert anima.warmth == 0.51
+        assert anima.clarity == 0.62
+        assert anima.stability == 0.73
+        assert anima.presence == 0.84
+        assert anima.readings is readings
         mock_rfd.assert_called_once()
-        assert mock_sense.call_args.kwargs["prediction_accuracy"] is None
+        mock_sense.assert_not_called()
 
     def test_prediction_accuracy_comes_from_broker_snapshot(self):
         from anima_mcp.accessors import _prediction_accuracy_from_shm

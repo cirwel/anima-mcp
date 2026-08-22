@@ -48,9 +48,11 @@ class ComputationalNeuralSensor:
         self._last_disk_io = None
         self._last_net_io = None
         self._last_sample_time: Optional[float] = None
-        # EMA smoothing for theta and gamma (other bands are inherently smooth)
-        self._ema_theta: Optional[float] = None  # alpha=0.3, half-life ~4s at 2s interval
-        self._ema_gamma: Optional[float] = None  # alpha=0.2, slightly smoother
+        # EMA smoothing for theta and gamma (other bands are inherently smooth).
+        # The constants are calibrated at a 2-second reference interval and
+        # converted from elapsed wall time on each observation.
+        self._ema_theta: Optional[float] = None
+        self._ema_gamma: Optional[float] = None
         # Prime psutil cpu_percent so first real call returns meaningful data
         psutil.cpu_percent(interval=None)
 
@@ -68,7 +70,7 @@ class ComputationalNeuralSensor:
         Returns:
             ComputationalNeuralState with frequency bands
         """
-        now = time.time()
+        now = time.monotonic()
 
         # Get current metrics
         if cpu_percent is None:
@@ -181,13 +183,15 @@ class ComputationalNeuralSensor:
         if self._ema_theta is None:
             self._ema_theta = theta
         else:
-            self._ema_theta = 0.3 * theta + 0.7 * self._ema_theta
+            theta_alpha = 1.0 - (1.0 - 0.3) ** (max(0.0, min(60.0, dt)) / 2.0)
+            self._ema_theta = theta_alpha * theta + (1.0 - theta_alpha) * self._ema_theta
         theta = max(0.0, min(1.0, self._ema_theta))
 
         if self._ema_gamma is None:
             self._ema_gamma = gamma
         else:
-            self._ema_gamma = 0.2 * gamma + 0.8 * self._ema_gamma
+            gamma_alpha = 1.0 - (1.0 - 0.2) ** (max(0.0, min(60.0, dt)) / 2.0)
+            self._ema_gamma = gamma_alpha * gamma + (1.0 - gamma_alpha) * self._ema_gamma
         gamma = max(0.0, min(1.0, self._ema_gamma))
 
         return ComputationalNeuralState(

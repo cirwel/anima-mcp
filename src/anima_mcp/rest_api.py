@@ -200,6 +200,7 @@ async def rest_state(request):
             _get_store,
             _get_last_governance_decision,
             _get_activity,
+            _get_last_shm_data,
         )
 
         # Use internal functions (same as MCP get_state)
@@ -240,6 +241,11 @@ async def rest_state(request):
         else:
             auth_mode = "strict-no-token"
 
+        activity_manager = _get_activity()
+        cached_activity = (_get_last_shm_data() or {}).get("activity")
+        if not isinstance(cached_activity, dict):
+            cached_activity = {"level": "unknown", "reason": "broker state unavailable"}
+
         return JSONResponse({
             "name": identity.name if identity else "Lumen",
             "mood": feeling["mood"],
@@ -279,8 +285,8 @@ async def rest_state(request):
             "alive_hours": round(identity.total_alive_seconds / 3600, 1) if identity else 0,
             "alive_ratio": round(identity.alive_ratio(), 2) if identity else 0,
             "activity": {
-                **(_get_activity().get_status() if _get_activity() else {"level": "active"}),
-                "sleep": _get_activity().get_sleep_summary() if _get_activity() else {"sessions": 0},
+                **cached_activity,
+                "sleep": activity_manager.get_sleep_summary() if activity_manager else {"sessions": 0},
             },
             "timestamp": str(readings.timestamp) if readings.timestamp else "",
         })

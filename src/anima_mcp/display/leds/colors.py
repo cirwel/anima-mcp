@@ -110,7 +110,8 @@ def get_shape_color_bias(shape) -> Tuple[int, int, int]:
         "basin_transition_up": (10, 4, -2),
         "entropy_spike_recovery": (6, 4, -2),
         "drift_dissonance": (0, -2, -4),
-        "void_rising": (6, 4, -2),
+        "valence_rising": (6, 4, -2),
+        "void_rising": (6, 4, -2),  # legacy persisted trajectory history
     }
     return SHAPE_BIASES.get(str(shape), (0, 0, 0))
 

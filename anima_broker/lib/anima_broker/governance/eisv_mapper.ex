@@ -27,11 +27,10 @@ defmodule AnimaBroker.Governance.EisvMapper do
 
     beta = Map.get(readings, "eeg_beta_power")
     gamma = Map.get(readings, "eeg_gamma_power")
-    alpha = Map.get(readings, "eeg_alpha_power")
-    has_neural = beta != nil or alpha != nil
+    has_activation = beta != nil or gamma != nil
 
     e =
-      if has_neural do
+      if has_activation do
         neural_energy = (beta || 0) * 0.6 + (gamma || 0) * 0.4
         @physical_weight * warmth + @neural_weight * neural_energy
       else

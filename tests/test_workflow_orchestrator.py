@@ -379,7 +379,6 @@ class TestGetOrchestrator:
 class TestGetReadingsAndAnima:
     def test_uses_shared_memory_when_present(self, orchestrator):
         readings = make_readings()
-        anima = make_anima()
         shm_data = {
             "readings": {
                 "timestamp": datetime.now().isoformat(),
@@ -392,18 +391,26 @@ class TestGetReadingsAndAnima:
                 "disk_percent": readings.disk_percent,
                 "pressure_hpa": readings.pressure_hpa,
             },
-            "anima": {"warmth": 0.5},
+            "anima": {
+                "warmth": 0.51,
+                "clarity": 0.62,
+                "stability": 0.73,
+                "presence": 0.84,
+            },
         }
         shm_client = MagicMock()
         shm_client.read.return_value = shm_data
 
         with patch("anima_mcp.workflow_orchestrator.SharedMemoryClient", return_value=shm_client), \
-             patch("anima_mcp.workflow_orchestrator.get_calibration", return_value=MagicMock()), \
-             patch("anima_mcp.workflow_orchestrator.sense_self", return_value=anima):
+             patch("anima_mcp.workflow_orchestrator.sense_self") as mock_sense:
             out_readings, out_anima = orchestrator._get_readings_and_anima()
 
         assert out_readings is not None
-        assert out_anima is anima
+        assert (out_anima.warmth, out_anima.clarity, out_anima.stability, out_anima.presence) == (
+            0.51, 0.62, 0.73, 0.84,
+        )
+        assert out_anima.readings is out_readings
+        mock_sense.assert_not_called()
 
     def test_falls_back_to_direct_sensors_when_shm_missing(self, orchestrator):
         readings = make_readings()

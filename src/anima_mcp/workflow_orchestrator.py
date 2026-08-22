@@ -20,7 +20,7 @@ from .eisv_mapper import EISVMetrics, anima_to_eisv
 from .unitares_bridge import UnitaresBridge
 from .shared_memory import SharedMemoryClient
 from .config import get_calibration
-from .server_state import SHM_STALE_THRESHOLD_SECONDS
+from .server_state import SHM_STALE_THRESHOLD_SECONDS, anima_from_dict, readings_from_dict
 
 
 class WorkflowStatus(Enum):
@@ -115,51 +115,8 @@ class UnifiedWorkflowOrchestrator:
                 if age_seconds > SHM_STALE_THRESHOLD_SECONDS or age_seconds < -5:
                     raise ValueError("shared state is stale or future-dated")
                 
-                timestamp_str = readings_dict.get("timestamp", "")
-                if isinstance(timestamp_str, str):
-                    try:
-                        timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                    except (ValueError, AttributeError):
-                        timestamp = datetime.now()
-                else:
-                    timestamp = datetime.now()
-                
-                readings = SensorReadings(
-                    timestamp=timestamp,
-                    cpu_temp_c=readings_dict.get("cpu_temp_c"),
-                    ambient_temp_c=readings_dict.get("ambient_temp_c"),
-                    humidity_pct=readings_dict.get("humidity_pct"),
-                    light_lux=readings_dict.get("light_lux"),
-                    cpu_percent=readings_dict.get("cpu_percent"),
-                    memory_percent=readings_dict.get("memory_percent"),
-                    disk_percent=readings_dict.get("disk_percent"),
-                    power_watts=readings_dict.get("power_watts"),
-                    pressure_hpa=readings_dict.get("pressure_hpa"),
-                    pressure_temp_c=readings_dict.get("pressure_temp_c"),
-                    # EEG fields (optional)
-                    eeg_tp9=readings_dict.get("eeg_tp9"),
-                    eeg_af7=readings_dict.get("eeg_af7"),
-                    eeg_af8=readings_dict.get("eeg_af8"),
-                    eeg_tp10=readings_dict.get("eeg_tp10"),
-                    eeg_aux1=readings_dict.get("eeg_aux1"),
-                    eeg_aux2=readings_dict.get("eeg_aux2"),
-                    eeg_aux3=readings_dict.get("eeg_aux3"),
-                    eeg_aux4=readings_dict.get("eeg_aux4"),
-                    eeg_delta_power=readings_dict.get("eeg_delta_power"),
-                    eeg_theta_power=readings_dict.get("eeg_theta_power"),
-                    eeg_alpha_power=readings_dict.get("eeg_alpha_power"),
-                    eeg_beta_power=readings_dict.get("eeg_beta_power"),
-                    eeg_gamma_power=readings_dict.get("eeg_gamma_power"),
-                )
-                
-                # Recompute anima from readings (ensures consistency)
-                calibration = get_calibration()
-                from .accessors import _prediction_accuracy_from_shm
-                anima = sense_self(
-                    readings,
-                    calibration,
-                    prediction_accuracy=_prediction_accuracy_from_shm(shm_data),
-                )
+                readings = readings_from_dict(readings_dict)
+                anima = anima_from_dict(shm_data["anima"], readings)
                 
                 return readings, anima
             except Exception:

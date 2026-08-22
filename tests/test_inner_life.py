@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from anima_mcp.inner_life import InnerLife
 
 
@@ -12,6 +14,36 @@ def _make_anima(warmth=0.5, clarity=0.5, stability=0.5, presence=0.5):
     a.stability = stability
     a.presence = presence
     return a
+
+
+def _make_inner_life(temperament, drives=None):
+    il = InnerLife.__new__(InnerLife)
+    il._temperament = dict(temperament)
+    il._drives = drives or {d: 0.0 for d in temperament}
+    il._prev_drives = dict(il._drives)
+    il._crossed_thresholds = {d: 0.0 for d in temperament}
+    il._pending_events = []
+    il._last_save = 0.0
+    il._saturated_since = {d: None for d in temperament}
+    il._last_request_at = {d: 0.0 for d in temperament}
+    il._active_requests = {}
+    return il
+
+
+def test_elapsed_time_matches_equivalent_temperament_ticks():
+    initial = {"warmth": 0.3, "clarity": 0.3, "stability": 0.3, "presence": 0.3}
+    one_long_tick = _make_inner_life(initial)
+    five_reference_ticks = _make_inner_life(initial)
+    anima = _make_anima(warmth=0.8, clarity=0.8, stability=0.8, presence=0.8)
+
+    one_long_tick.update(anima, anima, elapsed_seconds=10.0)
+    for _ in range(5):
+        five_reference_ticks.update(anima, anima, elapsed_seconds=2.0)
+
+    for dimension in initial:
+        assert one_long_tick._temperament[dimension] == pytest.approx(
+            five_reference_ticks._temperament[dimension], abs=1e-12,
+        )
 
 
 def test_drive_dampened_when_mood_above_comfort():

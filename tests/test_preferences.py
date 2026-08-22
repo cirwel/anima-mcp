@@ -78,6 +78,21 @@ class TestCurrentSatisfaction:
             sat = pref.current_satisfaction(v)
             assert 0.0 <= sat <= 1.0
 
+    def test_satisfaction_is_continuous_at_optimal_boundaries(self):
+        pref = Preference(
+            dimension="warmth",
+            optimal_low=0.3,
+            optimal_high=0.7,
+            optimal_center=0.6,
+        )
+
+        assert pref.current_satisfaction(0.3 - 1e-9) == pytest.approx(
+            pref.current_satisfaction(0.3), abs=1e-8,
+        )
+        assert pref.current_satisfaction(0.7 + 1e-9) == pytest.approx(
+            pref.current_satisfaction(0.7), abs=1e-8,
+        )
+
 
 # ==================== Preference.update_from_experience ====================
 
@@ -189,6 +204,23 @@ class TestOverallSatisfaction:
         sat = ps.get_overall_satisfaction({})
         assert sat == 0.5
 
+    def test_influence_weight_changes_overall_satisfaction(self, ps):
+        warmth = ps._preferences["warmth"]
+        clarity = ps._preferences["clarity"]
+        for pref in (warmth, clarity):
+            pref.confidence = 1.0
+            pref.valence = 0.0
+        warmth.optimal_low, warmth.optimal_high = 0.8, 1.0
+        clarity.optimal_low, clarity.optimal_high = 0.4, 0.6
+        state = {"warmth": 0.0, "clarity": 0.5}
+
+        warmth.influence_weight, clarity.influence_weight = 3.0, 0.3
+        warmth_weighted = ps.get_overall_satisfaction(state)
+        warmth.influence_weight, clarity.influence_weight = 0.3, 3.0
+        clarity_weighted = ps.get_overall_satisfaction(state)
+
+        assert warmth_weighted < clarity_weighted
+
 
 # ==================== get_most_unsatisfied ====================
 
@@ -255,6 +287,14 @@ class TestPreferredDirection:
     def test_unknown_dimension_returns_zero(self, ps):
         """Unknown dimension returns 0.0."""
         assert ps.get_preferred_direction("nonexistent", 0.5) == 0.0
+
+    def test_in_range_direction_uses_learned_optimal_center(self, ps):
+        pref = ps._preferences["warmth"]
+        pref.optimal_low = 0.3
+        pref.optimal_high = 0.7
+        pref.optimal_center = 0.65
+
+        assert ps.get_preferred_direction("warmth", 0.55) > 0.0
 
 
 # ==================== Persistence ====================

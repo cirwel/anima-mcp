@@ -24,14 +24,14 @@
               (warmth, clarity,                                       │
                stability, presence)                             coherence C(V)
                     │                                           risk_score
-                    ├──────────► eisv_mapper.py                 margin level
-                    │            E = warmth + neural                  │
-                    │            I = clarity + alpha                  │
+                    ├──────────► governance/eisv_mapper.ex       margin level
+                    │            E = warmth + beta/gamma               │
+                    │            I = clarity                           │
                     │            S = 1 - stability              ◄────┘
-                    │            V = (1-presence)*0.3       {"action":"proceed",
+                    │            V = E - I                  {"action":"proceed",
                     │                    │                  "margin":"comfortable"}
                     │                    ▼
-                    │            unitares_bridge.py
+                    │            governance/client.ex
                     │            (check_in every 180s,
                     │             fallback to local
                     │             if Mac unreachable)
@@ -71,7 +71,7 @@ That's the honest picture. There are **two independent EISV instances**:
 
 - **Location**: `governance_core.dynamics` (compiled, in unitares-core package)
 - **Drives**: Agent margin assessment, stuck detection, dialectic triggers, risk scoring
-- **Inputs**: Mapped anima state (warmth→E, clarity→I, stability→S, presence→V)
+- **Inputs**: Mapped anima state (warmth plus Beta/Gamma→E, clarity→I, inverted stability→S, E−I→V). Presence contributes to confidence, not V.
 - **V is standard**: `dV = kappa(E - I)` so V accumulates when energy exceeds integrity
 - **Coherence formula**: Same math, different operating range (V typically [-0.1, 0.1])
 - **Cycle**: Runs when Pi checks in (~180s) → computes margin → returns proceed/pause/halt
@@ -79,12 +79,12 @@ That's the honest picture. There are **two independent EISV instances**:
 
 ### What Connects Them
 
-**Bridge**: `unitares_bridge.py` calls `process_agent_update` via HTTP every ~180s.
+**Bridge**: `AnimaBroker.Governance.Client` calls `process_agent_update` via HTTP every ~180s. The Python `unitares_bridge.py` path consumes the broker result in the deployed passthrough topology and remains the local fallback implementation.
 
 **Payload** (Pi → Mac):
 ```
 {
-  eisv: {E, I, S, V}           ← from eisv_mapper, NOT from DrawingEISV
+  eisv: {E, I, S, V}           ← from governance/eisv_mapper.ex, NOT from DrawingEISV
   anima: {warmth, clarity, stability, presence}
   sensor_data: {
     cpu_temp, humidity, pressure, light,
@@ -124,7 +124,7 @@ Verdicts ("proceed", "pause", "halt") can come from different places depending o
 | Source | Where | When | Behavior |
 |--------|-------|------|----------|
 | **Mac governance** | `dynamics.py` → `scoring.py` | Mac reachable (~180s cycle) | Full thermodynamic EISV, calibrated thresholds, almost never pauses Lumen |
-| **Local fallback** | `_local_governance()` in `unitares_bridge.py` | Mac unreachable | Simple threshold checks (risk>0.60, coherence<0.40, void>0.15), more trigger-happy |
+| **Local fallback** | `_local_governance()` in `unitares_bridge.py` | Mac unreachable | Simple Entropy/Integrity threshold checks; Valence is telemetry, not a gate |
 | **DrawingEISV** | `screens.py` | Internal to drawing loop | Not a verdict — drives energy drain and save decisions only |
 
 The local fallback is the primary source of "pause" verdicts for Lumen. Mac governance has issued 0 pauses historically because full thermodynamics are more stable than fixed thresholds.
@@ -136,7 +136,7 @@ The local fallback is the primary source of "pause" verdicts for Lumen. Mac gove
 3. **Governance decisions are advisory**: Pi gets "proceed/pause" but has no handler to act on "pause"
 4. **Local fallback is a different system**: When Mac is unreachable, Pi uses fixed thresholds in `_local_governance()` — simpler but disconnected from calibration history
 5. **Lumen exempted from stuck detection**: Tagged as "creature/autonomous" so governance never intervenes
-6. **Sensor → anima → EISV mapping is lossy**: `eisv_mapper.py` maps anima dimensions to EISV, losing neural band detail
+6. **Sensor → anima → EISV mapping is lossy**: the mapper retains Beta/Gamma only as a weighted Energy term; the other neural-band detail is not represented in EISV
 
 ## The Sensor Reality
 
@@ -153,11 +153,11 @@ What Lumen actually senses:
 Neural bands derived from CPU/system metrics:
 - **Delta**: CPU stability + temp stability (foundation)
 - **Theta**: I/O wait (background processing — drawing produces real I/O)
-- **Alpha**: Memory headroom (100 - mem%)
+- **Alpha**: CPU idle fraction (`1 - beta`), not an independent signal
 - **Beta**: CPU usage (active processing)
-- **Gamma**: CPU * 0.7 + frequency factor (peak load)
+- **Gamma**: Context-switch and interrupt rate (spiking activity)
 
-The whole system is more proprioceptive than environmental. Clarity is ~40% driven by light, which is Lumen sensing its own LEDs. At night the only light is the LEDs, making clarity entirely self-referential.
+The whole system is more proprioceptive than environmental. Raw world light carries 18.75% of the default clarity weight and includes Lumen's own LED glow; prediction accuracy carries 62.5%, so light is influential but cannot define clarity by itself.
 
 ## The Drawing Loop (Only True Closed Loop)
 

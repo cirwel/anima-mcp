@@ -1212,3 +1212,24 @@ class TestRunSelfModelPhase:
         ctx_ref._ctx = None
         # Must not raise when there is no installed context.
         run_self_model_phase(make_anima(), None, None, 2.0, 1)
+
+    def test_read_only_server_queues_interaction_evidence_for_broker(self):
+        from anima_mcp.loop_phases import run_self_model_phase
+
+        ctx = make_ctx()
+        ctx.sm_clarity_before_interaction = 0.4
+        sm = MagicMock(read_only=True)
+        with patch("anima_mcp.self_model.get_self_model", return_value=sm), \
+             patch("anima_mcp.learning_events.enqueue_self_belief_evidence") as enqueue:
+            run_self_model_phase(
+                make_anima(clarity=0.65), None, None, 2.0, 1,
+            )
+
+        enqueue.assert_called_once_with(
+            "interaction_clarity_boost",
+            supports=True,
+            strength=0.5,
+            source="server:interaction_clarity_episode",
+        )
+        assert ctx.sm_clarity_before_interaction is None
+        assert ctx.sm_observation_count == 1

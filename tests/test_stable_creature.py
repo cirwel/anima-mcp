@@ -468,6 +468,22 @@ class TestMoodMomentumIntegration:
         # After 50 steps with alpha=0.08, should be very close to 0.2
         assert smoothed.warmth < 0.25
 
+    def test_elapsed_time_matches_equivalent_reference_ticks(self):
+        one_long_tick = MoodMomentum()
+        five_reference_ticks = MoodMomentum()
+        one_long_tick.smooth(_make_anima(warmth=0.8))
+        five_reference_ticks.smooth(_make_anima(warmth=0.8))
+
+        long_result = one_long_tick.smooth(
+            _make_anima(warmth=0.2), elapsed_seconds=10.0,
+        )
+        for _ in range(5):
+            reference_result = five_reference_ticks.smooth(
+                _make_anima(warmth=0.2), elapsed_seconds=2.0,
+            )
+
+        assert long_result.warmth == pytest.approx(reference_result.warmth, abs=0.003)
+
 
 # =====================================================================
 # InnerLife integration

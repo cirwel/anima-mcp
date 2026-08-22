@@ -236,7 +236,7 @@ class TestShapeToLumenTrigger:
             "settled_presence", "rising_entropy", "falling_energy",
             "basin_transition_down", "basin_transition_up",
             "entropy_spike_recovery", "drift_dissonance",
-            "void_rising", "convergence",
+            "valence_rising", "void_rising", "convergence",
         ]
         for shape in known_shapes:
             trigger = shape_to_lumen_trigger(shape)

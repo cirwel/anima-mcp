@@ -17,10 +17,14 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any
+import math
 import sqlite3
 import sys
 import time
 from .db_paths import resolve_db_path
+
+
+PATHWAY_REWARD_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +151,17 @@ class Pathway:
         strength += lr * quality, bounded to [0.01, 5.0].
         lr_bonus: from experiential marks (pathway_lr_bonus), scales learning rate.
         """
-        quality = max(-1.0, min(1.0, outcome_quality))
-        lr = 0.15 * (1.0 + lr_bonus)
+        quality = float(outcome_quality)
+        if not math.isfinite(quality):
+            raise ValueError("outcome quality must be finite")
+        quality = max(-1.0, min(1.0, quality))
+        try:
+            bonus = float(lr_bonus)
+        except (TypeError, ValueError):
+            bonus = 0.0
+        if not math.isfinite(bonus):
+            bonus = 0.0
+        lr = 0.15 * max(0.0, 1.0 + bonus)
         self.strength += lr * quality
         self.strength = max(0.01, min(5.0, self.strength))
         self.use_count += 1
@@ -222,10 +235,57 @@ class WeightedPathways:
                     PRIMARY KEY (context_key, action_key)
                 );
                 CREATE INDEX IF NOT EXISTS idx_pathways_context ON pathways(context_key);
+                CREATE TABLE IF NOT EXISTS pathways_state (
+                    key TEXT PRIMARY KEY,
+                    data TEXT
+                );
             """)
+            self._ensure_reward_model_version(conn)
             conn.commit()
         except Exception as e:
             print(f"[WeightedPathways] DB init error (non-fatal): {e}", file=sys.stderr, flush=True)
+
+    def _ensure_reward_model_version(self, conn: sqlite3.Connection) -> None:
+        """Neutralize rewardless legacy pathways while preserving a snapshot."""
+        import json
+
+        row = conn.execute(
+            "SELECT data FROM pathways_state WHERE key = 'reward_model_version'"
+        ).fetchone()
+        try:
+            version = int(json.loads(row["data"])) if row else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            version = None
+        if version is not None and version >= PATHWAY_REWARD_VERSION:
+            return
+
+        legacy_rows = conn.execute(
+            """SELECT context_key, action_key, strength, use_count, last_used, total_reward
+               FROM pathways
+               WHERE use_count > 0 AND ABS(total_reward) < 1e-12
+               ORDER BY context_key, action_key"""
+        ).fetchall()
+        if legacy_rows:
+            snapshot = [dict(item) for item in legacy_rows]
+            conn.execute(
+                "INSERT OR REPLACE INTO pathways_state (key, data) VALUES (?, ?)",
+                ("legacy_rewardless_v1", json.dumps(snapshot, sort_keys=True)),
+            )
+            conn.execute(
+                """UPDATE pathways
+                   SET strength = 0.5, use_count = 0, last_used = 0
+                   WHERE use_count > 0 AND ABS(total_reward) < 1e-12"""
+            )
+            print(
+                f"[WeightedPathways] Preserved and neutralized {len(legacy_rows)} "
+                "rewardless legacy pathways",
+                file=sys.stderr,
+                flush=True,
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO pathways_state (key, data) VALUES (?, ?)",
+            ("reward_model_version", json.dumps(PATHWAY_REWARD_VERSION)),
+        )
 
     def _load_all(self):
         """Load all pathways from the database."""

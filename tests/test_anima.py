@@ -5,7 +5,7 @@ Run with: pytest tests/test_anima.py -v
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from anima_mcp.anima import (
     sense_self, _sense_warmth, _sense_clarity,
@@ -262,7 +262,7 @@ class TestChannelLiveness:
             pressure_hpa=830.0 + i * 0.02,
         )
         base.update(kw)
-        return SensorReadings(timestamp=now, **base)
+        return SensorReadings(timestamp=now + timedelta(seconds=i * 2), **base)
 
     def _repeat(self, now, times, **kw):
         from anima_mcp.anima import _frozen_channel_count
@@ -283,7 +283,7 @@ class TestChannelLiveness:
         worst = 0
         for i in range(T + 20):
             worst = max(worst, _frozen_channel_count(SensorReadings(
-                timestamp=now,
+                timestamp=now + timedelta(seconds=i * 2),
                 cpu_temp_c=55.0 + (i % 3) * 0.001,
                 ambient_temp_c=28.0 + (i % 5) * 0.001,
                 humidity_pct=38.0 + (i % 7) * 0.001,
@@ -323,6 +323,46 @@ class TestChannelLiveness:
             self._readings(now, i=T + 3, pressure_hpa=682.5), default_calibration
         )
         assert degraded < healthy, "a frozen channel must cost coverage"
+
+    def test_one_sense_call_advances_liveness_once(self, now, default_calibration):
+        from anima_mcp.anima import (
+            _FROZEN_REPEAT_THRESHOLD as T,
+            _channel_repeat_count,
+            sense_self,
+        )
+        def _sample(index):
+            return SensorReadings(
+                timestamp=now + timedelta(seconds=index * 2),
+                cpu_temp_c=55.0,
+                ambient_temp_c=28.0,
+                humidity_pct=38.0,
+                light_lux=12.0,
+                pressure_hpa=830.0,
+                cpu_percent=20.0,
+                memory_percent=30.0,
+                disk_percent=40.0,
+                eeg_alpha_power=0.8,
+                eeg_beta_power=0.2,
+                eeg_gamma_power=0.1,
+                eeg_theta_power=0.4,
+                eeg_delta_power=0.6,
+            )
+
+        for index in range(T):
+            sense_self(_sample(index), default_calibration, prediction_accuracy=0.5)
+
+        assert _channel_repeat_count["pressure_hpa"] == T - 1
+        sense_self(_sample(T), default_calibration, prediction_accuracy=0.5)
+        assert _channel_repeat_count["pressure_hpa"] == T
+
+    def test_reusing_one_physical_sample_is_idempotent(self, now, default_calibration):
+        from anima_mcp.anima import _channel_repeat_count, sense_self
+
+        readings = self._readings(now, i=1, pressure_hpa=682.5)
+        sense_self(readings, default_calibration, prediction_accuracy=0.5)
+        sense_self(readings, default_calibration, prediction_accuracy=0.5)
+
+        assert _channel_repeat_count["pressure_hpa"] == 0
 
     def test_all_channels_absent_stays_in_range(self, now, default_calibration):
         """missing + frozen must never exceed the channel count."""

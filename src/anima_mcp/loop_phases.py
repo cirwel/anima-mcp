@@ -905,6 +905,27 @@ def run_self_model_phase(anima, readings, prediction_error, base_delay: float, l
         sm = get_self_model()
         if getattr(sm, "read_only", False) is True:
             sm.refresh_if_changed()
+            # Communication happens in the server, while the broker is the
+            # sole self-model writer. Hand the completed clarity episode across
+            # the durable inbox instead of silently returning at this boundary.
+            if _ctx.sm_clarity_before_interaction is not None:
+                clarity_change = anima.clarity - _ctx.sm_clarity_before_interaction
+                strength = max(0.15, min(1.0, abs(clarity_change) * 2.0))
+                try:
+                    from .learning_events import enqueue_self_belief_evidence
+
+                    enqueue_self_belief_evidence(
+                        "interaction_clarity_boost",
+                        supports=clarity_change > 0.0,
+                        strength=strength,
+                        source="server:interaction_clarity_episode",
+                    )
+                    _ctx.sm_clarity_before_interaction = None
+                    _record_obs()
+                except Exception as exc:
+                    logger.debug(
+                        "[SelfModel] interaction evidence enqueue error: %s", exc
+                    )
             return
 
         # 0. Verify any pending self-prediction from previous iteration

@@ -109,21 +109,19 @@ def test_get_readings_and_anima_uses_shared_memory_when_fresh(monkeypatch):
         "anima": {"warmth": 0.4, "clarity": 0.5, "stability": 0.6, "presence": 0.7},
     }
     readings_obj = SimpleNamespace()
-    anima_obj = SimpleNamespace()
     ctx = SimpleNamespace(last_shm_data=None)
 
     _set_ctx(monkeypatch, ctx)
     monkeypatch.setattr(accessors, "_get_shm_client", lambda: SimpleNamespace(read=lambda: shm_payload))
     monkeypatch.setattr(accessors, "_readings_from_dict", lambda d: readings_obj)
-    monkeypatch.setattr(accessors, "get_calibration", lambda: SimpleNamespace())
-    monkeypatch.setattr(accessors, "_get_warm_start_anticipation", lambda: None)
-    monkeypatch.setattr(accessors, "anticipate_state", lambda d: {"anticipated": True})
-    monkeypatch.setattr(accessors, "_get_calibration_drift", lambda: SimpleNamespace(get_midpoints=lambda: {}))
-    monkeypatch.setattr(accessors, "sense_self_with_memory", lambda *args, **kwargs: anima_obj)
+    sense_calls = []
+    monkeypatch.setattr(accessors, "sense_self_with_memory", lambda *args, **kwargs: sense_calls.append(args))
 
     readings, anima = server._get_readings_and_anima()
     assert readings is readings_obj
-    assert anima is anima_obj
+    assert (anima.warmth, anima.clarity, anima.stability, anima.presence) == (0.4, 0.5, 0.6, 0.7)
+    assert anima.readings is readings_obj
+    assert sense_calls == []
     import anima_mcp.ctx_ref as ctx_ref
     assert ctx_ref._ctx.last_shm_data == shm_payload
 

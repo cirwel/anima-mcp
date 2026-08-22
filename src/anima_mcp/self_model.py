@@ -26,6 +26,17 @@ import math
 from .atomic_write import atomic_json_write
 
 
+def _learning_multiplier(update_bonus: float) -> float:
+    """Return a finite, non-negative multiplier for experiential learning."""
+    try:
+        bonus = float(update_bonus)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(bonus):
+        return 1.0
+    return max(0.0, 1.0 + bonus)
+
+
 @dataclass
 class SelfBelief:
     """A belief Lumen holds about itself."""
@@ -59,7 +70,8 @@ class SelfBelief:
         strength = min(1.0, strength)
 
         self.last_tested = datetime.now()
-        lr = 0.1 * (1.0 + update_bonus)
+        bonus_multiplier = _learning_multiplier(update_bonus)
+        lr = 0.1 * bonus_multiplier
 
         if supports:
             self.supporting_count += 1
@@ -73,6 +85,42 @@ class SelfBelief:
             adjustment = lr * strength * self.confidence
             self.confidence = max(0.0, self.confidence - adjustment)
             self.value = self.value + (0.5 - self.value) * adjustment
+
+    def update_correlation(self, correlation: float, update_bonus: float = 0.0) -> None:
+        """Aggregate one signed correlation window without overwriting history.
+
+        Correlation magnitude is evidence that an effect exists; its sign is
+        represented by ``value`` (0.5 neutral, 0 negative, 1 positive). A new
+        window therefore updates confidence and moves value toward its signed
+        target with an evidence-weighted EMA.
+        """
+        correlation = float(correlation)
+        if not math.isfinite(correlation):
+            return
+        correlation = max(-1.0, min(1.0, correlation))
+        magnitude = abs(correlation)
+        self.last_tested = datetime.now()
+        bonus_multiplier = _learning_multiplier(update_bonus)
+
+        if magnitude > 0.3:
+            self.supporting_count += 1
+            confidence_lr = min(1.0, 0.1 * bonus_multiplier * magnitude)
+            self.confidence = min(
+                1.0, self.confidence + confidence_lr * (1.0 - self.confidence)
+            )
+            target = 0.5 + correlation * 0.5
+            value_lr = min(0.5, 0.25 * bonus_multiplier * magnitude)
+            self.value += value_lr * (target - self.value)
+        else:
+            self.contradicting_count += 1
+            confidence_lr = min(1.0, 0.03 * bonus_multiplier)
+            self.confidence = max(
+                0.0, self.confidence - confidence_lr * self.confidence
+            )
+            neutral_lr = min(0.5, 0.1 * bonus_multiplier * (1.0 - magnitude))
+            self.value += neutral_lr * (0.5 - self.value)
+
+        self.value = max(0.0, min(1.0, self.value))
 
     def get_belief_strength(self) -> str:
         """Get natural language description of belief strength."""
@@ -115,12 +163,11 @@ class SelfModel:
         "presence_baseline_low": (0.3, 0.5),
     }
 
-    # 2026-08-21 audit: these four beliefs have evidence channels that do not
-    # deliver in the deployed topology — the server-side observers sit behind
-    # the read-only guard, the broker never calls the warmth observer, the
-    # stability observer is gated behind the retired ANIMA_BROKER_AGENCY_ENABLED
-    # flag, and question_asking_tendency's inbox feed sits downstream of the
-    # surprise-path crash (#189), so zero events have ever arrived. Their
+    # 2026-08-21 audit: these four beliefs had evidence channels that did not
+    # deliver in the deployed topology. The v3 migration below preserves and
+    # cold-starts their historical artifacts once; current runtime wiring now
+    # feeds recovery observations in the broker and communication evidence via
+    # the durable learning inbox. Their prior
     # stored values are artifacts of the retired 2s-tick era (counts
     # byte-identical across every snapshot since 8-11/12); recomputation from
     # state_history contradicts the recovery pair at every observable
@@ -475,9 +522,15 @@ class SelfModel:
             self._update_belief("temp_sensitive",
                 supports=surprise_level > 0.3, strength=surprise_level)
 
-    def _observe_recovery(self, before: float, after: float,
-                          episodes: deque, belief_id: str,
-                          recovery_bonus: float = 0.0):
+    def _observe_recovery(
+        self,
+        before: float,
+        after: float,
+        episodes: deque,
+        belief_id: str,
+        duration_seconds: float = 0.0,
+        recovery_bonus: float = 0.0,
+    ):
         """Shared recovery-belief observer for any anima dimension.
 
         Tracks drop/recovery episodes and tests the named belief.
@@ -485,35 +538,64 @@ class SelfModel:
         recovery_bonus: from experiential marks (stability_recovery_bonus),
             widens the threshold so more recoveries count as "fast".
         """
+        try:
+            elapsed = float(duration_seconds)
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        if not math.isfinite(elapsed):
+            elapsed = 0.0
+        elapsed = max(0.0, elapsed)
+
+        active = next(
+            (episode for episode in reversed(episodes) if not episode.get("recovered")),
+            None,
+        )
+        if active is not None:
+            active["elapsed_seconds"] = active.get("elapsed_seconds", 0.0) + elapsed
+
         if before > after:
-            episodes.append({
-                "drop_time": datetime.now(),
-                "initial": before,
-                "dropped_to": after,
-                "recovered": False,
-            })
-        elif after > before and episodes:
-            for episode in reversed(episodes):
-                if not episode.get("recovered"):
-                    recovery_time = (datetime.now() - episode["drop_time"]).total_seconds()
-                    recovery_amount = after - episode["dropped_to"]
+            if active is None:
+                episodes.append({
+                    "drop_time": datetime.now(),
+                    "initial": before,
+                    "dropped_to": after,
+                    "elapsed_seconds": 0.0,
+                    "recovered": False,
+                })
+            elif after < active["dropped_to"]:
+                # A gradual decline is one episode. Recovery starts at the
+                # deepest observed trough, not at every small downward step.
+                active["dropped_to"] = after
+                active["drop_time"] = datetime.now()
+                active["elapsed_seconds"] = 0.0
+            return
 
-                    if recovery_amount > 0.1:
-                        episode["recovered"] = True
-                        episode["recovery_seconds"] = recovery_time
+        if after <= before or active is None:
+            return
 
-                        threshold = 600 * (1.0 + recovery_bonus)
-                        is_fast = recovery_time / max(0.1, recovery_amount) < threshold
-                        self._update_belief(belief_id,
-                            supports=is_fast, strength=recovery_amount)
-                        self._maybe_save()
-                    break
+        recovery_amount = after - active["dropped_to"]
+        if recovery_amount <= 0.1:
+            return
+
+        recovery_time = active.get("elapsed_seconds", 0.0)
+        active["recovered"] = True
+        active["recovery_seconds"] = recovery_time
+
+        threshold = 600 * _learning_multiplier(recovery_bonus)
+        is_fast = recovery_time / max(0.1, recovery_amount) < threshold
+        self._update_belief(
+            belief_id,
+            supports=is_fast,
+            strength=recovery_amount,
+        )
+        self._maybe_save()
 
     def observe_stability_change(self, stability_before: float, stability_after: float,
                                  duration_seconds: float = 0.0, recovery_bonus: float = 0.0):
         """Record stability change for recovery belief testing."""
         self._observe_recovery(stability_before, stability_after,
                                self._stability_episodes, "stability_recovery",
+                               duration_seconds=duration_seconds,
                                recovery_bonus=recovery_bonus)
 
     def observe_warmth_change(self, warmth_before: float, warmth_after: float,
@@ -521,6 +603,7 @@ class SelfModel:
         """Record warmth change for warmth_recovery belief testing."""
         self._observe_recovery(warmth_before, warmth_after,
                                self._warmth_episodes, "warmth_recovery",
+                               duration_seconds=duration_seconds,
                                recovery_bonus=recovery_bonus)
 
     def observe_question_asked(self, surprise_level: float):
@@ -693,18 +776,10 @@ class SelfModel:
             self._correlation_data[data_key].clear()
             return
 
-        # Update belief
-        belief = self._beliefs[belief_id]
-
-        # Strong correlation supports the belief
-        if abs(correlation) > 0.3:
-            self._update_belief(belief_id, supports=True, strength=abs(correlation))
-            # Update value to reflect correlation direction
-            belief.value = 0.5 + correlation * 0.5  # Map -1,1 to 0,1
-        else:
-            # Weak correlation contradicts — but only mildly, since we confirmed
-            # there was real input variance
-            self._update_belief(belief_id, supports=False, strength=0.3)
+        self._beliefs[belief_id].update_correlation(
+            correlation,
+            update_bonus=self.belief_update_bonus,
+        )
         self._correlation_data[data_key].clear()
         self._maybe_save()
 

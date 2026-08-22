@@ -26,6 +26,7 @@ from .shared_memory import SharedMemoryClient
 from .config import get_calibration
 from .server_state import (
     SHM_STALE_THRESHOLD_SECONDS,
+    anima_from_dict as _anima_from_dict,
     is_broker_running as _is_broker_running,
     readings_from_dict as _readings_from_dict,
 )
@@ -294,22 +295,9 @@ def _get_readings_and_anima(fallback_to_sensors: bool = False) -> tuple[SensorRe
             # Reconstruct SensorReadings from shared memory
             readings = _readings_from_dict(shm_data["readings"])
 
-            # Reconstruct Anima from shared memory (but we need readings object)
-            # The anima dict has warmth/clarity/stability/presence, but we need to create Anima with readings
-            calibration = get_calibration()
-
-            # Use warm start anticipation (first sense after wake) or memory
-            anticipation = _get_warm_start_anticipation() or anticipate_state(shm_data.get("readings", {}))
-
-            # Recompute anima from readings with memory influence
-            drift = _get_calibration_drift()
-            anima = sense_self_with_memory(
-                readings,
-                anticipation,
-                calibration,
-                drift_midpoints=drift.get_midpoints(),
-                prediction_accuracy=_prediction_accuracy_from_shm(shm_data),
-            )
+            # The broker owns sensing, calibration, anticipation, and mood
+            # momentum.  Its published anima is therefore authoritative.
+            anima = _anima_from_dict(shm_data["anima"], readings)
 
             return readings, anima
         except Exception as e:

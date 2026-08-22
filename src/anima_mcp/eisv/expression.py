@@ -24,7 +24,8 @@ SHAPE_TOKEN_AFFINITY: Dict[str, List[str]] = {
     "basin_transition_up": ["~emergence~", "~reaching~", "~warmth~", "~return~"],
     "entropy_spike_recovery": ["~ripple~", "~return~", "~holding~", "~reflection~"],
     "drift_dissonance": ["~boundary~", "~questioning~", "~reflection~"],
-    "void_rising": ["~reaching~", "~curiosity~", "~questioning~", "~threshold~"],
+    "valence_rising": ["~reaching~", "~curiosity~", "~questioning~", "~threshold~"],
+    "void_rising": ["~reaching~", "~curiosity~", "~questioning~", "~threshold~"],  # legacy history
     "convergence": ["~stillness~", "~resonance~", "~return~", "~deep_listening~"],
 }
 
@@ -59,7 +60,8 @@ SHAPE_PATTERN_WEIGHTS: Dict[str, Dict[str, float]] = {
     "basin_transition_up":     {"single": 0.15, "pair": 0.3, "triple": 0.35, "repetition": 0.1, "question": 0.1},
     "entropy_spike_recovery":  {"single": 0.1, "pair": 0.3, "triple": 0.3, "repetition": 0.2, "question": 0.1},
     "drift_dissonance":        {"single": 0.1, "pair": 0.2, "triple": 0.2, "repetition": 0.1, "question": 0.4},
-    "void_rising":             {"single": 0.2, "pair": 0.2, "triple": 0.2, "repetition": 0.1, "question": 0.3},
+    "valence_rising":          {"single": 0.2, "pair": 0.2, "triple": 0.2, "repetition": 0.1, "question": 0.3},
+    "void_rising":             {"single": 0.2, "pair": 0.2, "triple": 0.2, "repetition": 0.1, "question": 0.3},  # legacy history
     "convergence":             {"single": 0.4, "pair": 0.3, "triple": 0.1, "repetition": 0.15, "question": 0.05},
 }
 
@@ -85,6 +87,12 @@ class ExpressionGenerator:
             for token in ALL_TOKENS:
                 weights[token] = 3.0 if token in affine else 1.0
             self._token_weights[shape.value] = weights
+        # Persisted trajectory events from before the Valence correction can
+        # still be replayed under the old shape name.
+        self._token_weights["void_rising"] = {
+            token: 3.0 if token in SHAPE_TOKEN_AFFINITY["void_rising"] else 1.0
+            for token in ALL_TOKENS
+        }
 
     def _select_pattern(self, shape: str) -> ExpressionPattern:
         weights = SHAPE_PATTERN_WEIGHTS.get(shape, SHAPE_PATTERN_WEIGHTS["settled_presence"])
@@ -345,7 +353,8 @@ def shape_to_lumen_trigger(shape: str) -> Dict[str, Any]:
         "basin_transition_up": {"should_generate": True, "reason": "basin_shift_up", "token_count_hint": 3},
         "entropy_spike_recovery": {"should_generate": True, "reason": "spike_recovery", "token_count_hint": 2},
         "drift_dissonance": {"should_generate": True, "reason": "ethical_drift_detected", "token_count_hint": 3},
-        "void_rising": {"should_generate": True, "reason": "void_expansion", "token_count_hint": 2},
+        "valence_rising": {"should_generate": True, "reason": "energy_integrity_shift", "token_count_hint": 2},
+        "void_rising": {"should_generate": True, "reason": "legacy_void_history", "token_count_hint": 2},
         "convergence": {"should_generate": True, "reason": "approaching_attractor", "token_count_hint": 2},
     }
     return triggers.get(shape, {"should_generate": False, "reason": "unknown_shape", "token_count_hint": 0})

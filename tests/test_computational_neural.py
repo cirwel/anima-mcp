@@ -126,14 +126,35 @@ class TestGammaBand:
 
             # Sustained high ctx switches over several samples to let EMA converge
             for i in range(5):
-                sensor._last_sample_time = time.time() - 1.0
-                _mock_psutil(mock_ps, cpu_stats=CpuStats(100000 + 20000 * (i + 1), 50000, 0, 0))
+                sensor._last_sample_time = time.monotonic() - 2.0
+                _mock_psutil(mock_ps, cpu_stats=CpuStats(100000 + 40000 * (i + 1), 50000, 0, 0))
                 state = sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
 
         # Raw gamma = 0.6 each step. After 5 EMA steps (alpha=0.2):
         # converges toward 0.6, should be above 0.3
         assert state.gamma > 0.3
         assert state.gamma < 0.6  # EMA hasn't fully converged
+
+    def test_gamma_ema_uses_elapsed_wall_time(self):
+        short = ComputationalNeuralSensor()
+        long = ComputationalNeuralSensor()
+        with patch("anima_mcp.computational_neural.psutil") as mock_ps:
+            _mock_psutil(mock_ps, cpu_stats=CpuStats(100000, 50000, 0, 0))
+            short.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
+            short._last_sample_time = time.monotonic() - 2.0
+            _mock_psutil(mock_ps, cpu_stats=CpuStats(110000, 50000, 0, 0))
+            short_state = short.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
+
+        with patch("anima_mcp.computational_neural.psutil") as mock_ps:
+            _mock_psutil(mock_ps, cpu_stats=CpuStats(100000, 50000, 0, 0))
+            long.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
+            long._last_sample_time = time.monotonic() - 10.0
+            _mock_psutil(mock_ps, cpu_stats=CpuStats(150000, 50000, 0, 0))
+            long_state = long.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
+
+        # Both windows have the same raw switching rate; the longer elapsed
+        # interval must advance the continuous-time EMA farther.
+        assert long_state.gamma > short_state.gamma * 2
 
     def test_gamma_independent_of_cpu(self, sensor):
         """Gamma should NOT track CPU percent — it tracks switching rate."""
@@ -144,7 +165,7 @@ class TestGammaBand:
 
             # Multiple samples with same switching rate to let EMA converge
             for i in range(3):
-                sensor._last_sample_time = time.time() - 1.0
+                sensor._last_sample_time = time.monotonic() - 1.0
                 _mock_psutil(mock_ps, cpu_stats=CpuStats(100000 + 5000 * (i + 1), 50000 + 5000 * (i + 1), 0, 0))
                 state_low_cpu = sensor.get_neural_state(cpu_percent=10.0, memory_percent=50.0)
 
@@ -154,7 +175,7 @@ class TestGammaBand:
             sensor2.get_neural_state(cpu_percent=90.0, memory_percent=50.0)
 
             for i in range(3):
-                sensor2._last_sample_time = time.time() - 1.0
+                sensor2._last_sample_time = time.monotonic() - 1.0
                 _mock_psutil(mock_ps, cpu_stats=CpuStats(100000 + 5000 * (i + 1), 50000 + 5000 * (i + 1), 0, 0))
                 state_high_cpu = sensor2.get_neural_state(cpu_percent=90.0, memory_percent=50.0)
 
@@ -173,7 +194,7 @@ class TestThetaBand:
             _mock_psutil(mock_ps)
             # Prime with first sample
             sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             _mock_psutil(mock_ps)
             state = sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
         assert state.theta == 0.0
@@ -193,13 +214,13 @@ class TestThetaBand:
             # EMA first real value: initialized to 0 on first call, so
             # ema = 0.3 * 0.175 + 0.7 * 0.0 = 0.0525
             # Need a second identical sample to converge closer
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             disk2 = DiskIOBusy(0, 0, 0, 0, 0, 0, busy_time=500)
             _mock_psutil(mock_ps, disk_io=disk2)
             sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
 
             # Third sample: same delta to let EMA converge
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             disk3 = DiskIOBusy(0, 0, 0, 0, 0, 0, busy_time=1000)
             _mock_psutil(mock_ps, disk_io=disk3)
             state = sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
@@ -220,13 +241,13 @@ class TestThetaBand:
             # net_signal = 256KB / 512KB = 0.5
             # theta blend = 0.7*0.5 + 0.3*0 = 0.35 (disk=0)
             # EMA: 0.3*0.35 + 0.7*0 = 0.105
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             _mock_psutil(mock_ps)
             mock_ps.net_io_counters.return_value = NetIO(128*1024, 128*1024, 0, 0, 0, 0, 0, 0)
             sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
 
             # Third sample: same throughput to let EMA converge
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             _mock_psutil(mock_ps)
             mock_ps.net_io_counters.return_value = NetIO(256*1024, 256*1024, 0, 0, 0, 0, 0, 0)
             state = sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
@@ -243,11 +264,11 @@ class TestThetaBand:
                 disk = DiskIOBusy(0, 0, 0, 0, 0, 0, busy_time=0)
                 _mock_psutil(mock_ps, disk_io=disk)
                 if i > 0:
-                    sensor._last_sample_time = time.time() - 1.0
+                    sensor._last_sample_time = time.monotonic() - 1.0
                 sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)
 
             # Now spike: 2000ms busy in 1 second = raw disk_signal 1.0
-            sensor._last_sample_time = time.time() - 1.0
+            sensor._last_sample_time = time.monotonic() - 1.0
             disk_spike = DiskIOBusy(0, 0, 0, 0, 0, 0, busy_time=2000)
             _mock_psutil(mock_ps, disk_io=disk_spike)
             state = sensor.get_neural_state(cpu_percent=50.0, memory_percent=50.0)

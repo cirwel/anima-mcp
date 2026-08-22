@@ -20,14 +20,14 @@ class TestMapping:
         assert result["E"] == 0.8
         assert result["I"] == 0.7
         assert abs(result["S"] - 0.1) < 1e-9
-        assert abs(result["V"] - 0.15) < 1e-9
+        assert abs(result["V"] - 0.1) < 1e-9
 
     def test_anima_to_eisv_clamping(self):
         result = anima_to_eisv(1.5, -0.5, 0.0, 2.0)
         assert result["E"] == 1.0
         assert result["I"] == 0.0
         assert result["S"] == 1.0
-        assert result["V"] == 0.0
+        assert result["V"] == 1.0
 
     def test_eisv_values_in_range(self):
         for w in [0.0, 0.5, 1.0]:
@@ -35,8 +35,18 @@ class TestMapping:
                 for s in [0.0, 0.5, 1.0]:
                     for p in [0.0, 0.5, 1.0]:
                         r = anima_to_eisv(w, c, s, p)
-                        for k in ("E", "I", "S", "V"):
+                        for k in ("E", "I", "S"):
                             assert 0.0 <= r[k] <= 1.0
+                        assert -1.0 <= r["V"] <= 1.0
+
+    def test_mapping_matches_canonical_governance_mapping_without_neural_data(self):
+        from anima_mcp.eisv_mapper import anima_components_to_eisv
+
+        trajectory = anima_to_eisv(0.41, 0.78, 0.66, 0.92)
+        governance = anima_components_to_eisv(0.41, 0.78, 0.66, 0.92).to_dict()
+
+        assert trajectory == governance
+        assert abs(trajectory["V"] + 0.37) < 1e-12
 
 
 class TestDerivatives:
@@ -161,6 +171,14 @@ class TestTrajectoryAwareness:
         # Immediately recording again should be subsampled away
         ta.record_state(0.6, 0.6, 0.6, 0.6)
         assert len(ta._buffer) == 1  # Still 1
+
+    def test_record_state_accepts_exact_operational_eisv(self):
+        ta = TrajectoryAwareness(buffer_size=30)
+        operational = {"E": 0.31, "I": 0.72, "S": 0.18, "V": -0.41}
+
+        ta.record_state(0.8, 0.2, 0.3, 0.4, eisv=operational)
+
+        assert {k: ta._buffer[0][k] for k in operational} == operational
 
     def test_caching(self):
         ta = TrajectoryAwareness(buffer_size=30, cache_seconds=60.0, seed=42)

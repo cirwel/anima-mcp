@@ -241,6 +241,31 @@ class TestRecoveryProfile:
         model.observe_stability_change(0.8, 0.4, duration_seconds=10)
         model.observe_stability_change(0.4, 0.7, duration_seconds=30)
         assert model._stability_episodes[0]["recovered"] is True
+        assert model._stability_episodes[0]["recovery_seconds"] == pytest.approx(30.0)
+
+    def test_recovery_accumulates_elapsed_time_across_partial_steps(self, model):
+        model.observe_stability_change(0.8, 0.4, duration_seconds=10)
+        model.observe_stability_change(0.4, 0.4, duration_seconds=20)
+        model.observe_stability_change(0.4, 0.45, duration_seconds=30)
+        model.observe_stability_change(0.45, 0.7, duration_seconds=10)
+
+        episode = model._stability_episodes[0]
+        assert episode["recovered"] is True
+        assert episode["recovery_seconds"] == pytest.approx(60.0)
+
+    def test_gradual_drop_is_one_episode_at_the_deepest_trough(self, model):
+        model.observe_stability_change(0.8, 0.75, duration_seconds=2)
+        model.observe_stability_change(0.75, 0.7, duration_seconds=2)
+        model.observe_stability_change(0.7, 0.65, duration_seconds=2)
+
+        assert len(model._stability_episodes) == 1
+        episode = model._stability_episodes[0]
+        assert episode["initial"] == pytest.approx(0.8)
+        assert episode["dropped_to"] == pytest.approx(0.65)
+
+        model.observe_stability_change(0.65, 0.76, duration_seconds=12)
+        assert episode["recovered"] is True
+        assert episode["recovery_seconds"] == pytest.approx(12.0)
 
     def test_recovery_bonus_widens_threshold(self, model):
         """recovery_bonus makes more recoveries count as 'fast'."""
@@ -253,7 +278,7 @@ class TestRecoveryProfile:
                                        recovery_bonus=0.30)
 
         # With 30% bonus, threshold is 600 * 1.30 = 780s per unit
-        # Recovery: time / amount = ~few seconds / 0.3 — well under threshold
+        # Recovery: time / amount = 30 / 0.3 = 100 — well under threshold
         # So it should count as supporting evidence
         assert model._beliefs["stability_recovery"].confidence > initial_confidence
 

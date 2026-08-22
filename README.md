@@ -95,7 +95,7 @@ Four continuous dimensions, each derived from physical sensors and system metric
 | **Stability** | Environmental order | Memory, humidity, pressure, sensor health |
 | **Presence** | Available capacity | CPU/memory/disk headroom |
 
-These map to [UNITARES](https://github.com/CIRWEL/unitares) EISV governance variables — Warmth to Energy, Clarity to Integrity, inverted Stability to Entropy, and the signed Energy−Integrity imbalance to Valence. Presence is *not* part of the governance EISV mapping (a legacy trajectory-awareness path still consumes it — see EISV Integration); it feeds the anima dimensions and the display, not the reported V.
+These map to [UNITARES](https://github.com/CIRWEL/unitares) EISV governance variables — Warmth to Energy, Clarity to Integrity, inverted Stability to Entropy, and the signed Energy−Integrity imbalance to Valence. Presence is *not* an EISV coordinate; it feeds the anima display and check-in confidence, not the reported V.
 
 Anima also computes neural bands (delta, theta, alpha, beta, gamma) from system metrics — computational proprioception, not real EEG. High delta means a stable system, not a sleeping one. Note that alpha is defined as `1 − beta` and both derive from CPU percent: they are one variable reported as two bands, and any consumer treating them as independent is double-counting.
 
@@ -272,19 +272,19 @@ Anima is a first-class UNITARES agent. Its anima state maps directly to EISV gov
 | 1 - Stability | Entropy (S) | Inverted |
 | E − I | Valence (V) | Signed imbalance, clamped to −1..1 |
 
-Valence is the one row that is not a direct anima reading: `V = clamp(E − I)`, positive when running hot (E>I) and negative when running careful (I>E). Governance's own V is a differential accumulator (`dV/dt = κ(E−I) − δV`); Anima reports the instantaneous readout, so it does not damp. Presence does not enter the governance mapping at all — the old `(1 − Presence) × 0.3 → Void` reading only ever produced the positive half and was not comparable to other agents' V. It is retired from governance reporting, though the trajectory-awareness pipeline still uses it internally (see the contexts table below).
+Valence is the one row that is not a direct anima reading: `V = clamp(E − I)`, positive when running hot (E>I) and negative when running careful (I>E). Governance's own V is a differential accumulator (`dV/dt = κ(E−I) − δV`); Anima reports the instantaneous readout, so it does not damp. Presence does not enter the EISV mapping at all — the old `(1 − Presence) × 0.3 → Void` reading only ever produced the positive half and was not comparable to other agents' V. It is retired from both governance reporting and trajectory awareness.
 
 **Trajectory awareness** — Anima classifies its own EISV trajectory into 9 dynamical shapes (settled_presence, rising_entropy, convergence, etc.) and uses them to generate primitive expressions. A distilled 20-tree RandomForest student model (`student_tiny` from [eisv-lumen](https://github.com/CIRWEL/eisv-lumen)) runs on-device with zero external dependencies.
 
 **Expression pipeline**: EISV state → trajectory classification → shape-token affinity → primitive tokens (~warmth~, ~curiosity~, etc.). The student model was trained on real on-device trajectory data; see [eisv-lumen](https://github.com/CIRWEL/eisv-lumen) for the research, training, and evaluation framework.
 
-**Four EISV contexts** (important for understanding the architecture — the same four letters do not mean the same numbers):
+**Four EISV contexts** (important for understanding the architecture — mapped telemetry is shared, while drawing and governance have their own dynamics):
 
 | Context | Location | Role |
 |---------|----------|------|
 | **DrawingEISV** | `display/drawing_engine.py` | Proprioceptive drawing state. Marks are steered by behavioral coherence and attention signals; the ODE-integrated variables run for reporting only, and its V is a damped accumulator with its own parameters and a roughly inverted sign tendency — not numerically comparable to the mapped V |
 | **Mapped EISV** | `eisv_mapper.py` (Python) + `anima_broker/.../eisv_mapper.ex` (live check-in path) | Anima→EISV translation for governance reporting, `V = clamp(E−I)` |
-| **Trajectory EISV** | `eisv/mapping.py` | Feeds the on-device shape classifier; still uses the legacy `V = (1 − presence) × 0.3` internally |
+| **Trajectory EISV** | `eisv/mapping.py` | Feeds the on-device shape classifier from the same canonical mapped EISV; the live server forwards its exact operational snapshot |
 | **Governance EISV** | Mac (unitares repo, `governance_core/dynamics.py`) | Continuous-time ODE over all four variables — advisory, open loop |
 
 The drawing engine has its own EISV state that evolves independently from governance. This separation means the art responds to Anima's own sensor-derived state, not to the governance server's verdict on that state.

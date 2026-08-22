@@ -14,6 +14,7 @@ instantaneous readout (no accumulator/decay) so it does not damp.
 """
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 from .anima import Anima
 from .sensors.base import SensorReadings
@@ -41,6 +42,65 @@ class EISVMetrics:
         return f"EISV(E={self.energy:.2f}, I={self.integrity:.2f}, S={self.entropy:.2f}, V={self.valence:+.2f})"
 
 
+def anima_components_to_eisv(
+    warmth: float,
+    clarity: float,
+    stability: float,
+    presence: float,
+    neural_energy: Optional[float] = None,
+    neural_weight: float = 0.3,
+    physical_weight: float = 0.7,
+) -> EISVMetrics:
+    """Canonical EISV mapping shared by governance and trajectory awareness.
+
+    Presence remains part of the signature because it is a first-class anima
+    dimension, but it is not Valence.  Valence is the signed E-I imbalance.
+    When activation-band data is unavailable, Energy is warmth itself rather
+    than a down-weighted warmth value with an imaginary zero neural signal.
+    """
+    components = {
+        "warmth": warmth,
+        "clarity": clarity,
+        "stability": stability,
+        "presence": presence,
+        "neural_weight": neural_weight,
+        "physical_weight": physical_weight,
+    }
+    if neural_energy is not None:
+        components["neural_energy"] = neural_energy
+    for name, value in components.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be numeric")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{name} must be finite")
+    if neural_weight < 0.0 or physical_weight < 0.0:
+        raise ValueError("EISV weights must be non-negative")
+
+    if neural_energy is None:
+        energy = warmth
+    else:
+        total_weight = neural_weight + physical_weight
+        if total_weight > 0:
+            nw = neural_weight / total_weight
+            pw = physical_weight / total_weight
+        else:
+            nw = 0.0
+            pw = 1.0
+        energy = pw * warmth + nw * neural_energy
+
+    energy = max(0.0, min(1.0, energy))
+    integrity = max(0.0, min(1.0, clarity))
+    entropy = max(0.0, min(1.0, 1.0 - stability))
+    valence = max(-1.0, min(1.0, energy - integrity))
+
+    return EISVMetrics(
+        energy=energy,
+        integrity=integrity,
+        entropy=entropy,
+        valence=valence,
+    )
+
+
 def anima_to_eisv(
     anima: Anima,
     readings: SensorReadings,
@@ -64,61 +124,28 @@ def anima_to_eisv(
                       Should sum to 1.0 with neural_weight
     
     Returns:
-        EISVMetrics with values in [0, 1] range
+        EISVMetrics with E/I/S in [0, 1] and V in [-1, 1]
     """
-    # Normalize weights
-    total_weight = neural_weight + physical_weight
-    if total_weight > 0:
-        nw = neural_weight / total_weight
-        pw = physical_weight / total_weight
-    else:
-        nw = 0.0
-        pw = 1.0
-
-    # Check if readings have neural signals
-    has_neural = (
-        getattr(readings, 'eeg_beta_power', None) is not None
-        or getattr(readings, 'eeg_alpha_power', None) is not None
-    )
-
-    # Energy (E): Warmth + Beta/Gamma power (activation)
-    E = anima.warmth
-    if has_neural:
-        beta = getattr(readings, 'eeg_beta_power', None) or 0
-        gamma = getattr(readings, 'eeg_gamma_power', None) or 0
-        neural_energy = beta * 0.6 + gamma * 0.4
-        E = pw * anima.warmth + nw * neural_energy
-
     # Integrity (I): Clarity only. Alpha is deliberately NOT mixed in:
     # alpha = 1 - beta by construction (computational_neural.py), so feeding
     # alpha into I while beta feeds E puts CPU% on both sides of V = E - I —
     # the exact double-count CLAUDE.md warns neural consumers about. An idle
     # Pi would suppress E and inflate I from the same reading, and V could
     # never be positive at rest. Clarity already carries awareness quality.
-    integrity = anima.clarity
-    
-    # Entropy (S): Inverse of Stability (high stability = low entropy)
-    # Stability incorporates Theta/Delta (deep stability)
-    S = 1.0 - anima.stability
-    
-    # Clamp E/I/S to [0, 1]
-    E = max(0.0, min(1.0, E))
-    integrity = max(0.0, min(1.0, integrity))
-    S = max(0.0, min(1.0, S))
+    beta = getattr(readings, 'eeg_beta_power', None)
+    gamma = getattr(readings, 'eeg_gamma_power', None)
+    neural_energy = None
+    if beta is not None or gamma is not None:
+        neural_energy = (beta or 0.0) * 0.6 + (gamma or 0.0) * 0.4
 
-    # Valence (V): signed E-I imbalance, matching governance Valence semantics
-    # (positive = running hot, E>I; negative = running careful, I>E). Governance V
-    # is a differential accumulator dV/dt = κ(E-I) - δV; this is its instantaneous
-    # readout — no accumulator/decay, so the telemetry does not damp. The older
-    # (1-presence) "Void" mapping only ever reported the positive half and was not
-    # comparable to other agents' V.
-    V = max(-1.0, min(1.0, E - integrity))
-
-    return EISVMetrics(
-        energy=E,
-        integrity=integrity,
-        entropy=S,
-        valence=V,
+    return anima_components_to_eisv(
+        warmth=anima.warmth,
+        clarity=anima.clarity,
+        stability=anima.stability,
+        presence=anima.presence,
+        neural_energy=neural_energy,
+        neural_weight=neural_weight,
+        physical_weight=physical_weight,
     )
 
 

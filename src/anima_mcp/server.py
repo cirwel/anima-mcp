@@ -34,9 +34,9 @@ from .display.screens import ScreenMode
 from .config import get_calibration
 from .learning import get_learner
 from .activity_state import get_activity_manager
-from .agency import get_action_selector, ActionType
 from .primitive_language import get_language_system
 from .eisv import get_trajectory_awareness
+from .eisv_mapper import anima_to_eisv
 from .tool_registry import get_fastmcp, create_server, HAS_FASTMCP
 from .server_context import ServerContext
 from .server_state import (
@@ -53,7 +53,7 @@ from .server_state import (
     EXPRESSION_INTERVAL, UNIFIED_REFLECTION_INTERVAL, SELF_ANSWER_INTERVAL,
     GOAL_SUGGEST_INTERVAL, GOAL_CHECK_INTERVAL, META_LEARNING_INTERVAL,
     ERROR_LOG_THROTTLE, STATUS_LOG_THROTTLE, DISPLAY_LOG_THROTTLE,
-    WARN_LOG_THROTTLE, SCHEMA_LOG_THROTTLE,
+    WARN_LOG_THROTTLE,
     METACOG_SURPRISE_THRESHOLD, is_broker_running as _is_broker_running,
 )
 
@@ -92,7 +92,6 @@ from .loop_phases import (  # noqa: E402,F401
     parse_shm_governance_freshness as _parse_shm_governance_freshness,
     compute_lagged_correlations as _compute_lagged_correlations,
     generate_learned_question as _generate_learned_question,
-    generate_experiential_question as _generate_experiential_question,
     compose_grounded_observation as _compose_grounded_observation,
     lumen_unified_reflect as _lumen_unified_reflect,
     grounded_self_answer as _grounded_self_answer,
@@ -101,6 +100,7 @@ from .loop_phases import (  # noqa: E402,F401
     self_reflect as _self_reflect,
     run_self_model_phase as _run_self_model_phase,
 )
+from .agency_runtime import run_agency_phase as _run_agency_phase  # noqa: E402
 
 logger = logging.getLogger("anima.server")
 
@@ -367,6 +367,7 @@ async def _update_display_loop():
                     clarity=anima.clarity,
                     stability=anima.stability,
                     presence=anima.presence,
+                    eisv=anima_to_eisv(anima, readings).to_dict(),
                 )
                 if _health:
                     _health.heartbeat("trajectory")
@@ -557,125 +558,9 @@ async def _update_display_loop():
             # Skipped on quick_render for responsive screen transitions
             if not _skip_subsystems and loop_count % AGENCY_INTERVAL == 0:
                 try:
-                    action_selector = get_action_selector(db_path=str(_ctx.store.db_path) if _ctx and _ctx.store else "anima.db")
-
-                    current_state = {
-                        "warmth": anima.warmth,
-                        "clarity": anima.clarity,
-                        "stability": anima.stability,
-                        "presence": anima.presence,
-                    }
-
-                    surprise_level = prediction_error.surprise if prediction_error else 0.0
-                    surprise_sources = prediction_error.surprise_sources if prediction_error and hasattr(prediction_error, 'surprise_sources') else []
-
-                    # LEARN from previous action
-                    # Use actual learned preferences for reward signal (not crude average)
-                    if _ctx.last_action is not None and _ctx.last_state_before is not None:
-                        from .preferences import get_preference_system
-                        pref_sys = get_preference_system()
-                        sat_before = pref_sys.get_overall_satisfaction(_ctx.last_state_before)
-                        sat_after = pref_sys.get_overall_satisfaction(current_state)
-                        action_selector.record_outcome(
-                            action=_ctx.last_action,
-                            state_before=_ctx.last_state_before,
-                            state_after=current_state,
-                            preference_satisfaction_before=sat_before,
-                            preference_satisfaction_after=sat_after,
-                            surprise_after=surprise_level,
-                        )
-
-                    # Build conflict rates from tension tracker for agency discount
-                    _conflict_rates = None
-                    if _ctx.tension_tracker:
-                        _conflict_rates = {}
-                        for _atype in ActionType:
-                            _rate = _ctx.tension_tracker.get_conflict_rate(_atype.value)
-                            if _rate > 0:
-                                _conflict_rates[_atype.value] = _rate
-
-                    # SELECT action
-                    action = action_selector.select_action(
-                        current_state=current_state,
-                        surprise_level=surprise_level,
-                        surprise_sources=surprise_sources,
-                        can_speak=False,
-                        conflict_rates=_conflict_rates if _conflict_rates else None,
+                    _run_agency_phase(
+                        _ctx, anima, readings, prediction_error, loop_count,
                     )
-
-                    # EXECUTE action
-                    if action.action_type == ActionType.ASK_QUESTION:
-                        from .messages import add_question, get_recent_questions
-                        import random
-
-                        # Prefer an experience-grounded question when something
-                        # genuinely just shifted — so Lumen wonders about the
-                        # live world and this moment, not only its own stored
-                        # self-model. Fall back to learned (self-model) questions
-                        # on quiet ticks, then to templates.
-                        question = None
-                        if surprise_sources and surprise_level > 0.2:
-                            question = _generate_experiential_question(
-                                surprise_sources, surprise_level
-                            )
-                        if not question:
-                            question = _generate_learned_question()
-
-                        if not question and action.motivation:
-                            motivation = action.motivation.lower().replace('curious about ', '')
-
-                            # Fallback: template-based questions
-                            fallback_templates = [
-                                "what would help me feel more grounded?",
-                                "what does this moment have that the last one didn't?",
-                                "what am I feeling right now, and why?",
-                                "what connects all these changes?",
-                            ]
-                            if motivation.strip():
-                                fallback_templates.insert(0, f"why do I notice {motivation} right now?")
-
-                            recent = get_recent_questions(hours=24)
-                            recent_texts = {q.get("text", "").lower() for q in recent}
-                            available = [q for q in fallback_templates if q.lower() not in recent_texts]
-                            if available:
-                                question = random.choice(available)
-
-                        if question:
-                            result = add_question(question, author="lumen", context=f"agency: {action.action_type.value}")
-                            if result:
-                                print(f"[Agency] Asked: {question}", file=sys.stderr, flush=True)
-                        else:
-                            print("[Agency] Skipped (no questions available)", file=sys.stderr, flush=True)
-
-                    elif action.action_type == ActionType.FOCUS_ATTENTION:
-                        sensor = action.parameters.get("sensor")
-                        if sensor:
-                            action_selector.set_attention_focus(sensor)
-                            print(f"[Agency] Focusing attention on: {sensor}", file=sys.stderr, flush=True)
-
-                    elif action.action_type == ActionType.ADJUST_SENSITIVITY:
-                        direction = action.parameters.get("direction", "increase")
-                        action_selector.adjust_sensitivity(direction)
-                        print(f"[Agency] Adjusted sensitivity: {direction}", file=sys.stderr, flush=True)
-
-                    elif action.action_type == ActionType.LED_BRIGHTNESS:
-                        direction = action.parameters.get("direction")
-                        if direction and _ctx.leds and _ctx.leds.is_available():
-                            current_brightness = getattr(_ctx.leds, '_brightness', 0.1)
-                            if direction == "increase":
-                                new_brightness = min(0.3, current_brightness + 0.05)
-                            else:
-                                new_brightness = max(0.02, current_brightness - 0.05)
-                            _ctx.leds.set_brightness(new_brightness)
-                            print(f"[Agency] LED brightness: {current_brightness:.2f} → {new_brightness:.2f} ({direction})", file=sys.stderr, flush=True)
-
-                    if loop_count % SCHEMA_LOG_THROTTLE == 0:
-                        stats = action_selector.get_action_stats()
-                        print(f"[Agency] Stats: {stats.get('action_counts', {})} explore_rate={action_selector._exploration_rate:.2f}", file=sys.stderr, flush=True)
-
-                    _ctx.last_action = action
-                    _ctx.last_state_before = current_state.copy()
-
                 except Exception as e:
                     if loop_count % STATUS_LOG_THROTTLE == 1:
                         print(f"[Agency] Error (non-fatal): {e}", file=sys.stderr, flush=True)

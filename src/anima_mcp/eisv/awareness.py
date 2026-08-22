@@ -8,6 +8,7 @@ suggested tokens for the primitive language system.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from collections import deque
@@ -158,6 +159,7 @@ class TrajectoryAwareness:
         clarity: float,
         stability: float,
         presence: float,
+        eisv: Optional[Dict[str, float]] = None,
     ) -> None:
         """Record an anima state snapshot into the trajectory buffer.
 
@@ -168,9 +170,20 @@ class TrajectoryAwareness:
         if now - self._last_record_time < self.RECORD_INTERVAL:
             return
 
-        eisv = anima_to_eisv(warmth, clarity, stability, presence)
-        eisv["t"] = now
-        self._buffer.append(eisv)
+        snapshot = dict(eisv) if eisv is not None else anima_to_eisv(
+            warmth, clarity, stability, presence,
+        )
+        for dimension in ("E", "I", "S", "V"):
+            value = snapshot.get(dimension)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"EISV {dimension} must be numeric")
+            value = float(value)
+            lower = -1.0 if dimension == "V" else 0.0
+            if not math.isfinite(value) or not lower <= value <= 1.0:
+                raise ValueError(f"EISV {dimension} outside valid range")
+            snapshot[dimension] = value
+        snapshot["t"] = now
+        self._buffer.append(snapshot)
         self._last_record_time = now
 
     def bootstrap_from_history(self, state_records: List[Dict]) -> int:
