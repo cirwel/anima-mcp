@@ -12,6 +12,7 @@ UNITARES gets significant insights (shared, persistent, collective).
 import os
 import asyncio
 import json
+import sys
 from typing import Optional, Dict, Any
 from datetime import datetime
 
@@ -31,37 +32,47 @@ async def share_insight_to_unitares(
     discovery_type: str = "insight",
     tags: Optional[list] = None,
     identity: Optional[Any] = None,
+    client_session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Share a Lumen insight to the UNITARES knowledge graph.
-    
+
     Args:
         insight: The insight text (e.g., "In evenings with warm temperature, I feel content")
         discovery_type: Type of discovery (insight, observation, pattern, note)
         tags: Optional tags for categorization
         identity: Optional CreatureIdentity for agent binding
-    
+        client_session_id: Lumen's governance binding key (the bridge's
+            ``client_session_id()``). Required — UNITARES writes need a bound
+            caller, and without one a store is either refused or recorded
+            under an anonymous writer id, so an unattributed share is skipped.
+
     Returns:
         Result dict if successful, None if skipped or failed
     """
     import time
     global _shared_insights, _last_share_time
-    
+
     # Get UNITARES URL
     unitares_url = os.environ.get("UNITARES_URL")
     if not unitares_url:
         return None
-    
+
     # Deduplication: Don't share the same insight twice
     insight_hash = hash(insight)
     if insight_hash in _shared_insights:
         return None
-    
+
     # Rate limiting: Don't flood UNITARES
     now = time.time()
     if now - _last_share_time < MIN_SHARE_INTERVAL:
         return None
-    
+
+    if not client_session_id:
+        print("[UNITARES Knowledge] Share skipped: no client_session_id to attribute it to",
+              file=sys.stderr, flush=True)
+        return None
+
     try:
         import aiohttp
         
@@ -80,18 +91,23 @@ async def share_insight_to_unitares(
         if tags:
             final_tags.extend(tags)
         
-        # Build MCP request to store_knowledge_graph
+        # store_knowledge_graph is a pre-consolidation name that /mcp/ does
+        # not resolve ("Unknown tool", isError) — every share was refused.
+        # `details` is the canonical field; `content` only reached it through
+        # a parameter alias.
         mcp_request = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "store_knowledge_graph",
+                "name": "knowledge",
                 "arguments": {
+                    "action": "store",
+                    "client_session_id": client_session_id,
                     "summary": insight,
                     "discovery_type": discovery_type,
                     "tags": final_tags,
-                    "content": json.dumps({
+                    "details": json.dumps({
                         "source": "lumen_autonomous",
                         "timestamp": datetime.now().isoformat(),
                     })
@@ -128,37 +144,30 @@ async def share_insight_to_unitares(
             )
             _session_loop = current_loop
 
-        async with _http_session.post(mcp_url, json=mcp_request, headers=headers) as response:
-            if response.status == 200:
-                # Parse response
-                content_type = response.headers.get("Content-Type", "")
-                if "text/event-stream" in content_type:
-                    text = await response.text()
-                    for line in text.split("\n"):
-                        if line.startswith("data: "):
-                            try:
-                                result = json.loads(line[6:])
-                                if "result" in result:
-                                    # Success - track this insight
-                                    _shared_insights.add(insight_hash)
-                                    _last_share_time = now
-                                    # Keep set bounded
-                                    if len(_shared_insights) > 1000:
-                                        _shared_insights.clear()
-                                    return result["result"]
-                            except json.JSONDecodeError:
-                                continue
-                else:
-                    result = await response.json()
-                    if "result" in result:
-                        _shared_insights.add(insight_hash)
-                        _last_share_time = now
-                        if len(_shared_insights) > 1000:
-                            _shared_insights.clear()
-                        return result["result"]
+        from .unitares_bridge import UnitaresBridge, mcp_tool_refusal
 
-        return None
-        
+        async with _http_session.post(mcp_url, json=mcp_request, headers=headers) as response:
+            if response.status != 200:
+                print(f"[UNITARES Knowledge] Share failed: HTTP {response.status}",
+                      file=sys.stderr, flush=True)
+                return None
+            content_type = response.headers.get("Content-Type", "")
+            result = UnitaresBridge._parse_mcp_response(await response.text(), content_type)
+
+        # A refusal is not a share: leave the insight unrecorded so it can be
+        # offered again, and say why instead of returning a refusal as a result.
+        refusal = mcp_tool_refusal(result)
+        if refusal is not None:
+            print(f"[UNITARES Knowledge] Share refused: {refusal}", file=sys.stderr, flush=True)
+            return None
+
+        _shared_insights.add(insight_hash)
+        _last_share_time = now
+        # Keep set bounded
+        if len(_shared_insights) > 1000:
+            _shared_insights.clear()
+        return result["result"]
+
     except ImportError:
         # aiohttp not available
         return None
@@ -166,7 +175,6 @@ async def share_insight_to_unitares(
         return None
     except Exception as e:
         # Log but don't crash - this is optional
-        import sys
         print(f"[UNITARES Knowledge] Share error (non-fatal): {e}", file=sys.stderr, flush=True)
         return None
 
@@ -189,10 +197,11 @@ def share_insight_sync(
     discovery_type: str = "insight",
     tags: Optional[list] = None,
     identity: Optional[Any] = None,
+    client_session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Synchronous wrapper for sharing insights.
-    
+
     Safe to call from sync code - creates event loop if needed.
     """
     try:
@@ -200,7 +209,9 @@ def share_insight_sync(
         try:
             loop = asyncio.get_running_loop()
             # Already in async context - schedule as task
-            asyncio.create_task(share_insight_to_unitares(insight, discovery_type, tags, identity))
+            asyncio.create_task(share_insight_to_unitares(
+                insight, discovery_type, tags, identity, client_session_id=client_session_id
+            ))
             return None  # Can't wait for result in this case
         except RuntimeError:
             # No running loop - create one
@@ -208,7 +219,10 @@ def share_insight_sync(
             try:
                 return loop.run_until_complete(
                     asyncio.wait_for(
-                        share_insight_to_unitares(insight, discovery_type, tags, identity),
+                        share_insight_to_unitares(
+                            insight, discovery_type, tags, identity,
+                            client_session_id=client_session_id,
+                        ),
                         timeout=5.0
                     )
                 )

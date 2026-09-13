@@ -13,6 +13,7 @@ from anima_mcp.unitares_bridge import (
     UnitaresBridge,
     _extract_governance_eisv,
     check_governance,
+    mcp_tool_refusal,
 )
 from anima_mcp.anima import Anima
 from anima_mcp.sensors.base import SensorReadings
@@ -519,29 +520,123 @@ async def test_call_unitares_raises_on_http_error():
             await bridge._call_unitares(anima, readings, eisv)
 
 
-@pytest.mark.asyncio
-async def test_sync_identity_metadata_success():
-    """Identity metadata sync returns True for successful MCP result."""
-    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
-    bridge.set_session_id("sess-1")
+def _tool_result(payload=None, *, is_error=False, text=None):
+    """A JSON-RPC tools/call response body shaped like UNITARES /mcp/ output."""
+    result = {"content": [{"type": "text", "text": text if text is not None else json.dumps(payload)}]}
+    if is_error:
+        result["isError"] = True
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+
+
+def _sync_identity():
     identity = MagicMock()
-    identity.born_at = datetime.now()
-    identity.total_awakenings = 2
+    identity.born_at = datetime(2026, 1, 11, 0, 19, 14)
+    identity.total_awakenings = 82
     identity.total_alive_seconds = 1200.0
     identity.alive_ratio.return_value = 0.3
     identity.name_history = ["Anima", "Lumen"]
     identity.current_awakening_at = datetime.now()
     identity.name = "Lumen"
     identity.creature_id = "creature-abcdef"
+    return identity
 
+
+async def _sync_identity_metadata(body):
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    bridge.set_session_id("sess-1")
     mock_session = AsyncMock()
-    mock_session.post = MagicMock(
-        return_value=_mock_http_response(body='{"result": {"content": [{"type":"text","text":"ok"}]}}')
+    mock_session.post = MagicMock(return_value=_mock_http_response(body=body))
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        ok = await bridge.sync_identity_metadata(_sync_identity())
+    return ok, bridge, mock_session.post.call_args.kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_sync_identity_metadata_success():
+    """Identity metadata sync returns True for successful MCP result."""
+    ok, _, _ = await _sync_identity_metadata(
+        _tool_result({"success": True, "message": "Agent metadata updated", "agent_id": "69a1a4f7"})
+    )
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_sync_identity_metadata_calls_canonical_agent_update():
+    """The call uses a name /mcp/ registers, bound by the bridge's session key."""
+    _, bridge, posted = await _sync_identity_metadata(_tool_result({"success": True}))
+
+    assert posted["params"]["name"] == "agent"
+    args = posted["params"]["arguments"]
+    assert args["action"] == "update"
+    assert args["client_session_id"] == bridge.client_session_id()
+    assert args["notes"] == (
+        "Lumen identity: creature_id=creature-abcdef, born=2026-01-11T00:19:14, awakenings=82"
     )
 
-    with patch.object(bridge, "_get_session", return_value=mock_session):
-        ok = await bridge.sync_identity_metadata(identity)
-    assert ok is True
+
+@pytest.mark.asyncio
+async def test_sync_identity_metadata_never_sends_tags():
+    """tags REPLACES the server-side list, so sending a subset strips the rest.
+
+    Lumen's row holds server-granted tags (pinned, pioneer, persistent) that
+    gate archival immunity and delete refusal. purpose/preferences are not in
+    the /mcp/ schema and would be dropped silently, so they are not sent either.
+    """
+    _, _, posted = await _sync_identity_metadata(_tool_result({"success": True}))
+
+    args = posted["params"]["arguments"]
+    assert "tags" not in args
+    assert "purpose" not in args
+    assert "preferences" not in args
+
+
+@pytest.mark.asyncio
+async def test_sync_identity_metadata_unknown_tool_is_failure():
+    """The exact 2026-09-13 /mcp/ refusal for a pre-consolidation name."""
+    ok, _, _ = await _sync_identity_metadata(
+        _tool_result(text="Unknown tool: update_agent_metadata", is_error=True)
+    )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_sync_identity_metadata_handler_refusal_is_failure():
+    """Handler refusals are normal results whose text payload says success: false."""
+    ok, _, _ = await _sync_identity_metadata(
+        _tool_result({"success": False, "error": "Write operations require session binding"})
+    )
+    assert ok is False
+
+
+class TestMcpToolRefusal:
+    def _parsed(self, body):
+        return json.loads(body)
+
+    def test_success_payload_is_not_a_refusal(self):
+        assert mcp_tool_refusal(self._parsed(_tool_result({"success": True, "discovery_id": "d1"}))) is None
+
+    def test_non_json_text_is_not_a_refusal(self):
+        assert mcp_tool_refusal(self._parsed(_tool_result(text="ok"))) is None
+
+    def test_is_error_carries_the_server_text(self):
+        body = _tool_result(text="Unknown tool: store_knowledge_graph", is_error=True)
+        assert mcp_tool_refusal(self._parsed(body)) == "Unknown tool: store_knowledge_graph"
+
+    def test_success_false_carries_the_error(self):
+        body = _tool_result({"success": False, "error": "Agent not found", "error_code": "NOT_FOUND"})
+        assert mcp_tool_refusal(self._parsed(body)) == "Agent not found"
+
+    def test_typed_identity_refusal_has_no_success_key_and_still_refuses(self):
+        body = _tool_result({"status": "identity_required", "hint": "call identity(resume=true)"})
+        assert mcp_tool_refusal(self._parsed(body)) == "call identity(resume=true)"
+
+    def test_jsonrpc_error(self):
+        response = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "Invalid params"}}
+        assert mcp_tool_refusal(response) == "Invalid params"
+
+    @pytest.mark.parametrize("response", [None, {}, {"result": None}, "not a dict"])
+    def test_missing_response_or_result(self, response):
+        assert mcp_tool_refusal(response) is not None
 
 
 @pytest.mark.asyncio

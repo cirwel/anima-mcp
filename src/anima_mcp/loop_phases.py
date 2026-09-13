@@ -648,11 +648,16 @@ async def lumen_unified_reflect(anima, readings, identity, prediction_error):
             logger.debug("[Lumen/Unified] Said: %s", reflection)
             # Share significant insights to UNITARES
             try:
+                from .accessors import _get_server_bridge
                 from .unitares_knowledge import should_share_insight, share_insight_sync
                 if should_share_insight(reflection):
+                    # Same binding key the bridge presents on its own writes,
+                    # so the discovery is attributed to Lumen.
+                    bridge = _get_server_bridge()
                     share_insight_sync(
                         reflection, discovery_type="insight",
                         tags=["unified-reflection"], identity=identity,
+                        client_session_id=bridge.client_session_id() if bridge else None,
                     )
             except Exception as e:
                 logger.debug("[Lumen/Unified] Insight share error: %s", e)
