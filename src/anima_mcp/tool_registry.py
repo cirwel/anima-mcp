@@ -763,7 +763,7 @@ TOOLS = [
     ),
     Tool(
         name="query",
-        description="Query Lumen's knowledge - semantic search over Q&A insights, self-knowledge, and growth. Use for pi(action='query').",
+        description="Query Lumen's knowledge - semantic search over Q&A insights, self-knowledge, and growth.",
         inputSchema={
             "type": "object",
             "properties": {
