@@ -149,6 +149,47 @@ class TestServerGovernanceFallback:
 
 
 # ---------------------------------------------------------------------------
+# lumen_unified_reflect — insight share to UNITARES
+# ---------------------------------------------------------------------------
+
+class TestUnifiedReflectInsightShare:
+    SHAREABLE = "I noticed a pattern: I feel calmer when the room dims"
+
+    async def _reflect(self, bridge):
+        from anima_mcp.loop_phases import lumen_unified_reflect
+
+        share = MagicMock(return_value=None)
+        with patch("anima_mcp.loop_phases.compose_grounded_observation", return_value=self.SHAREABLE), \
+             patch("anima_mcp.messages.add_observation", return_value=True), \
+             patch("anima_mcp.messages.get_messages_for_lumen", return_value=[]), \
+             patch("anima_mcp.messages.get_unanswered_questions", return_value=[]), \
+             patch("anima_mcp.accessors._get_server_bridge", return_value=bridge), \
+             patch("anima_mcp.unitares_knowledge.share_insight_sync", share):
+            await lumen_unified_reflect(make_anima(), make_readings(), make_identity(), None)
+        return share
+
+    @pytest.mark.asyncio
+    async def test_share_carries_the_bridge_binding_key(self):
+        """A shared insight is attributed with the key the bridge writes under."""
+        bridge = MagicMock()
+        bridge.client_session_id.return_value = "agent-69a1a4f7-a30"
+
+        share = await self._reflect(bridge)
+
+        share.assert_called_once()
+        assert share.call_args.kwargs["client_session_id"] == "agent-69a1a4f7-a30"
+        assert share.call_args.kwargs["tags"] == ["unified-reflection"]
+
+    @pytest.mark.asyncio
+    async def test_share_without_bridge_passes_no_binding_key(self):
+        """No bridge means no key — the share layer then declines to write."""
+        share = await self._reflect(None)
+
+        share.assert_called_once()
+        assert share.call_args.kwargs["client_session_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # parse_shm_governance_freshness
 # ---------------------------------------------------------------------------
 

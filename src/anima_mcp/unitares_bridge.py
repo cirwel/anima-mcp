@@ -139,6 +139,63 @@ class IdentityRefusedError(Exception):
     """
 
 
+def _is_identity_refusal(payload: Dict[str, Any]) -> bool:
+    """True when a tool payload is UNITARES's typed identity refusal (#97)."""
+    return (
+        payload.get("status") == "identity_required"
+        or payload.get("error_code") == "SESSION_ERROR"
+        or payload.get("error_category") == "auth_error"
+    )
+
+
+def mcp_tool_refusal(response: Any) -> Optional[str]:
+    """Return why a JSON-RPC ``tools/call`` response is not a success, or None.
+
+    ``"result" in response`` is not a success test, and on ``/mcp/`` it counts
+    every refusal as success. There are three refusal layers:
+
+    - a JSON-RPC ``error`` object;
+    - ``result.isError`` — the SDK's layer: an unknown tool name, or arguments
+      that fail schema validation. A pre-consolidation name such as
+      ``store_knowledge_graph`` lands here, because ``/mcp/`` does not resolve
+      the alias table that REST and stdio do (measured 2026-09-13);
+    - a normal result whose text payload says so — ``{"success": false}`` from
+      a handler (binding, ownership, not-found), or the typed identity refusal,
+      which is success-shaped and carries no ``success`` key at all.
+    """
+    if not isinstance(response, dict):
+        return "no response"
+    if "error" in response:
+        error = response["error"]
+        message = error.get("message") if isinstance(error, dict) else None
+        return str(message or error)
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return "no result"
+    content = result.get("content")
+    first = content[0] if isinstance(content, list) and content else None
+    text = first.get("text") if isinstance(first, dict) else None
+    if result.get("isError"):
+        return text or "isError"
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("success") is False or _is_identity_refusal(payload):
+        return str(
+            payload.get("error")
+            or payload.get("hint")
+            or payload.get("error_code")
+            or payload.get("status")
+            or "refused"
+        )
+    return None
+
+
 class UnitaresBridge:
     """
     Connect anima creature to UNITARES governance.
@@ -436,6 +493,10 @@ class UnitaresBridge:
         if anchored:
             return anchored
         return f"lumen-{self._agent_id}" if self._agent_id else "lumen-anima"
+
+    def client_session_id(self) -> str:
+        """The binding key this bridge presents on writes, for callers outside it."""
+        return self._client_session_id()
 
     def _load_anchor(self) -> Optional[Dict[str, Any]]:
         try:
@@ -902,11 +963,7 @@ class UnitaresBridge:
                         # without this check it parses as a silent default
                         # "proceed" — exactly how the 2026-06-30→07-02 outage
                         # stayed invisible bridge-side (anima-mcp #97).
-                        if (
-                            governance_result.get("status") == "identity_required"
-                            or governance_result.get("error_code") == "SESSION_ERROR"
-                            or governance_result.get("error_category") == "auth_error"
-                        ):
+                        if _is_identity_refusal(governance_result):
                             raise IdentityRefusedError(
                                 f"UNITARES refused identity for {self._client_session_id()}: "
                                 f"{governance_result.get('hint') or governance_result.get('error') or 'session binding unresolved'}"
@@ -1114,7 +1171,7 @@ class UnitaresBridge:
         
         try:
             # Call UNITARES identity tool to set label
-            # Note: update_agent_metadata doesn't set label directly
+            # Note: agent(action="update") doesn't set label directly
             # We need to use identity(name=...) tool instead
             mcp_request = {
                 "jsonrpc": "2.0",
@@ -1152,49 +1209,50 @@ class UnitaresBridge:
     
     async def sync_identity_metadata(self, identity: 'CreatureIdentity') -> bool:
         """
-        Sync Lumen's identity metadata to UNITARES.
-        
-        Includes birth date, runtime metrics, and name history.
-        Called on first check-in to ensure UNITARES has full context.
-        
+        Sync Lumen's identity summary into its UNITARES agent notes.
+
+        Called on first check-in so the governance record carries birth date
+        and awakening count.
+
+        Writes ``notes`` only. On ``/mcp/``, ``agent(action="update")`` accepts
+        just ``tags`` and ``notes``: the SDK validates arguments against the
+        advertised schema and silently drops ``purpose`` and ``preferences``
+        before the handler sees them. ``tags`` is deliberately not sent — the
+        handler REPLACES the tag list, and Lumen's row holds server-granted
+        tags (``pinned``, ``pioneer``, ``persistent``) that gate archival
+        immunity and delete refusal. The old payload listed five tags, so the
+        first sync to actually land would have stripped the rest.
+
         Args:
             identity: CreatureIdentity object
-            
+
         Returns:
             True if synced successfully, False otherwise
         """
         if not self._url or not self._agent_id:
             return False
-        
+
         try:
-            # Build metadata payload
-            metadata = {
-                "born_at": identity.born_at.isoformat() if hasattr(identity, 'born_at') else None,
-                "total_awakenings": identity.total_awakenings if hasattr(identity, 'total_awakenings') else 0,
-                "total_alive_seconds": identity.total_alive_seconds if hasattr(identity, 'total_alive_seconds') else 0.0,
-                "alive_ratio": identity.alive_ratio() if hasattr(identity, 'alive_ratio') else 0.0,
-                "name_history": identity.name_history if hasattr(identity, 'name_history') else [],
-                "current_awakening_at": identity.current_awakening_at.isoformat() if hasattr(identity, 'current_awakening_at') and identity.current_awakening_at else None,
-            }
+            born_at = identity.born_at.isoformat() if hasattr(identity, 'born_at') else None
+            awakenings = identity.total_awakenings if hasattr(identity, 'total_awakenings') else 0
 
             # Get creature name for labeling
             creature_name = identity.name if hasattr(identity, 'name') and identity.name else "Anima"
             creature_id = identity.creature_id if hasattr(identity, 'creature_id') else "unknown"
 
-            # Call UNITARES update_agent_metadata tool - label ourselves!
             mcp_request = {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
                 "params": {
-                    "name": "update_agent_metadata",
+                    # update_agent_metadata is a pre-consolidation name that
+                    # /mcp/ does not resolve ("Unknown tool", isError).
+                    "name": "agent",
                     "arguments": {
+                        "action": "update",
                         # client_session_id ensures stable identity binding across restarts
                         "client_session_id": self._client_session_id(),
-                        "purpose": f"{creature_name} - embodied digital creature (creature_id: {creature_id[:8]}...)",
-                        "tags": [creature_name.lower(), "anima", "creature", "embodied", "autonomous"],
-                        "preferences": metadata,
-                        "notes": f"{creature_name} identity: creature_id={creature_id}, born={metadata.get('born_at')}, awakenings={metadata.get('total_awakenings')}"
+                        "notes": f"{creature_name} identity: creature_id={creature_id}, born={born_at}, awakenings={awakenings}"
                     }
                 }
             }
@@ -1218,12 +1276,11 @@ class UnitaresBridge:
                     text = await response.text()
                     result = self._parse_mcp_response(text, content_type)
 
-                    if result and "result" in result and "error" not in result:
+                    refusal = mcp_tool_refusal(result)
+                    if refusal is None:
                         logger.info("Identity sync SUCCESS - %s labeled in UNITARES", creature_name)
                         return True
-                    else:
-                        error = result.get('error', 'unknown') if result else 'no response'
-                        logger.warning("Identity sync failed: %s", error)
+                    logger.warning("Identity sync failed: %s", refusal)
                 else:
                     logger.warning("Identity sync HTTP error: %d", response.status)
             return False

@@ -9,6 +9,7 @@ These catch tool definition drift before it reaches production:
 """
 
 
+import pytest
 
 from anima_mcp.tool_registry import (
     TOOLS,
@@ -176,38 +177,54 @@ def test_all_handlers_are_async():
 # Governance bridge tool names
 # ============================================================
 
-def test_governance_bridge_tool_names_are_valid():
-    """Tool names used by unitares_bridge.py must be documented constants."""
-    # These are the tool names called on the UNITARES governance MCP server.
-    # If any of these change in governance-mcp, the bridge will silently fail.
-    expected_tools = {
-        "sync_state",  # advertised alias of process_agent_update (unitares c737b24c)
-        "identity",
-        "update_agent_metadata",
-        "record_result",  # advertised alias of outcome_event (unitares c737b24c)
-    }
-
-    # Verify they appear as string literals in unitares_bridge.py
+def _governance_tool_names(module_file: str) -> set:
+    """String literals used as a ``"name"`` dict value in an anima_mcp module."""
     import ast
     from pathlib import Path
 
-    bridge_path = Path(__file__).parent.parent / "src" / "anima_mcp" / "unitares_bridge.py"
-    source = bridge_path.read_text()
-    tree = ast.parse(source)
-
-    # Collect all string literals that appear as values for "name" keys in dicts
-    found_tool_names = set()
-    for node in ast.walk(tree):
+    path = Path(__file__).parent.parent / "src" / "anima_mcp" / module_file
+    found = set()
+    for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values):
                 if (isinstance(key, ast.Constant) and key.value == "name"
                         and isinstance(value, ast.Constant) and isinstance(value.value, str)):
-                    found_tool_names.add(value.value)
+                    found.add(value.value)
+    return found
 
-    missing = expected_tools - found_tool_names
-    assert not missing, (
-        f"Expected governance tool names not found in unitares_bridge.py: {missing}"
+
+# Names UNITARES's /mcp/ endpoint advertises in tools/list. /mcp/ does NOT
+# resolve the alias table (unitares src/mcp_handlers/tool_stability.py) that
+# REST /v1/tools/call and stdio do — an unadvertised name there comes back as
+# {"isError": true, "text": "Unknown tool: ..."}, and a caller that only checks
+# for a "result" key reads that as success. Measured 2026-09-13: both
+# update_agent_metadata and store_knowledge_graph had been refused this way.
+# Before adding a name here, confirm it with tools/list against /mcp/.
+GOVERNANCE_CALLS = {
+    "unitares_bridge.py": {
+        "sync_state",  # advertised alias of process_agent_update (unitares c737b24c)
+        "identity",
+        "agent",  # action="update"; was update_agent_metadata
+        "record_result",  # advertised alias of outcome_event (unitares c737b24c)
+    },
+    "unitares_knowledge.py": {
+        "knowledge",  # action="store"; was store_knowledge_graph
+    },
+}
+
+PRE_CONSOLIDATION_NAMES = {"update_agent_metadata", "store_knowledge_graph"}
+
+
+@pytest.mark.parametrize("module_file", sorted(GOVERNANCE_CALLS))
+def test_governance_bridge_tool_names_are_valid(module_file):
+    """Every UNITARES tool name a module calls is one /mcp/ advertises."""
+    found = _governance_tool_names(module_file)
+
+    assert found == GOVERNANCE_CALLS[module_file], (
+        f"{module_file} calls {sorted(found)}; expected {sorted(GOVERNANCE_CALLS[module_file])}. "
+        "A new name must be confirmed against /mcp/ tools/list first."
     )
+    assert not found & PRE_CONSOLIDATION_NAMES
 
 
 # ============================================================
