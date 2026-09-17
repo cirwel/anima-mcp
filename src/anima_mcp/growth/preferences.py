@@ -409,7 +409,8 @@ class PreferencesMixin:
                 grow. Recognised keys: piece_uid, era, mark_count,
                 duration_seconds, coverage_target, intention, curiosity,
                 engagement, fatigue, coherence, satisfaction, occupied_cells,
-                grid_entropy. Absent keys persist as NULL rather than a
+                grid_entropy, disposition. Absent keys persist as NULL rather
+                than a
                 plausible default: an unrecorded quantity must read as unknown,
                 not as a healthy-looking number.
 
@@ -481,9 +482,10 @@ class PreferencesMixin:
              external_light_lux,
              piece_uid, completion_reason, era, mark_count, duration_seconds,
              coverage_target, intention, curiosity, engagement, fatigue,
-             coherence, satisfaction, occupied_cells, grid_entropy)
+             coherence, satisfaction, occupied_cells, grid_entropy,
+             disposition)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now.isoformat(), pixel_count, phase,
             anima_state.get("warmth"), anima_state.get("clarity"),
@@ -498,6 +500,7 @@ class PreferencesMixin:
             p.get("curiosity"), p.get("engagement"), p.get("fatigue"),
             p.get("coherence"), p.get("satisfaction"),
             p.get("occupied_cells"), p.get("grid_entropy"),
+            p.get("disposition"),
         ))
         conn.commit()
 

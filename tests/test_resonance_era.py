@@ -173,6 +173,13 @@ class TestGenerateColor:
     def test_field_warmth_bias(self):
         era = ResonanceEra()
         state = era.create_state()
+        # Isolate the field bias from the piece's own shimmer. `hue_spread` is
+        # per-MARK jitter, so with it live these two single samples differ for
+        # two reasons, and the jitter can cancel the field's -10 degrees often
+        # enough to matter: measured 13 identical-hue collisions in 2000 seeds
+        # (0.65%), which is a flake, not a pass. The bias under test is
+        # deterministic, so the test pins it deterministically.
+        state.hue_spread = 0.0
         color_cold, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
         h_cold = colorsys.rgb_to_hsv(color_cold[0]/255, color_cold[1]/255, color_cold[2]/255)[0] * 360
         state.field[state._focus_cx, state._focus_cy] = 5.0

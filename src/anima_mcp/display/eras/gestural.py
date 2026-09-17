@@ -11,9 +11,14 @@ Granular mark-making: small deliberate acts that accumulate into forms.
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from ..art_era import EraState
+from ..art_era import (
+    EraState,
+    draw_distinct,
+    hue_distance,
+    weighted_choice,
+)
 
 
 @dataclass
@@ -24,6 +29,17 @@ class GesturalState(EraState):
     direction_locked: bool = False
     direction_lock_remaining: int = 0
     direction_commitment: float = 0.0  # Smooth signal: ramps during locks, decays after
+
+    # --- Per-piece disposition (drawn once in create_state) -----------------
+    # Before 2026-09-17 create_state() was a bare `GesturalState()`: every
+    # piece began identical, and all variation was per-mark. Hundreds of
+    # independent local draws converge on their own mean, so every gestural
+    # piece came out the same texture — all five primitives in equal measure,
+    # over a 180-degree hue window sampled afresh every mark.
+    hue_offset: float = 0.0    # this piece's palette centre, degrees off warmth
+    hue_span: float = 180.0    # width of the hue window (was the hardcoded 180)
+    lead_gesture: str = ""     # the primitive this piece leans on
+    lead_weight: float = 1.0   # how hard it leans (1.0 = no lean, the old behavior)
 
     def intentionality(self) -> float:
         """Proprioceptive I_signal for EISV.
@@ -39,6 +55,21 @@ class GesturalState(EraState):
     def gestures(self) -> List[str]:
         return ["dot", "stroke", "curve", "cluster", "drag"]
 
+    def affinity(self) -> Dict[str, float]:
+        """Per-gesture weights for this piece. Unmentioned gestures stay 1.0,
+        so a lean never removes a primitive from the piece's vocabulary."""
+        if not self.lead_gesture:
+            return {}
+        return {self.lead_gesture: self.lead_weight}
+
+    def disposition(self) -> Dict[str, Any]:
+        return {
+            "hue_offset": round(self.hue_offset, 1),
+            "hue_span": round(self.hue_span, 1),
+            "lead": self.lead_gesture,
+            "lead_weight": round(self.lead_weight, 2),
+        }
+
 
 class GesturalEra:
     """Gestural era — granular mark-making with 5 micro-primitives."""
@@ -46,8 +77,38 @@ class GesturalEra:
     name = "gestural"
     description = "Granular mark-making: dots, strokes, curves, clusters, drags"
 
-    def create_state(self) -> GesturalState:
-        return GesturalState()
+    def create_state(self, recent: Sequence[Mapping] = ()) -> GesturalState:
+        """Draw this piece's global character, unlike the pieces just made.
+
+        The lead gesture is chosen uniformly, so across the corpus the mean
+        pixels-per-mark is unchanged (a drag-led piece is denser, a dot-led one
+        sparser, and they are equally likely) — only the spread between pieces
+        grows. That is deliberate: the derivations read ``drawing_records``,
+        and a change that shifted the corpus mean would move the ground they
+        stand on. ``tests/test_era_disposition.py`` measures it.
+        """
+        options = GesturalState().gestures()
+
+        def make() -> dict:
+            return {
+                "hue_offset": random.uniform(0.0, 360.0),
+                "hue_span": random.uniform(30.0, 220.0),
+                "lead": random.choice(options),
+                "lead_weight": random.uniform(2.0, 3.2),
+            }
+
+        def distance(candidate: dict, prior: Mapping) -> float:
+            hue = hue_distance(candidate["hue_offset"], prior.get("hue_offset", 0.0))
+            lead = 0.0 if candidate["lead"] == prior.get("lead") else 1.0
+            return 0.5 * hue + 0.5 * lead
+
+        d = draw_distinct(make, distance, recent)
+        state = GesturalState()
+        state.hue_offset = d["hue_offset"]
+        state.hue_span = d["hue_span"]
+        state.lead_gesture = d["lead"]
+        state.lead_weight = d["lead_weight"]
+        return state
 
     def choose_gesture(
         self,
@@ -57,8 +118,14 @@ class GesturalEra:
         presence: float,
         coherence: float,
     ) -> None:
-        """Choose a new gesture type. Near-random choice, long committed runs."""
-        state.gesture = random.choice(state.gestures())
+        """Choose a new gesture type. Leans on this piece's primitive, long committed runs.
+
+        Run LENGTH is untouched, so the number of gesture switches per piece is
+        the same as before — which matters because fatigue accrues per switch
+        and `bailout_fatigue` reads fatigue. Only *which* gesture is chosen
+        changes.
+        """
+        state.gesture = weighted_choice(state.gestures(), state.affinity())
         # Coherence extends runs: low C -> 15-30, high C -> 15-45
         state.gesture_remaining = random.randint(15, 30 + int(15 * coherence))
 
@@ -247,8 +314,15 @@ class GesturalEra:
 
         import colorsys
 
+        # Warmth still sets the anchor; the piece's own offset and span decide
+        # where around it this composition lives and how wide it ranges. A
+        # narrow-span piece reads near-monochrome, a wide one polychrome —
+        # where before every piece sampled the same 180-degree window.
         hue_base = warmth * 360.0
-        hue = (hue_base + random.random() * 180.0) % 360.0
+        half_span = state.hue_span / 2.0
+        hue = (
+            hue_base + state.hue_offset + random.uniform(-half_span, half_span)
+        ) % 360.0
 
         # Light regime shifts: dark → cooler hues, lower sat; bright → warmer, higher sat
         if light_regime == "dark":

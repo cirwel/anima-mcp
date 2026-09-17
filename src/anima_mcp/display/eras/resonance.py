@@ -11,11 +11,11 @@ Pure NumPy operations — no scipy dependency.
 import math
 import random
 from dataclasses import dataclass, field as dataclass_field
-from typing import List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from ..art_era import EraState
+from ..art_era import EraState, draw_distinct, hue_distance
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -38,6 +38,17 @@ DIFFUSION_SIGMA_MAX = 0.8
 # ~52% sediment / 42% flow / 5% scratch distribution under simulation.
 GRADIENT_LOW = 0.20
 GRADIENT_HIGH = 0.40
+# Per-piece colour key. Bounded so warmth KEEPS ITS MEANING: the warmth ramp
+# is `220 - warmth*180`, and the era's contract is that a warm piece reads warm
+# and a cool one cool. Max excursion is HUE_ROTATION_MAX + HUE_SPREAD_MAX/2 =
+# 32 degrees, which leaves the warm zone (<100 or >340 at warmth 0.9, base 58)
+# and the cool zone (150-270 at warmth 0.1, base 202) intact with ~10 degrees
+# to spare. An earlier draft used +-50 with a 40-degree spread and pushed warm
+# pieces out of the warm zone in 414 of 5000 seeds — variety bought by
+# breaking the embodied signal is not variety worth having.
+# `TestDispositionKeepsWarmCoolMeaning` fails if these grow.
+HUE_ROTATION_MAX = 22.0
+HUE_SPREAD_MAX = 20.0
 WARMTH_BIAS_DEGREES = 10.0
 FIELD_HIGH_THRESHOLD = 0.6
 
@@ -165,6 +176,21 @@ class ResonanceState(EraState):
     _cached_stability: float = 0.5
     _cached_presence: float = 0.5
 
+    # --- Per-piece disposition (drawn once in create_state) -----------------
+    # Resonance had the most extreme case of the sameness: its hue is not even
+    # random, it is fully determined by `220 - warmth*180`, and warmth is a
+    # slow EMA that barely moves. So every resonance piece was, literally, the
+    # same colour. A rotation transposes the piece into its own key while
+    # keeping warmth's meaning (cool at low warmth, amber at high); a spread
+    # decides whether the piece reads flat or shimmering.
+    #
+    # NOTE: this touches COLOUR only. Diffusion, decay and deposit weights are
+    # deliberately left alone — they feed the revisit ratio behind
+    # `earned_field`, and moving a completion gate is a separate decision from
+    # varying how a piece looks.
+    hue_rotation: float = 0.0
+    hue_spread: float = 0.0
+
     def __post_init__(self):
         if self.field is None:
             self.field = np.zeros((FIELD_SIZE, FIELD_SIZE), dtype=np.float32)
@@ -179,6 +205,12 @@ class ResonanceState(EraState):
 
     def gestures(self) -> List[str]:
         return ["sediment", "flow", "scratch"]
+
+    def disposition(self) -> Dict[str, Any]:
+        return {
+            "hue_rotation": round(self.hue_rotation, 1),
+            "hue_spread": round(self.hue_spread, 1),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +246,25 @@ class ResonanceEra:
     description = "Marks respond to emotional memory: sediment, flow, and scratches"
     min_drawings = 50
 
-    def create_state(self) -> ResonanceState:
-        return ResonanceState()
+    def create_state(self, recent: Sequence[Mapping] = ()) -> ResonanceState:
+        """Draw this piece's colour key, unlike the pieces just made."""
+
+        def make() -> dict:
+            return {
+                "hue_rotation": random.uniform(-HUE_ROTATION_MAX, HUE_ROTATION_MAX),
+                "hue_spread": random.uniform(0.0, HUE_SPREAD_MAX),
+            }
+
+        def distance(candidate: dict, prior: Mapping) -> float:
+            return hue_distance(
+                candidate["hue_rotation"], prior.get("hue_rotation", 0.0)
+            )
+
+        d = draw_distinct(make, distance, recent)
+        state = ResonanceState()
+        state.hue_rotation = d["hue_rotation"]
+        state.hue_spread = d["hue_spread"]
+        return state
 
     def settling_progress(self, drawing_state, canvas, era_state) -> dict:
         """Which earned-completion gates currently pass, and by how much.
@@ -497,6 +546,12 @@ class ResonanceEra:
         else:
             sat_mod = 0.0
             val_mod = 0.0
+
+        # This piece's key, plus its own shimmer. Applied last so the warmth
+        # ramp, the field bias and the light regime all keep their effect.
+        hue_deg += state.hue_rotation
+        if state.hue_spread > 0.0:
+            hue_deg += random.uniform(-state.hue_spread, state.hue_spread) / 2.0
 
         hue_deg = hue_deg % 360.0
         hue = hue_deg / 360.0

@@ -12,9 +12,9 @@ Organic, flowing compositions that emerge from the underlying mathematics.
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from ..art_era import EraState
+from ..art_era import EraState, draw_distinct, hue_distance
 
 
 @dataclass
@@ -46,6 +46,18 @@ class FieldState(EraState):
     def gestures(self) -> List[str]:
         return ["flow_dot", "flow_dash", "flow_strand"]
 
+    def disposition(self) -> Dict[str, Any]:
+        """Field already drew a per-piece global before any other era did —
+        every mark is a sample of `field_seed_a/b`, which is why field pieces
+        stayed visibly distinct while the others converged. Reporting it here
+        lets the next piece be chosen unlike the last few, and puts field's
+        character in `drawing_records` alongside everyone else's."""
+        return {
+            "field_seed_a": round(self.field_seed_a, 3),
+            "field_seed_b": round(self.field_seed_b, 3),
+            "base_hue": round(self.base_hue, 1),
+        }
+
 
 class FieldEra:
     """Field era — marks aligned to an invisible vector field."""
@@ -57,11 +69,39 @@ class FieldEra:
     fatigue_rate = 0.7  # Slightly less tiring than gestural (flow is meditative)
     min_marks_for_completion = 30  # Need enough marks to reveal the field
 
-    def create_state(self) -> FieldState:
+    def create_state(self, recent: Sequence[Mapping] = ()) -> FieldState:
+        """Draw a field topology and palette unlike the recent pieces'.
+
+        The draws themselves are unchanged — same distributions, same ranges.
+        All that is new is preferring, among a few candidates, the one least
+        like what Lumen has just been making.
+        """
+
+        def make() -> dict:
+            return {
+                "field_seed_a": random.uniform(0, 2 * math.pi),
+                "field_seed_b": random.uniform(0, 2 * math.pi),
+                "base_hue": random.uniform(0, 360),
+            }
+
+        def distance(candidate: dict, prior: Mapping) -> float:
+            hue = hue_distance(candidate["base_hue"], prior.get("base_hue", 0.0))
+            # Seeds are phases: compare them on the circle, as degrees.
+            seed_a = hue_distance(
+                math.degrees(candidate["field_seed_a"]),
+                math.degrees(float(prior.get("field_seed_a", 0.0))),
+            )
+            seed_b = hue_distance(
+                math.degrees(candidate["field_seed_b"]),
+                math.degrees(float(prior.get("field_seed_b", 0.0))),
+            )
+            return 0.4 * hue + 0.3 * seed_a + 0.3 * seed_b
+
+        d = draw_distinct(make, distance, recent)
         state = FieldState()
-        state.field_seed_a = random.uniform(0, 2 * math.pi)
-        state.field_seed_b = random.uniform(0, 2 * math.pi)
-        state.base_hue = random.uniform(0, 360)
+        state.field_seed_a = d["field_seed_a"]
+        state.field_seed_b = d["field_seed_b"]
+        state.base_hue = d["base_hue"]
         state.flow_steps = 0
         state.flow_max = random.randint(30, 80)
         return state

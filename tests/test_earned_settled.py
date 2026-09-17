@@ -239,6 +239,11 @@ class TestCompletionPredicate:
 
         stub.canvas = canvas
         stub.intent = _Intent()
+        # set_era now asks the engine which recent dispositions belong to the
+        # era it is switching to, so the partial stub needs that method too.
+        stub._recent_dispositions_for = (
+            DrawingEngine._recent_dispositions_for.__get__(stub)
+        )
         stub.set_era = DrawingEngine.set_era.__get__(stub)
         result = stub.set_era("field", force_immediate=True)
         assert result["success"] is True
