@@ -93,6 +93,13 @@ SETTLED_MIN_SAMPLE_MARKS = 2     # <2 marks/sample = trickle, holds not advances
 FROZEN_FRAC_OF_PEAK = 0.10   # a sample under 10% of own peak mark rate is idle
 FROZEN_STREAK_SAMPLES = 12   # ~1h of consecutive idle samples at 300s cadence
 
+# How many finished pieces the next one is drawn to differ from. A window, not
+# a gate: it reads no signal and ends nothing, so it is not a threshold in the
+# sense of design invariant 1. Six is roughly two days of production at the
+# observed ~3 pieces/day, which is about as far back as "the same as what it
+# has been making lately" means anything.
+RECENT_DISPOSITIONS = 6
+
 
 def is_earned_completion_reason(reason: Optional[str]) -> bool:
     """Gate for autobiographical writes tied to drawing completion.
@@ -184,6 +191,19 @@ class CanvasState:
     # restart mid-piece doesn't silently drop the piece's intention (goals
     # are only generated at canvas_clear, so a lost one stayed lost).
     drawing_goal_data: Optional[dict] = None
+
+    # The last few finished pieces' dispositions — the per-piece globals each
+    # era draws at create_state() (see EraState.disposition). Read when the
+    # next piece starts, so it can be drawn unlike what Lumen has just been
+    # making. This is the one loop from Lumen's own history back into Lumen's
+    # behavior that closes without a human running a script.
+    #
+    # Each entry carries its "era", and comparisons are filtered to the SAME
+    # era: a gestural disposition and a field one share no keys, so comparing
+    # them would fall back on defaults and manufacture a distance that means
+    # nothing. Cross-era, "unlike the last piece" is already true by
+    # construction.
+    recent_dispositions: List[dict] = field(default_factory=list)
 
     # Render caching - avoid redrawing all pixels every frame
     _dirty: bool = True  # Set by draw_pixel(), cleared after render
@@ -445,6 +465,7 @@ class CanvasState:
                 "coherence_history": self.coherence_history[-20:],  # Keep last 20
                 "i_momentum": self.i_momentum,
                 "drawing_start_time": self.drawing_start_time,
+                "recent_dispositions": self.recent_dispositions[-RECENT_DISPOSITIONS:],
                 "resonance_field": self._resonance_field,
                 "resonance_settling": self._resonance_settling,
                 "novelty_settling": self._novelty_settling,
@@ -656,6 +677,19 @@ class CanvasState:
             auto_rotate = data.get("auto_rotate", False)
             if isinstance(auto_rotate, bool):
                 self.auto_rotate = auto_rotate
+        except Exception:
+            pass
+
+        # Restore the recent-disposition history. Anything malformed is
+        # dropped rather than repaired: an empty history means "no bias", which
+        # is the correct failure — it degrades to one plain unbiased draw, not
+        # to a fabricated preference.
+        try:
+            recent = data.get("recent_dispositions")
+            if isinstance(recent, list):
+                self.recent_dispositions = [
+                    d for d in recent if isinstance(d, dict) and d.get("era")
+                ][-RECENT_DISPOSITIONS:]
         except Exception:
             pass
 
@@ -1310,7 +1344,9 @@ class DrawingEngine:
         # Load active art era
         from .eras import get_era
         self.active_era = get_era(self.canvas._era_name)
-        self.intent.era_state = self.active_era.create_state()
+        self.intent.era_state = self.active_era.create_state(
+            self._recent_dispositions_for(self.active_era.name)
+        )
 
         self._db_path = resolve_db_path(db_path)
         self._identity_store = identity_store
@@ -1343,6 +1379,36 @@ class DrawingEngine:
         except Exception:
             return None
 
+    def _remember_disposition(self) -> None:
+        """Bank the finishing piece's disposition for the next one to differ from.
+
+        Called at canvas clear, BEFORE the era state is replaced — the live
+        `era_state` is the only place the piece's character exists, since
+        `EraState` is transient by contract and never persisted.
+        """
+        state = self.intent.era_state
+        if state is None:
+            return
+        try:
+            disposition = state.disposition()
+        except Exception:
+            return
+        if not disposition:
+            return  # an era with no per-piece character has nothing to vary
+        entry = {"era": getattr(self.active_era, "name", None), **disposition}
+        if not entry.get("era"):
+            return
+        self.canvas.recent_dispositions.append(entry)
+        del self.canvas.recent_dispositions[:-RECENT_DISPOSITIONS]
+
+    def _recent_dispositions_for(self, era_name: str) -> list:
+        """Recent dispositions from THIS era only — see the field's comment on
+        why cross-era comparison is meaningless rather than merely noisy."""
+        return [
+            d for d in self.canvas.recent_dispositions
+            if d.get("era") == era_name
+        ]
+
     def _piece_facts(self) -> dict:
         """Everything about the finished piece that is worth keeping.
 
@@ -1368,7 +1434,27 @@ class DrawingEngine:
             "satisfaction": round(self.canvas.compositional_satisfaction(), 4),
             "occupied_cells": self.canvas.occupied_cells(),
             "grid_entropy": round(self.canvas.grid_entropy(), 4),
+            # The per-piece globals this drawing was made under. NULL when the
+            # era has no disposition or the state is gone — an unrecorded
+            # character must read as unknown, never as a plausible default.
+            # Without this column "did the dispositions actually vary the
+            # work?" is unanswerable from the corpus, and an aesthetic claim
+            # nobody can check is exactly what this change is fixing.
+            "disposition": self._disposition_json(),
         }
+
+    def _disposition_json(self) -> Optional[str]:
+        """This piece's disposition as compact JSON, or None if unavailable."""
+        state = self.intent.era_state
+        if state is None:
+            return None
+        try:
+            disposition = state.disposition()
+            if not disposition:
+                return None
+            return json.dumps(disposition, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return None
 
     def _apply_coverage_bias(self, fx: float, fy: float, era_state) -> Tuple[float, float]:
         """Lean the next gesture toward where this piece's intention wants to work.
@@ -1646,7 +1732,9 @@ class DrawingEngine:
 
         # Ensure era state exists
         if self.intent.era_state is None:
-            self.intent.era_state = self.active_era.create_state()
+            self.intent.era_state = self.active_era.create_state(
+                self._recent_dispositions_for(self.active_era.name)
+            )
 
             # Restore resonance field from canvas persistence
             if hasattr(self.intent.era_state, 'field') and self.canvas._resonance_field is not None:
@@ -2092,7 +2180,9 @@ class DrawingEngine:
         # Apply immediately (either no drawing in progress or forced)
         self.active_era = era
         self.canvas._era_name = era_name
-        self.intent.era_state = era.create_state()
+        self.intent.era_state = era.create_state(
+            self._recent_dispositions_for(era_name)
+        )
         self.canvas.pending_era_switch = None  # Clear any pending
         # A mid-piece switch invalidates the settled tracker: peak was set by
         # the OLD era's mark-size distribution, so 10%-of-peak would be
@@ -2176,6 +2266,12 @@ class DrawingEngine:
         if now < self.canvas.drawing_paused_until:
             return  # Already paused, don't clear again
 
+        # Bank the finishing piece's character before anything is torn down:
+        # `active_era` and `era_state` still describe THIS piece here, and
+        # `EraState` is transient by contract, so this is the only moment it
+        # can be read.
+        self._remember_disposition()
+
         # Save before clearing if there's actual drawing (not just noise).
         # Skip if caller already saved (prevents double growth observation)
         if not already_saved and len(self.canvas.pixels) >= MIN_RECORDED_DRAWING_PIXELS:
@@ -2201,7 +2297,9 @@ class DrawingEngine:
         self.intent.reset()
         self.active_era = get_era(new_era_name)
         self.canvas._era_name = new_era_name
-        self.intent.era_state = self.active_era.create_state()
+        self.intent.era_state = self.active_era.create_state(
+            self._recent_dispositions_for(new_era_name)
+        )
         if persist:
             self.canvas.save_to_disk()
         print("[Canvas] Cleared - pausing drawing for 5s", file=sys.stderr, flush=True)

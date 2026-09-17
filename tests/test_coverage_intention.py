@@ -183,7 +183,7 @@ def _run_piece(era, coverage_target, seed, marks=600):
     return canvas
 
 
-SEEDS = range(16)
+SEEDS = range(32)
 # Marks per piece, from the live per-era medians at completion (2026-08-22).
 PIECE_MARKS = {"gestural": 1200, "pointillist": 1200, "field": 450,
                "resonance": 750, "geometric": 70}
@@ -195,6 +195,35 @@ def _mean_entropy(era_name, target):
     vals = [_run_piece(get_era(era_name), target, s, marks).grid_entropy()
             for s in SEEDS]
     return sum(vals) / len(vals)
+
+
+def _paired_gap(era_name, target, against="balanced"):
+    """Mean of the PER-SEED entropy difference, not the difference of means.
+
+    `_run_piece` seeds the RNG, so the same seed gives both runs the same era
+    disposition and the same drift — the comparison is naturally paired, and
+    pairing removes the between-piece variance that has nothing to do with the
+    intention. Unpaired means needed that variance to be small; since eras
+    draw a per-piece disposition (2026-09-17) it no longer is, and it was
+    never small for `geometric`, whose 70 whole-shape stamps swing entropy far
+    more than any bias does.
+
+    This is why `test_sparse_spreads[geometric]` passed for a month on a gap it
+    did not have: at 16 unpaired seeds it was +0.005 against a balanced spread
+    of 0.062 — under a tenth of a standard deviation. Measured paired over 64
+    seeds, on the code as it stood BEFORE dispositions existed, geometric's
+    sparse direction is -0.006 and wins 27 of 64 — no effect, and slightly the
+    wrong way. Pairing makes the test able to say so.
+    """
+    from anima_mcp.display.eras import get_era
+    era = get_era(era_name)
+    marks = PIECE_MARKS[era_name]
+    diffs = [
+        _run_piece(era, target, s, marks).grid_entropy()
+        - _run_piece(era, against, s, marks).grid_entropy()
+        for s in SEEDS
+    ]
+    return sum(diffs) / len(diffs)
 
 
 class TestIntentionChangesTheComposition:
@@ -223,21 +252,34 @@ class TestIntentionChangesTheComposition:
         that already concentrates (field) is exempted below, on purpose."""
         if era_name == "field":
             pytest.skip("field already concentrates; see test_the_two_no_ops")
-        assert _mean_entropy(era_name, "dense") < _mean_entropy(era_name, "balanced")
+        assert _paired_gap(era_name, "dense") < 0
 
     @pytest.mark.parametrize("era_name", list(PIECE_MARKS))
     def test_sparse_spreads(self, era_name):
-        if era_name == "gestural":
-            pytest.skip("gestural already sweeps; see test_the_two_no_ops")
-        assert _mean_entropy(era_name, "sparse") > _mean_entropy(era_name, "balanced")
+        if era_name in ("gestural", "geometric"):
+            pytest.skip(f"{era_name} does not respond to sparse; see test_the_no_ops")
+        assert _paired_gap(era_name, "sparse") > 0
 
-    def test_the_two_no_ops_are_real_and_must_not_be_tuned_away(self):
-        """Two era/direction pairs do not respond, and both are correct.
+    def test_the_no_ops_are_real_and_must_not_be_tuned_away(self):
+        """Three era/direction pairs do not respond, and all three are correct.
 
         Gestural sweeps the whole canvas by construction (~60 of 64 cells),
         so there is nothing left for `sparse` to open up. Field already works
-        in a tight region, so `dense` has nothing left to concentrate. Each era
-        responds to at least one direction; none responds to neither.
+        in a tight region, so `dense` has nothing left to concentrate.
+        Geometric stamps ~70 whole shapes over a whole piece, so a bias that
+        leans each successive gesture boundary has very few boundaries to lean
+        — `dense` still lands (the stamps pile up), `sparse` does not.
+
+        ⚠️ Geometric's `sparse` was asserted as a real effect from 2026-08-22
+        until 2026-09-17 and never was one. Measured paired over 64 seeds on
+        the pre-disposition code: -0.006, winning 27 of 64 — no effect, and
+        slightly the wrong way. The original 16-seed unpaired sample read
+        +0.005 against a balanced spread of 0.062 and called it a pass. It is
+        recorded here rather than quietly deleted: a test that passed by luck
+        for a month is a fact about this suite worth keeping.
+
+        Each era still responds to at least one direction; none responds to
+        neither.
 
         This is pinned as a TEST, not a comment, because the tempting fix is to
         raise COVERAGE_BIAS_STRENGTH until every cell of the table moves — which
@@ -246,12 +288,15 @@ class TestIntentionChangesTheComposition:
         pointillist piece's pixels in one cell of 64). The intention is a bias
         on an era, not an override of it.
         """
-        gestural_gap = abs(_mean_entropy("gestural", "sparse")
-                           - _mean_entropy("gestural", "balanced"))
-        field_gap = abs(_mean_entropy("field", "dense")
-                        - _mean_entropy("field", "balanced"))
-        assert gestural_gap < 0.03, gestural_gap
-        assert field_gap < 0.03, field_gap
+        assert abs(_paired_gap("gestural", "sparse")) < 0.03
+        assert abs(_paired_gap("field", "dense")) < 0.03
+        assert abs(_paired_gap("geometric", "sparse")) < 0.03
+
+        # ...and each era must still answer to SOMETHING, or the intention is
+        # decorative for it.
+        assert _paired_gap("geometric", "dense") < -0.05
+        assert _paired_gap("gestural", "dense") < 0
+        assert _paired_gap("field", "sparse") > 0
 
 
 # ---------------------------------------------------------------------------

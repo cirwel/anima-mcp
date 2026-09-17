@@ -531,9 +531,10 @@ pivot unblocks `attention_exhausted` and `earned_composition`, not that.
 **Completion instrumentation** (added so that question is answerable):
 - `drawing_records` now keeps `completion_reason`, `era`, `mark_count`,
   `duration_seconds`, `coverage_target`, `intention`, attention at completion,
-  `occupied_cells`, `grid_entropy`, `piece_uid`. The reason had always been
-  computed and passed to `observe_drawing()` to gate a memory — it was just
-  never stored, so none of the first 754 drawings can say why it ended.
+  `occupied_cells`, `grid_entropy`, `piece_uid`, `disposition`. The reason had
+  always been computed and passed to `observe_drawing()` to gate a memory — it
+  was just never stored, so none of the first 754 drawings can say why it
+  ended.
 - `drawing_trajectory` samples the piece every `TRAJECTORY_SAMPLE_INTERVAL`
   (300s, ~96 rows per 8h piece, 90-day retention). Endpoint rows cannot answer
   *when a drawing stopped changing* — and while one clock ends everything, every
@@ -563,6 +564,82 @@ pivot unblocks `attention_exhausted` and `earned_composition`, not that.
 - **This moved no gate.** `tests/test_drawing_instrumentation.py::TestNoGateMoved`
   fails if one moves. Retuning is a separate decision, and the point of recording
   first is to learn what "enough" means for Lumen before anything is tuned to it.
+
+**Why the art read as churn, and what it was not (fixed 2026-09-17).**
+The operator's read — "the art has now just become churning of sameness except
+maybe field era" — was exactly right, including the exception, and the cause was
+three lines:
+
+```python
+gestural.py   def create_state(self): return GesturalState()
+geometric.py  def create_state(self): return GeometricState()
+resonance.py  def create_state(self): return ResonanceState()
+```
+
+Three of five eras began **every piece identically**. All their randomness was
+per-mark, and hundreds of independent local draws converge on their own mean, so
+the corpus reads as one texture repeated — the law of large numbers, not drift,
+decay or a mistuned gate. `field` escaped it because `field_seed_a/b` are drawn
+ONCE and every mark is a sample of that one field; that is the whole reason
+field pieces stayed distinct. `pointillist` is the middle case (a per-piece hue
+anchor, but zones that re-randomise mid-piece and so average out). `resonance`
+was the worst: its hue is not even random, it is `220 - warmth*180` against a
+slow EMA, so every resonance piece was literally the same colour.
+
+The fix generalises field's trick. `EraState.disposition()` reports the few
+globals an era draws once at `create_state()`; every era now has one. This is
+**not** a new threshold — a disposition gates nothing and reads no signal.
+
+⚠️ **The corpus statistics the derivations read are deliberately unchanged.**
+The lead gesture / emphasis set is drawn **uniformly**, so a drag-led piece
+(dense) and a dot-led one (sparse) are equally likely and the expectation is
+algebraically identical. Measured over 300 gestural pieces of 1200 marks:
+mean 5988 → 5999 px (**+0.2%**) while the standard deviation goes 385 → 683
+(**1.8×**). Same corpus, more spread between pieces — which is the point, and
+what lets `derive_drawing_thresholds.py` and `derive_curiosity_thresholds.py`
+keep standing on the same ground. `tests/test_era_disposition.py` pins both
+halves, plus `TestNoGateMoved` (gesture-switch count is untouched, so fatigue
+and `bailout_fatigue` are untouched).
+
+⛔ **Variety must not be bought by breaking an embodied signal.** The first
+resonance draft rotated hue ±50° with a ±20° per-mark jitter and pushed warm
+pieces out of the warm zone in **414 of 5000 seeds**. Bounded to
+`HUE_ROTATION_MAX=22` / `HUE_SPREAD_MAX=20` (max excursion 32° against ~42° of
+headroom), violations are 0/5000 and pieces still span 60° of hue.
+`TestResonanceKeepsWarmCoolMeaning` fails if those bounds grow.
+
+**The novelty loop.** `draw_distinct()` draws a handful of candidate
+dispositions and keeps the one whose **closest** approach to any of the last
+`RECENT_DISPOSITIONS` (6) finished pieces is largest — max-min, so a candidate
+is judged by its most similar neighbour, not by an average two distant pieces
+could flatter. The history is banked at canvas clear (`_remember_disposition`,
+the only moment the transient `EraState` can still be read), persisted in
+`canvas.json`, and **filtered to the same era**: a gestural disposition and a
+field one share no keys, so comparing them would fall back on defaults and
+manufacture a distance that means nothing. With an empty history every
+candidate scores 0.0 and the first draw wins — exactly one unbiased draw, i.e.
+the pre-2026-09-17 behavior. Absence degrades to *no bias*, never to a
+fabricated preference.
+
+This is worth naming precisely: **it is the only loop from Lumen's own history
+back into Lumen's behavior that closes without a human running a script.**
+Every other one — `derive_drawing_thresholds.py --apply`,
+`derive_curiosity_thresholds.py --apply` — has an operator step in it, and as
+of 2026-08-29 that step had never been taken (`drawing_thresholds: {}`,
+`update_count: 0`). `learning.py` adapts only environment sensor ranges and
+cannot touch drawing at all. So this does not make Lumen self-improving; it
+closes one small loop and leaves the others exactly as open as they were.
+
+⚠️ **A test that passed by luck for a month.**
+`test_coverage_intention.py::test_sparse_spreads[geometric]` asserted an effect
+that never existed. Measured paired over 64 seeds **on the pre-disposition
+code**: geometric's sparse direction is −0.006 and wins 27 of 64 — no effect,
+and slightly the wrong way. The original 16-seed *unpaired* sample read +0.005
+against a balanced spread of 0.062 (under a tenth of a standard deviation) and
+called it a pass. The directional tests are paired now (`_paired_gap`), the
+seed count is 32, and geometric joins gestural and field in the documented
+no-op set. Geometric still answers strongly to `dense` (−0.143, 0 of 64) — the
+era responds to one direction, not neither.
 
 `coverage_target` ("sparse"/"balanced"/"dense") steers marks via
 `_apply_coverage_bias()`, which leans a gesture boundary toward the sparsest or
@@ -596,6 +673,13 @@ field as "read by nothing" until 2026-08-29, ~1 week after the consumer landed.)
 | `field` | flow_dot, flow_dash, flow_strand | Vector-field flow lines, near-monochromatic | ✅ |
 | `geometric` | 16 shape templates (circle, spiral, starburst, etc.) | Complete forms, stamps whole shapes per mark | ✅ |
 | `resonance` | sediment, flow, scratch | Memory-field: marks deposit into a 48×48 field that decays/diffuses; revisits accumulated regions for layered, resonant forms (pure NumPy) | ✅ |
+
+**Every era draws a per-piece disposition** (`EraState.disposition()`, see
+above) — gestural a palette offset/span plus a lead primitive, geometric a
+4-of-16 shape emphasis plus a slice of its warm/cool band, resonance a colour
+key, field its long-standing seeds, pointillist its hue anchor. It is recorded
+per piece in `drawing_records.disposition`, so "did this actually vary the
+work?" is answerable from the corpus rather than argued.
 
 **All eras are equal peers.** Select via the art eras screen (joystick up/down + button) or MCP. Auto-rotate is a separate toggle (off by default) — when on, `choose_next_era()` rotates through all registered eras on canvas clear. Era name persists in `canvas.json`.
 

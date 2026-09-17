@@ -12,10 +12,18 @@ was in art_movements/geometric.py (removed, see git history at ed0067d).
 
 import math
 import random
-from dataclasses import dataclass
-from typing import List, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from ..art_era import EraState
+from ..art_era import EraState, draw_distinct, set_distance
+
+
+# How many of the 16 templates a piece leans on, and how hard. These size a
+# per-piece vocabulary; they gate nothing and read no signal, so they are not
+# thresholds in the sense of design invariant 1.
+EMPHASIS_COUNT = 4
+EMPHASIS_WEIGHT_MIN = 2.0
+EMPHASIS_WEIGHT_MAX = 3.5
 
 
 @dataclass
@@ -25,6 +33,18 @@ class GeometricState(EraState):
     # Shape parameters stored between choose and place
     shape_size: int = 0
     shape_variant: str = ""
+
+    # --- Per-piece disposition (drawn once in create_state) -----------------
+    # Before 2026-09-17 create_state() was a bare `GeometricState()`. With 16
+    # templates weighted identically on every piece, each drawing sampled the
+    # same vocabulary — circles at ~25% and a spread of everything else — so
+    # 637 geometric pieces shared one shape census. A piece now leans on a few
+    # templates: this one is rings and spirals, that one rectangles and
+    # patterns.
+    emphasis: List[str] = field(default_factory=list)
+    emphasis_weight: float = 1.0
+    hue_pos: float = 0.5        # where in the warm/cool band this piece centres
+    hue_span_frac: float = 1.0  # how much of the band it uses (1.0 = the old full band)
 
     def intentionality(self) -> float:
         """Shapes are complete forms — high commitment per mark."""
@@ -40,6 +60,30 @@ class GeometricState(EraState):
             "rectangle", "triangle", "organic", "layered", "scatter", "drip",
         ]
 
+    def disposition(self) -> Dict[str, Any]:
+        return {
+            "emphasis": list(self.emphasis),
+            "emphasis_weight": round(self.emphasis_weight, 2),
+            "hue_pos": round(self.hue_pos, 3),
+            "hue_span_frac": round(self.hue_span_frac, 3),
+        }
+
+
+def _band_sample(low: float, high: float, pos: float, span_frac: float) -> float:
+    """Sample a hue from this piece's slice of a warm/cool band.
+
+    *pos* places the slice's centre inside [low, high] and *span_frac* sets its
+    width. The slice is clamped to stay inside the band, so warmth's warm/cool
+    meaning is preserved exactly — a warm piece never samples a cool hue. With
+    ``span_frac == 1.0`` this is ``random.uniform(low, high)``, the behavior
+    before 2026-09-17.
+    """
+    width = (high - low) * max(0.0, min(1.0, span_frac))
+    half = width / 2.0
+    centre = low + max(0.0, min(1.0, pos)) * (high - low)
+    centre = max(low + half, min(high - half, centre))
+    return random.uniform(centre - half, centre + half)
+
 
 class GeometricEra:
     """Geometric era — complete shape templates stamped whole."""
@@ -51,8 +95,37 @@ class GeometricEra:
     fatigue_rate = 2.0  # 2x base fatigue (whole shapes are exhausting)
     min_marks_for_completion = 3  # 3 shapes can be a complete drawing
 
-    def create_state(self) -> GeometricState:
-        return GeometricState()
+    def create_state(self, recent: Sequence[Mapping] = ()) -> GeometricState:
+        """Draw this piece's shape vocabulary and palette slice.
+
+        The emphasis is a sample of the 16 templates, so no template is
+        favoured across the corpus and the shape census stays what it was —
+        only the per-piece concentration changes.
+        """
+        shapes = GeometricState().gestures()
+
+        def make() -> dict:
+            return {
+                "emphasis": random.sample(shapes, EMPHASIS_COUNT),
+                "emphasis_weight": random.uniform(
+                    EMPHASIS_WEIGHT_MIN, EMPHASIS_WEIGHT_MAX
+                ),
+                "hue_pos": random.random(),
+                "hue_span_frac": random.uniform(0.25, 1.0),
+            }
+
+        def distance(candidate: dict, prior: Mapping) -> float:
+            shape = set_distance(candidate["emphasis"], prior.get("emphasis", ()))
+            hue = abs(candidate["hue_pos"] - float(prior.get("hue_pos", 0.5)))
+            return 0.7 * shape + 0.3 * hue
+
+        d = draw_distinct(make, distance, recent)
+        state = GeometricState()
+        state.emphasis = list(d["emphasis"])
+        state.emphasis_weight = d["emphasis_weight"]
+        state.hue_pos = d["hue_pos"]
+        state.hue_span_frac = d["hue_span_frac"]
+        return state
 
     def choose_gesture(
         self,
@@ -88,6 +161,16 @@ class GeometricEra:
         if stability < 0.4:
             weights[12] = 2.0  # organic
             weights[15] = 1.5  # drip
+
+        # This piece's vocabulary multiplies the embodied weighting above
+        # rather than replacing it — clarity and stability still steer toward
+        # complex/structured/organic shapes, within the templates this piece
+        # favours. Non-emphasised shapes keep their weight, so nothing is
+        # unreachable.
+        if state.emphasis and state.emphasis_weight != 1.0:
+            for i, name in enumerate(shapes):
+                if name in state.emphasis:
+                    weights[i] *= state.emphasis_weight
 
         state.gesture = random.choices(shapes, weights=weights, k=1)[0]
         # One shape per gesture run — each shape is a complete mark
@@ -458,13 +541,18 @@ class GeometricEra:
         """
         import colorsys
 
-        # Warm/cool hue split based on warmth
+        # Warm/cool hue split based on warmth. Warmth still picks the band;
+        # this piece picks its slice OF that band, so two warm pieces are no
+        # longer the same spread of reds-to-yellows.
         if warmth > 0.5:
             # Warm hues: reds, oranges, yellows (0-60 degrees)
-            hue = random.uniform(0, 60) + (warmth - 0.5) * 40
+            low, high = 0.0, 60.0
+            shift = (warmth - 0.5) * 40
         else:
             # Cool hues: blues, greens, purples (180-300 degrees)
-            hue = random.uniform(180, 300) - (0.5 - warmth) * 40
+            low, high = 180.0, 300.0
+            shift = -(0.5 - warmth) * 40
+        hue = _band_sample(low, high, state.hue_pos, state.hue_span_frac) + shift
         hue = hue % 360
 
         # Light regime modulation

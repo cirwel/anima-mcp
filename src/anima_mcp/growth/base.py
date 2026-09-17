@@ -285,6 +285,13 @@ class GrowthSystem(
             ("drawing_records", "satisfaction", "REAL"),
             ("drawing_records", "occupied_cells", "INTEGER"),
             ("drawing_records", "grid_entropy", "REAL"),
+            # The per-piece globals the drawing was made under, as compact
+            # JSON (see EraState.disposition). Before 2026-09-17 three of the
+            # five eras drew no per-piece globals at all, so there was nothing
+            # to record and every piece in an era was generated identically.
+            # Recording it is what makes "did this actually vary the work?" a
+            # question the corpus can answer rather than an opinion.
+            ("drawing_records", "disposition", "TEXT"),
         ]
         for table, column, col_type in migrations:
             try:

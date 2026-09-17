@@ -11,9 +11,9 @@ Inspired by Seurat and Signac, adapted for Lumen's 240x240 canvas.
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from ..art_era import EraState
+from ..art_era import EraState, draw_distinct, hue_distance
 
 
 @dataclass
@@ -41,6 +41,13 @@ class PointillistState(EraState):
     def gestures(self) -> List[str]:
         return ["single", "pair", "trio"]
 
+    def disposition(self) -> Dict[str, Any]:
+        """Pointillist is the middle case: it drew a per-piece colour anchor,
+        but its density zones re-randomise mid-piece, so the zone structure
+        averages out over hundreds of dots and only the anchor carries the
+        piece's identity. The anchor is what is reported."""
+        return {"color_anchor_hue": round(self.color_anchor_hue, 1)}
+
 
 class PointillistEra:
     """Pointillist era — pure dot accumulation with optical color mixing."""
@@ -52,9 +59,22 @@ class PointillistEra:
     fatigue_rate = 0.5  # Half base fatigue (each dot is effortless)
     min_marks_for_completion = 80  # Need density before a pointillist drawing is "done"
 
-    def create_state(self) -> PointillistState:
+    def create_state(self, recent: Sequence[Mapping] = ()) -> PointillistState:
+        """Draw a colour anchor unlike the recent pieces'. Same distribution as
+        before — only the choice among a few candidates is new."""
+
+        def make() -> dict:
+            return {"color_anchor_hue": random.uniform(0, 360)}
+
+        def distance(candidate: dict, prior: Mapping) -> float:
+            return hue_distance(
+                candidate["color_anchor_hue"],
+                prior.get("color_anchor_hue", 0.0),
+            )
+
+        d = draw_distinct(make, distance, recent)
         state = PointillistState()
-        state.color_anchor_hue = random.uniform(0, 360)
+        state.color_anchor_hue = d["color_anchor_hue"]
         # Start with a random zone
         state.zone_center_x = random.uniform(50, 190)
         state.zone_center_y = random.uniform(50, 190)
