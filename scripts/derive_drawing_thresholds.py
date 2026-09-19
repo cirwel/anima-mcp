@@ -32,7 +32,12 @@ toward `sparse` for no stated reason.
 
 Usage:
   python3 scripts/derive_drawing_thresholds.py --db ~/.anima/anima.db \
-      [--days 90] [--apply CONFIG]
+      [--days 365] [--apply CONFIG]
+
+  ⚠️ Use --days 365, not the 90 this defaults to. This script's population is
+  one row per PIECE, and it floors at 500; at Lumen's ~3 pieces/day a 90-day
+  window holds ~270 and the run refuses. That is a window problem, not a
+  corpus problem — widen the window, never lower the floor.
 
   --apply edits nervous_system.drawing_thresholds in the given calibration file
   atomically (backup written alongside). Without it, prints JSON to stdout.
