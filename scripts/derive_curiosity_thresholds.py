@@ -22,6 +22,12 @@ Usage:
   python3 scripts/derive_curiosity_thresholds.py --db ~/.anima/anima.db \
       [--days 90] [--apply CONFIG]
 
+  Unlike derive_drawing_thresholds.py, 90 days is usually enough here: the
+  population is ~96 trajectory intervals per piece rather than one row per
+  piece, so the same 500 floor is cleared by far fewer pieces. --apply MERGES
+  into drawing_thresholds, preserving that script's COVERAGE_* keys, so run
+  order does not matter.
+
   Without --apply it prints the report and JSON and changes nothing. Absent
   keys fall back to the built-in 0.4, so an un-applied derivation moves no mark.
 

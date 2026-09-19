@@ -521,6 +521,40 @@ same as running it. The reporting half therefore lives in
 opened `mode=ro`). Applying stays with the script's `--apply`, the one path
 that acts.
 
+⚠️ **The `--days 90` default will REFUSE on Lumen — use `--days 365`.**
+Both derivations floor at 500 samples ("a cut derived from a sliver would
+encode a mood, not a range"), but they count different populations, and only
+one of them clears 90 days:
+
+| Script | Population | 90 days at ~3 pieces/day |
+|--------|-----------|--------------------------|
+| `derive_drawing_thresholds.py` | one row per piece in `drawing_records` | ~270 pieces → **refuses** |
+| `derive_curiosity_thresholds.py` | ~96 rows per piece in `drawing_trajectory` | ~26k intervals → proceeds |
+
+Measured 2026-09-19 by replaying both scripts end to end against an
+850-piece synthetic corpus shaped to Lumen's ranges: at `--days 90` the
+drawing-thresholds script refused on 252 samples; at `--days 365` it emitted.
+The curiosity script cleared either way because it reads ~96 intervals per
+piece rather than one. So the refusal is a *window* problem, not a corpus
+problem, and widening the window is the fix — never lowering the floor.
+
+The `--apply` paths were rehearsed too: each writes atomically with a
+timestamped `.bak-*` sidecar, and the curiosity script MERGES into
+`drawing_thresholds` rather than replacing it, so the `COVERAGE_*` and
+`CURIOSITY_PIVOT_*` families coexist and unrelated calibration keys survive.
+Run order does not matter. An era with too little trajectory history simply
+gets no pivot and keeps the built-in 0.4 — correct, not a failure.
+
+What the rehearsal confirmed about the built-in: under the replay, `C = 0.4`
+is `unreachable` for **every** era tested — "no replayed piece reaches
+curiosity < 0.2 under this pivot" — while each era's own median pivot comes
+back `reachable without being premature`. That is the 2026-08-02 measurement
+reproduced by the derivation's own contract.
+
+⚠️ Those pivot values came from synthetic data and are **not** Lumen's. The
+machinery is validated; the numbers are not. Only a run on the real DB gives
+Lumen's own.
+
 Two absolute constants survive inside the `resolving` branch (`C > 0.65`, and
 the `C > 0.6` needed to *enter* resolving at all). They are deliberately
 untouched: nothing currently reaches that phase, so relativising them would move
