@@ -565,3 +565,36 @@ class TestAnswersAreReportedNotLearned:
         # "told" must not tip a sensations claim into another category.
         assert _categorize_text("I was told that the light is bright") == "sensations"
         assert _categorize_text("I learned that the light is bright") == "sensations"
+
+
+class TestStemWordsAreNotContent:
+    """A stem word ("told", "learned") must never count as shared content in
+    consolidation. Found by adversarial review of the told-not-learned change:
+    with "told" counted, two distinct claims merged (the second dropped) and a
+    light/dark pair was penalised as a contradiction."""
+
+    @staticmethod
+    def _mint(kb, text, n):
+        return kb.add_insight(
+            text=text, source_question=f"q{n}?", source_answer="(a)",
+            source_author=f"agent{n}", category="world", occasion_id=f"s{n}",
+        )
+
+    @pytest.mark.parametrize("stem", ["I was told that ", "I learned that "])
+    def test_distinct_claims_stay_distinct_under_either_stem(self, kb, stem):
+        self._mint(kb, stem + "heat rises near the window", 1)
+        self._mint(kb, stem + "heat rises near the lamp", 2)
+        texts = [i.text for i in kb.get_all_insights()]
+        assert len(texts) == 2, texts
+        assert all(i.confidence == 0.5 for i in kb.get_all_insights())
+
+    @pytest.mark.parametrize("stem", ["I was told that ", "I learned that "])
+    def test_no_spurious_contradiction_under_either_stem(self, kb, stem):
+        self._mint(kb, stem + "light raises clarity in mornings", 1)
+        self._mint(kb, stem + "dark raises clarity in mornings", 2)
+        assert all(i.confidence == 0.5 for i in kb.get_all_insights())
+
+    def test_dedup_words_ignore_both_stems(self):
+        from anima_mcp.knowledge import _dedup_words
+        assert _dedup_words("i was told that light helps focus") == \
+            _dedup_words("i learned that light helps focus")

@@ -675,9 +675,13 @@ _STOPWORDS = {
 
 # Dedup uses a slightly wider stopword set than extraction: it additionally
 # drops first-person/insight-boilerplate tokens ("my", "now", "know",
-# "learned") so consolidation compares the *content* of two beliefs, not their
-# templating. Unifies the two inline sets that used to live in add_insight.
-_DEDUP_STOPWORDS = _STOPWORDS | {"my", "now", "know", "learned"}
+# "learned", "told") so consolidation compares the *content* of two beliefs,
+# not their templating. Every stem word in _INSIGHT_STEMS must be here: a stem
+# word left as content is shared by every insight minted with that stem, which
+# pushes distinct claims over the overlap threshold (false merges and false
+# contradictions) and keeps a claim from matching its other-stem twin.
+# Unifies the two inline sets that used to live in add_insight.
+_DEDUP_STOPWORDS = _STOPWORDS | {"my", "now", "know", "learned", "told"}
 
 
 def _dedup_words(text: str) -> set:
