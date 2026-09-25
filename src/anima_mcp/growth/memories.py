@@ -111,7 +111,11 @@ class MemoriesMixin:
 
         So keep the provenance and say it in words instead of leaking the
         storage prefix, and drop a redundant "i now know that" / "i learned
-        that" opener rather than stacking it on "I've learned that".
+        that" / "i was told that" opener rather than stacking it.
+
+        A conversation-derived preference is voiced as something Lumen was
+        told: nothing checked it against Lumen's own history, and "learned"
+        is reserved for what Lumen derived itself.
         """
         desc = (pref.description or "").strip()
         prefix = "From Q&A: "
@@ -120,7 +124,7 @@ class MemoriesMixin:
             desc = desc[len(prefix):].strip()
 
         low = desc.lower()
-        for opener in ("i now know that ", "i learned that ", "i know that "):
+        for opener in ("i now know that ", "i was told that ", "i learned that ", "i know that "):
             if low.startswith(opener):
                 desc = desc[len(opener):]
                 break
@@ -134,7 +138,7 @@ class MemoriesMixin:
         # it reads as a typo ("helps not b….").
         end = "" if desc.endswith("…") else "."
         if from_conversation:
-            return f"From a conversation, I've learned that {desc}{end}"
+            return f"From a conversation, I was told that {desc}{end}"
         return f"I've learned that {desc}{end}"
 
     def get_autobiography_summary(self) -> str:

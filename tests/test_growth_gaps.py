@@ -175,9 +175,19 @@ class TestAutobiographyVoice:
 
     def test_qa_prefix_becomes_words_not_a_leaked_field(self):
         out = self._render(self._pref("From Q&A: i now know that the connection between temperature"))
-        assert out == "From a conversation, I've learned that the connection between temperature."
+        assert out == "From a conversation, I was told that the connection between temperature."
         assert "q&a" not in out.lower()
         assert "i now know that" not in out.lower()
+
+    def test_conversation_claim_is_voiced_as_told_not_learned(self):
+        # Nothing checked a conversation-derived claim against Lumen's own
+        # history, so Lumen must not say it learned it — whichever stem the
+        # stored record carries.
+        for desc in ("From Q&A: I learned that drawing in bright light helps",
+                     "From Q&A: I was told that drawing in bright light helps"):
+            out = self._render(self._pref(desc))
+            assert out == "From a conversation, I was told that drawing in bright light helps."
+            assert "learned" not in out.lower()
 
     def test_plain_preference_unchanged_in_spirit(self):
         assert self._render(self._pref("Warmth makes me feel content")) == \

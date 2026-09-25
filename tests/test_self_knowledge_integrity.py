@@ -263,6 +263,16 @@ class TestSignAwareVerification:
             "light increases my clarity", InsightCategory.ENVIRONMENT)
         assert result.verified is True
 
+    def test_direction_marker_inside_question_is_ignored_told_wording(self, srs):
+        # Same guard for the current minting wording. Without the "i was
+        # told:" cut, "reduce" inside the question would be read as the claim
+        # and mint a CONTRADICTED verdict against a correct answer.
+        self._seed_positive_light_clarity(srs)
+        result = srs._verify_qa_insight(
+            "When I asked 'does light reduce clarity?', I was told: "
+            "light increases my clarity", InsightCategory.ENVIRONMENT)
+        assert result.verified is True
+
     def test_constant_sensor_is_unverifiable(self, srs):
         conn = srs._connect()
         base = datetime.now() - timedelta(hours=100)

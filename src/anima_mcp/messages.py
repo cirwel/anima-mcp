@@ -31,6 +31,7 @@ QUESTION_BUDGET_WINDOW_SECONDS = 86_400
 
 _QUESTION_BOILERPLATE_PREFIXES = (
     "why is it that i now know that ",
+    "why is it that i was told that ",
     "why is it that i learned that ",
     "why is it that i know this about myself: ",
     "why is it that ",
@@ -41,6 +42,7 @@ _QUESTION_BOILERPLATE_PREFIXES = (
     # self_reflection insight stems — when an insight description (rather than a
     # full question) reaches semantic-core stripping, peel these off too.
     "i now know that ",
+    "i was told that ",
     "i learned that ",
     "i know this about myself: ",
     # Storage provenance, not something Lumen said. The retired behavioral
@@ -472,7 +474,7 @@ class MessageBoard:
                             source_author=agent_name,
                             category=category,
                         )
-                        print(f"[Knowledge] Learned from Q&A: {insight.text}", file=sys.stderr, flush=True)
+                        print(f"[Knowledge] Stored Q&A claim: {insight.text}", file=sys.stderr, flush=True)
                     else:
                         print("[Knowledge] No extractable insight from answer (too short or acknowledgment)", file=sys.stderr, flush=True)
                 except Exception as e:
