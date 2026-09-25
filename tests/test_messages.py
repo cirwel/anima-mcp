@@ -175,6 +175,14 @@ class TestQuestions:
         assert questions_similar(q1, q2)
         assert board._questions_similar(q1, q2) == questions_similar(q1, q2)
 
+    def test_told_stem_strips_like_learned_stem(self):
+        """A reported claim ("i was told that ...") reduces to the same core
+        as the legacy "i learned that ..." wording, so both wrappers are
+        recognized as the same question rather than new ones."""
+        q1 = "why is it that I was told that dim light changes my attention?"
+        q2 = "why is it that I learned that dim light changes my attention?"
+        assert questions_similar(q1, q2)
+
     def test_unanswered_questions(self, board):
         q = board.add_question("Unanswered question?")
         unanswered = board.get_unanswered_questions(auto_expire=False)

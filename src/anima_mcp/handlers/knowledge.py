@@ -674,7 +674,7 @@ async def handle_get_growth(arguments: dict) -> list[TextContent]:
 
 
 async def handle_get_qa_insights(arguments: dict) -> list[TextContent]:
-    """Get insights Lumen learned from Q&A interactions."""
+    """Get claims Lumen was told in Q&A (extracted from answers, not verified)."""
     try:
         from ..knowledge import get_insights, get_knowledge
 

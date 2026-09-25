@@ -251,7 +251,8 @@ def generate_learned_question() -> Optional[str]:
         ]
         random.shuffle(insights)
         for insight in insights[:10]:
-            # Strip self_reflection boilerplate ("i now know that …", "i learned that …")
+            # Strip self_reflection boilerplate ("i now know that …", "i was told that …",
+            # "i learned that …")
             # so wrappers attach to the semantic core, not stacked templates.
             core = _question_semantic_core(insight.description.lower())
             # A claim that was cut off is not something Lumen can ask about:
@@ -714,7 +715,7 @@ def grounded_self_answer(
         for insight in pool.values():
             text_lower = insight.text.lower()
             q_words = set(question_lower.split()) - {"i", "a", "the", "is", "do", "my", "me", "am", "what", "why", "how", "when", "does"}
-            i_words = set(text_lower.split()) - {"i", "a", "the", "is", "my", "me", "when", "that", "and", "learned"}
+            i_words = set(text_lower.split()) - {"i", "a", "the", "is", "my", "me", "when", "that", "and", "learned", "was", "told"}
             overlap = q_words & i_words
             if overlap and insight.confidence > 0.4:
                 # Weight by conviction: re-derived beliefs surface first, but

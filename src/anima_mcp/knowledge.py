@@ -675,9 +675,13 @@ _STOPWORDS = {
 
 # Dedup uses a slightly wider stopword set than extraction: it additionally
 # drops first-person/insight-boilerplate tokens ("my", "now", "know",
-# "learned") so consolidation compares the *content* of two beliefs, not their
-# templating. Unifies the two inline sets that used to live in add_insight.
-_DEDUP_STOPWORDS = _STOPWORDS | {"my", "now", "know", "learned"}
+# "learned", "told") so consolidation compares the *content* of two beliefs,
+# not their templating. Every stem word in _INSIGHT_STEMS must be here: a stem
+# word left as content is shared by every insight minted with that stem, which
+# pushes distinct claims over the overlap threshold (false merges and false
+# contradictions) and keeps a claim from matching its other-stem twin.
+# Unifies the two inline sets that used to live in add_insight.
+_DEDUP_STOPWORDS = _STOPWORDS | {"my", "now", "know", "learned", "told"}
 
 
 def _dedup_words(text: str) -> set:
@@ -855,9 +859,15 @@ _EXPLANATORY_TERMS = (
 )
 
 
+# Reported-speech stems an insight can carry. "i was told" is what answers
+# mint now; "i learned" survives on every insight stored before that, so both
+# are recognized for as long as those records exist.
+_INSIGHT_STEMS = ("i was told that ", "i was told: ", "i learned that ", "i learned: ")
+
+
 def _strip_insight_boilerplate(text: str) -> str:
     lower_text = text.lower()
-    for marker in ("i learned that ", "i learned: "):
+    for marker in _INSIGHT_STEMS:
         idx = lower_text.find(marker)
         if idx >= 0:
             return text[idx + len(marker):].strip()
@@ -948,9 +958,14 @@ def _extract_simple_insight(question: str, answer: str) -> Optional[str]:
     if answer.lower().strip().rstrip("!.") in ack_phrases:
         return None
 
+    # An answer is something Lumen was told, not something it learned.
+    # Nothing here checks the claim against Lumen's own history, so the text
+    # says so; "learned" belongs to what Lumen derives itself (self_reflection
+    # pattern insights), and the answer's author stays in source_author.
+
     # If answer is already concise, use it directly
     if len(answer) <= 100:
-        return f"When I asked '{question[:50]}...', I learned: {answer}"
+        return f"When I asked '{question[:50]}...', I was told: {answer}"
 
     # Extract the most substantive sentence, not merely the first sentence.
     # Long answers often start with framing ("there are a few reasons...")
@@ -963,7 +978,7 @@ def _extract_simple_insight(question: str, answer: str) -> Optional[str]:
     if candidates:
         best = max(candidates, key=lambda sentence: _sentence_score(sentence, question))
         if _sentence_score(best, question) > -50:
-            return f"I learned that {_lowercase_initial(best)}"
+            return f"I was told that {_lowercase_initial(best)}"
 
     # Fallback: truncate answer
     return f"About '{question[:30]}...': {_truncate_at_word(answer)}"

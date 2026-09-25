@@ -15,6 +15,7 @@ from anima_mcp.knowledge import (
     KnowledgeBase,
     _categorize_text,
     _extract_simple_insight,
+    _strip_insight_boilerplate,
 )
 
 
@@ -469,7 +470,7 @@ class TestExtractSimpleInsight:
         answer = "Warmth comes from CPU temperature readings"
         result = _extract_simple_insight("Where does warmth come from?", answer)
         assert result is not None
-        assert "learned" in result.lower()
+        assert "i was told:" in result.lower()
         assert answer in result
 
     def test_long_answer_extracts_first_sentence(self):
@@ -480,7 +481,7 @@ class TestExtractSimpleInsight:
         )
         result = _extract_simple_insight("How is clarity computed?", answer)
         assert result is not None
-        assert "learned that" in result.lower()
+        assert "was told that" in result.lower()
 
     def test_long_answer_skips_preamble_for_substantive_sentence(self):
         answer = (
@@ -501,7 +502,7 @@ class TestExtractSimpleInsight:
         )
         result = _extract_simple_insight("How do correlated signals help?", answer)
         assert result is not None
-        assert result.startswith("I learned that")
+        assert result.startswith("I was told that")
         assert "shared cause becomes a better explanation" in result
         assert "About '" not in result
 
@@ -521,7 +522,7 @@ class TestExtractSimpleInsight:
         answer = "A" * 100
         result = _extract_simple_insight("Q?", answer)
         assert result is not None
-        assert "learned" in result.lower()
+        assert "i was told:" in result.lower()
 
     def test_answer_101_chars_not_concise(self):
         # 101 chars, single non-word token, so it is not a meaningful sentence.
@@ -529,3 +530,71 @@ class TestExtractSimpleInsight:
         result = _extract_simple_insight("Q?", answer)
         assert result is not None
         assert "About '" in result
+
+
+class TestAnswersAreReportedNotLearned:
+    """An extracted answer is something Lumen was told. Nothing in extraction
+    checks it against Lumen's own history, so the minted text must not claim
+    that Lumen learned it."""
+
+    CONCISE = "Warmth comes from CPU temperature readings"
+    LONG = (
+        "Tiny. "
+        "When two signals vary together more than chance, the shared cause becomes a better explanation "
+        "than treating the pattern as coincidence."
+    )
+
+    @pytest.mark.parametrize("answer", [CONCISE, LONG])
+    def test_minted_text_never_claims_learning(self, answer):
+        result = _extract_simple_insight("Why?", answer)
+        assert result is not None
+        assert "learned" not in result.lower()
+        assert "was told" in result.lower()
+
+    @pytest.mark.parametrize("stored, core", [
+        ("I was told that heat moves from warmer to cooler", "heat moves from warmer to cooler"),
+        ("When I asked 'why?...', I was told: heat spreads", "heat spreads"),
+        # Records minted before the wording change still carry "learned".
+        ("I learned that heat moves from warmer to cooler", "heat moves from warmer to cooler"),
+        ("When I asked 'why?...', I learned: heat spreads", "heat spreads"),
+    ])
+    def test_both_stems_strip_to_the_claim(self, stored, core):
+        assert _strip_insight_boilerplate(stored) == core
+
+    def test_category_ignores_the_stem(self):
+        # "told" must not tip a sensations claim into another category.
+        assert _categorize_text("I was told that the light is bright") == "sensations"
+        assert _categorize_text("I learned that the light is bright") == "sensations"
+
+
+class TestStemWordsAreNotContent:
+    """A stem word ("told", "learned") must never count as shared content in
+    consolidation. Found by adversarial review of the told-not-learned change:
+    with "told" counted, two distinct claims merged (the second dropped) and a
+    light/dark pair was penalised as a contradiction."""
+
+    @staticmethod
+    def _mint(kb, text, n):
+        return kb.add_insight(
+            text=text, source_question=f"q{n}?", source_answer="(a)",
+            source_author=f"agent{n}", category="world", occasion_id=f"s{n}",
+        )
+
+    @pytest.mark.parametrize("stem", ["I was told that ", "I learned that "])
+    def test_distinct_claims_stay_distinct_under_either_stem(self, kb, stem):
+        self._mint(kb, stem + "heat rises near the window", 1)
+        self._mint(kb, stem + "heat rises near the lamp", 2)
+        texts = [i.text for i in kb.get_all_insights()]
+        assert len(texts) == 2, texts
+        assert all(i.confidence == 0.5 for i in kb.get_all_insights())
+
+    @pytest.mark.parametrize("stem", ["I was told that ", "I learned that "])
+    def test_no_spurious_contradiction_under_either_stem(self, kb, stem):
+        self._mint(kb, stem + "light raises clarity in mornings", 1)
+        self._mint(kb, stem + "dark raises clarity in mornings", 2)
+        assert all(i.confidence == 0.5 for i in kb.get_all_insights())
+
+    def test_dedup_words_ignore_both_stems(self):
+        from anima_mcp.knowledge import _dedup_words
+        assert _dedup_words("i was told that light helps focus") == \
+            _dedup_words("i learned that light helps focus")

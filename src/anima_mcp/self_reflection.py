@@ -2245,14 +2245,15 @@ class SelfReflectionSystem:
         #     "pointless" as "less", "slower" as "lower" (substring FPs
         #     measured on the corpus).
         #  2. Markers are read from the CLAIM segment only — many kb texts
-        #     embed the original question ("When I asked '...', I learned:
-        #     ..."), and a marker inside the question is not a claim.
+        #     embed the original question ("When I asked '...', I was told:
+        #     ...", or "I learned:" on records minted before that wording),
+        #     and a marker inside the question is not a claim.
         #  3. Anti-pole sensor wording ("dark", "dim", "cold", "dry") maps
         #     to the same numeric sensor with inverted polarity; there is no
         #     syntactic binding between marker and pole, so a signed check
         #     would flip a correct claim. Fall back to magnitude-only.
         claim_text = text_lower
-        for cut in ("i learned:", "': "):
+        for cut in ("i was told:", "i learned:", "': "):
             if cut in claim_text:
                 claim_text = claim_text.split(cut, 1)[1]
                 break

@@ -710,7 +710,7 @@ TOOLS = [
     ),
     Tool(
         name="get_qa_insights",
-        description="Get insights Lumen learned from Q&A interactions - knowledge extracted from answers to questions",
+        description="Get claims Lumen was told in Q&A - extracted from answers to its questions, not verified against its own history",
         inputSchema={
             "type": "object",
             "properties": {

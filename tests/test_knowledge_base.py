@@ -263,7 +263,7 @@ class TestCategorizeAndExtract:
             "I feel a gentle warmth from the sensor readings."
         )
         assert result is not None
-        assert "learned" in result.lower()
+        assert "was told" in result.lower()
 
     def test_extract_long_answer_first_sentence(self):
         """A long answer extracts the first meaningful sentence."""
@@ -274,7 +274,7 @@ class TestCategorizeAndExtract:
         )
         result = _extract_simple_insight("How does temp work?", long_answer)
         assert result is not None
-        assert "learned" in result.lower()
+        assert "was told" in result.lower()
 
 
 # ==================== Persistence ====================
