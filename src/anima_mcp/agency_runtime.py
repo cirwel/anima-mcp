@@ -159,22 +159,27 @@ def execute_action(
         if direction not in {"increase", "decrease"}:
             action.execution_detail = f"invalid LED direction: {direction}"
         elif ctx.leds and ctx.leds.is_available():
-            current = getattr(ctx.leds, "_brightness", 0.1)
-            target = (
-                min(0.12, current + 0.05)
-                if direction == "increase" else max(0.02, current - 0.05)
-            )
-            if target != current:
-                ctx.leds.set_brightness(target)
+            # A relative factor applied after the user's brightness preset: it
+            # can dim below the preset and return toward it, never exceed it.
+            # (It used to call set_brightness(), which changed a base value the
+            # always-set preset overrides -- a no-op reported as a change.)
+            result = ctx.leds.adjust_agency_brightness(direction)
+            before, after = result["target_before"], result["target_after"]
+            if result["changed"]:
                 action.execution_succeeded = True
-                action.execution_detail = "LED brightness changed"
-                print(
-                    f"[Agency] LED brightness: {current:.2f} → {target:.2f} ({direction})",
-                    file=sys.stderr,
-                    flush=True,
+                action.execution_detail = (
+                    f"LED target brightness {before:.3f} -> {after:.3f} "
+                    f"(agency factor {result['factor_before']:.2f} -> "
+                    f"{result['factor_after']:.2f}, preset ceiling "
+                    f"{result['preset_ceiling']:.3f})"
                 )
+                print(f"[Agency] {action.execution_detail}", file=sys.stderr, flush=True)
             else:
-                action.execution_detail = "LED brightness already at bound"
+                action.execution_detail = (
+                    f"LED brightness unchanged at {before:.3f}: {direction} "
+                    f"would not change the requested target (preset ceiling "
+                    f"{result['preset_ceiling']:.3f})"
+                )
         else:
             action.execution_detail = "LED actuator unavailable"
 
