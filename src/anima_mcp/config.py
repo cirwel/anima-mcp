@@ -292,6 +292,30 @@ class ConfigManager:
         except OSError:
             return None
     
+    def _read_from_disk(self) -> AnimaConfig:
+        """Parse the file into a fresh object, or defaults. Never touches the cache."""
+        if not self.config_path.exists():
+            return AnimaConfig()
+        try:
+            if self.config_path.suffix == ".yaml" or self.config_path.suffix == ".yml":
+                with open(self.config_path, "r") as f:
+                    data = yaml.safe_load(f)
+            else:
+                with open(self.config_path, "r") as f:
+                    data = json.load(f)
+
+            config = AnimaConfig.from_dict(data)
+
+            # Validate
+            valid, error = config.validate()
+            if not valid:
+                print(f"[Config] Warning: Invalid config, using defaults: {error}", file=sys.stderr, flush=True)
+                return AnimaConfig()
+            return config
+        except Exception as e:
+            print(f"[Config] Error loading config, using defaults: {e}", file=sys.stderr, flush=True)
+            return AnimaConfig()
+
     def load(self, force_reload: bool = False) -> AnimaConfig:
         """Load configuration from file or return defaults."""
         current_signature = self._file_signature()
@@ -302,28 +326,7 @@ class ConfigManager:
         ):
             return self._config
         
-        if self.config_path.exists():
-            try:
-                if self.config_path.suffix == ".yaml" or self.config_path.suffix == ".yml":
-                    with open(self.config_path, "r") as f:
-                        data = yaml.safe_load(f)
-                else:
-                    with open(self.config_path, "r") as f:
-                        data = json.load(f)
-                
-                self._config = AnimaConfig.from_dict(data)
-                
-                # Validate
-                valid, error = self._config.validate()
-                if not valid:
-                    print(f"[Config] Warning: Invalid config, using defaults: {error}", file=sys.stderr, flush=True)
-                    self._config = AnimaConfig()
-            except Exception as e:
-                print(f"[Config] Error loading config, using defaults: {e}", file=sys.stderr, flush=True)
-                self._config = AnimaConfig()
-        else:
-            # No config file - use defaults
-            self._config = AnimaConfig()
+        self._config = self._read_from_disk()
 
         # Readers in the broker and server are separate processes.  Remember
         # which file revision produced this object so either process notices an
@@ -355,8 +358,12 @@ class ConfigManager:
         # Track calibration changes
         if update_source:
             from datetime import datetime
-            # Load old config to compare
-            old_config = self.load()
+            # Compare against what is on disk, not self.load(): callers mutate
+            # the cached object in place (or assign into it) before saving, so
+            # the cache already holds the new values and every comparison came
+            # out equal — calibration_update_count stayed 0 and
+            # calibration_history stayed empty however often calibration moved.
+            old_config = self._read_from_disk()
             old_cal = old_config.nervous_system.to_dict()
             new_cal = config.nervous_system.to_dict()
             

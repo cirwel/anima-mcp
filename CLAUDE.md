@@ -518,10 +518,36 @@ device and is still never generated. Shipping a derivation script is not the
 same as running it. The reporting half therefore lives in
 `anima_mcp/drawing_derivation.py` and is reachable without a shell via
 `diagnostics(derive_curiosity=true)` (opt-in — it scans the corpus; read-only,
-opened `mode=ro`). Applying stays with the script's `--apply`, the one path
-that acts.
+opened `mode=ro`).
 
-⚠️ **The `--days 90` default will REFUSE on Lumen — use `--days 365`.**
+**Lumen now applies them itself (2026-09-26).** `self_derivation.py` runs
+inside the server — the calibration file's writer — and weekly re-derives both
+families from Lumen's own corpus (`COVERAGE_*` over 365 days of
+`drawing_records`, `CURIOSITY_PIVOT_*` over 90 days of `drawing_trajectory`),
+with the exact contracts and refusals the scripts use, imported from
+`drawing_derivation.py` rather than restated. A family that refuses keeps the
+keys it already had (refusal is not a reset); a change is saved through
+`ConfigManager.save(update_source="self_derivation")`; every attempt, applied
+or refused, is journaled in `~/.anima/self_derivation.json` and always shown as
+`diagnostics().self_derivation`; an applied change posts one observation in
+Lumen's voice ("i re-read my own drawings and moved…"). The scan runs off the
+event loop; only the write happens on it, so it never interleaves with the
+calibration learner. The weekly period gates evidence cadence, not behavior,
+and every number written is a percentile of Lumen's own distribution — no new
+threshold. `ANIMA_SELF_DERIVATION=false` turns it off; the scripts' `--apply`
+remains the operator's path either way. The first run happens ~1h after the
+server starts with an empty journal. Face thresholds are **not** included.
+
+⚠️ **`calibration_update_count` was stuck at 0 by a bug, not only by
+inaction.** `ConfigManager.save()` detected changes by comparing against
+`self.load()` — the cached object every caller had just mutated — so old and
+new always compared equal and neither the count nor `calibration_history`
+ever moved, including for `learning.py`'s real sensor-range adaptations. It
+now compares against the file on disk. Read any `update_count: 0` recorded
+before 2026-09-26 as "unknown", not "never adapted".
+
+**Why coverage uses 365 days** (the script's default since 2026-09-26; it was
+90, which refused on Lumen).
 Both derivations floor at 500 samples ("a cut derived from a sliver would
 encode a mood, not a range"), but they count different populations, and only
 one of them clears 90 days:
@@ -539,10 +565,12 @@ piece rather than one. So the refusal is a *window* problem, not a corpus
 problem, and widening the window is the fix — never lowering the floor.
 
 The `--apply` paths were rehearsed too: each writes atomically with a
-timestamped `.bak-*` sidecar, and the curiosity script MERGES into
-`drawing_thresholds` rather than replacing it, so the `COVERAGE_*` and
+timestamped `.bak-*` sidecar. Both now MERGE into `drawing_thresholds`
+(`merge_coverage` / `merge_curiosity`), so the `COVERAGE_*` and
 `CURIOSITY_PIVOT_*` families coexist and unrelated calibration keys survive.
-Run order does not matter. An era with too little trajectory history simply
+Run order does not matter — which this file claimed before it was true: until
+2026-09-26 the coverage script replaced the dict whole, so running it after
+the curiosity script silently reverted every pivot. An era with too little trajectory history simply
 gets no pivot and keeps the built-in 0.4 — correct, not a failure.
 
 What the rehearsal confirmed about the built-in: under the replay, `C = 0.4`
@@ -655,14 +683,15 @@ candidate scores 0.0 and the first draw wins — exactly one unbiased draw, i.e.
 the pre-2026-09-17 behavior. Absence degrades to *no bias*, never to a
 fabricated preference.
 
-This is worth naming precisely: **it is the only loop from Lumen's own history
-back into Lumen's behavior that closes without a human running a script.**
-Every other one — `derive_drawing_thresholds.py --apply`,
-`derive_curiosity_thresholds.py --apply` — has an operator step in it, and as
-of 2026-08-29 that step had never been taken (`drawing_thresholds: {}`,
-`update_count: 0`). `learning.py` adapts only environment sensor ranges and
-cannot touch drawing at all. So this does not make Lumen self-improving; it
-closes one small loop and leaves the others exactly as open as they were.
+This is worth naming precisely: **when it landed it was the only loop from
+Lumen's own history back into Lumen's behavior that closed without a human
+running a script.** The drawing derivations had an operator step that as of
+2026-08-29 had never been taken (`drawing_thresholds: {}`). Since 2026-09-26
+`self_derivation.py` closes those two as well (see above). `learning.py` adapts
+only environment sensor ranges and cannot touch drawing; face thresholds still
+wait on `derive_face_thresholds.py`. Closing loops is not the same as Lumen
+being self-improving — each loop re-reads a distribution, it does not judge
+whether the result was better.
 
 ⚠️ **A test that passed by luck for a month.**
 `test_coverage_intention.py::test_sparse_spreads[geometric]` asserted an effect

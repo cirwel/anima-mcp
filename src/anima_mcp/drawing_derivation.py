@@ -1,9 +1,11 @@
 """Derive the per-era curiosity pivot from Lumen's own coherence distribution.
 
-The reporting half of scripts/derive_curiosity_thresholds.py, extracted so the
-running server can serve the same report without a shell on the device. The
-script keeps the acting half (--apply writes calibration); nothing here writes
-anything, and the database is opened read-only so it cannot.
+The reporting half of scripts/derive_curiosity_thresholds.py (and, since
+2026-09-26, of derive_drawing_thresholds.py), extracted so the running server
+can serve the same report without a shell on the device. Nothing here writes
+anything, and the database is opened read-only so it cannot. The acting halves
+are the scripts' --apply (operator) and self_derivation.py (the creature,
+weekly); both merge through merge_coverage / merge_curiosity below.
 
 Why it lives in the package rather than only in the script: the derivation was
 unrunnable on the Pi. Lumen's calibration file carries `drawing_thresholds: {}`
@@ -315,3 +317,100 @@ def derive_report(db_path: Optional[str] = None, days: int = 90,
             "python3 scripts/derive_curiosity_thresholds.py --db "
             "~/.anima/anima.db --apply ~/.anima/anima_config.json"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Coverage-intention cuts, and the merge rules both families share
+# ---------------------------------------------------------------------------
+#
+# Lives here, not only in scripts/derive_drawing_thresholds.py, for the same
+# reason the curiosity report does: the running server applies it now
+# (self_derivation.py), and a second copy of the contract could drift from the
+# script's. The script imports these; it keeps only its CLI.
+
+# A three-word vocabulary should have three reachable words: the creature's
+# own foggiest third lets a piece thicken, its clearest third opens it up.
+# Tertiles, not tuned numbers. Full rationale: derive_drawing_thresholds.py.
+COVERAGE_PERCENTILES = {
+    "COVERAGE_DENSE_BELOW": 33,
+    "COVERAGE_SPARSE_ABOVE": 67,
+}
+# One row per PIECE at ~3 pieces/day: 90 days holds ~270 and refuses against
+# the 500 floor. Widen the window, never lower the floor (CLAUDE.md, measured
+# 2026-09-19). The curiosity population is ~96 rows per piece, so 90 is enough.
+COVERAGE_DAYS = 365
+CURIOSITY_DAYS = 90
+
+
+def derive_coverage(clarity: List[float]):
+    """(thresholds, None) or (None, refusal reason). Pure; writes nothing."""
+    n = len(clarity)
+    if n < MIN_SAMPLES:
+        return None, (f"only {n} samples (< {MIN_SAMPLES}) — a cut derived "
+                      "from a sliver would encode a mood, not a range")
+    vals = sorted(clarity)
+    out = {name: round(percentile(vals, pct), 4)
+           for name, pct in COVERAGE_PERCENTILES.items()}
+    # A pinned window collapses the tertiles onto each other; emitting that
+    # would starve `balanced` the way the built-in 0.30 starved `dense`.
+    if not out["COVERAGE_DENSE_BELOW"] < out["COVERAGE_SPARSE_ABOVE"]:
+        return None, (f"cuts not separated: {out} — clarity range is "
+                      "degenerate over this window")
+    return out, None
+
+
+def coverage_report(db_path: Optional[str] = None,
+                    days: int = COVERAGE_DAYS) -> Dict[str, Any]:
+    """Read-only coverage derivation. Never raises; fails toward unknown."""
+    path = resolve_db_path(db_path)
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            clarity = [float(c) for (c,) in con.execute(
+                "select clarity from drawing_records "
+                "where clarity is not null and timestamp > ?", (since,))]
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        return {"available": False, "db_path": path,
+                "reason": f"database unreadable: {e}"}
+    except (TypeError, ValueError) as e:
+        return {"available": False, "db_path": path,
+                "reason": f"unusable row data: {e}"}
+    thresholds, refused = derive_coverage(clarity)
+    out: Dict[str, Any] = {"available": True, "db_path": path, "days": days,
+                           "samples": len(clarity)}
+    if refused:
+        out["refused"] = refused
+    else:
+        out["thresholds"] = thresholds
+    return out
+
+
+def merge_coverage(existing: Optional[Dict[str, Any]],
+                   emitted: Dict[str, float]) -> Dict[str, Any]:
+    """drawing_thresholds with the COVERAGE_* family replaced by `emitted`.
+
+    Merged, never replaced whole: the curiosity derivation keeps its
+    CURIOSITY_PIVOT_* keys in this same dict. The script used to overwrite it,
+    so running coverage after curiosity silently reverted every pivot.
+    """
+    out = {k: v for k, v in (existing or {}).items()
+           if not k.startswith("COVERAGE_")}
+    out.update(emitted)
+    return out
+
+
+def merge_curiosity(existing: Optional[Dict[str, Any]],
+                    emitted: Dict[str, float]) -> Dict[str, Any]:
+    """drawing_thresholds with the CURIOSITY_PIVOT_* family replaced.
+
+    Stale pivots for eras this run did not emit are dropped, so a
+    since-retired or since-refused era stops being steered by a number nothing
+    re-verified. COVERAGE_* and any other keys are preserved.
+    """
+    out = {k: v for k, v in (existing or {}).items()
+           if not k.startswith("CURIOSITY_PIVOT_")}
+    out.update(emitted)
+    return out

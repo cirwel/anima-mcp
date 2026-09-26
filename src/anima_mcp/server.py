@@ -53,6 +53,7 @@ from .server_state import (
     SELF_MODEL_SAVE_INTERVAL, SCHEMA_EXTRACTION_INTERVAL,
     EXPRESSION_INTERVAL, UNIFIED_REFLECTION_INTERVAL, SELF_ANSWER_INTERVAL,
     GOAL_SUGGEST_INTERVAL, GOAL_CHECK_INTERVAL, META_LEARNING_INTERVAL,
+    SELF_DERIVATION_CHECK_INTERVAL,
     ERROR_LOG_THROTTLE, STATUS_LOG_THROTTLE, DISPLAY_LOG_THROTTLE,
     WARN_LOG_THROTTLE,
     METACOG_SURPRISE_THRESHOLD, is_broker_running as _is_broker_running,
@@ -1184,6 +1185,17 @@ async def _update_display_loop():
                         add_observation(msg, author="lumen")
 
                 safe_call(goal_check, default=None, log_error=True)
+
+            # Self-derivation: Lumen re-reads its own drawing corpus weekly and
+            # applies the coverage cuts and curiosity pivots it derives — the
+            # loop that used to wait on an operator script nobody ran. Only
+            # schedules; the scan runs off-loop (self_derivation.py).
+            if loop_count % SELF_DERIVATION_CHECK_INTERVAL == 0 and loop_count > 0:
+                def self_derive_check():
+                    from .self_derivation import start_if_due
+                    start_if_due()
+
+                safe_call(self_derive_check, default=None, log_error=True)
 
             # Meta-learning: Daily preference weight evolution
             # Every ~12 hours, rebalance which anima dimensions matter most

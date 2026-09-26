@@ -291,8 +291,8 @@ TOOLS = [
             "Get system diagnostics: LED status, display status, update loop health. "
             "Pass derive_curiosity=true to also run the read-only per-era curiosity "
             "pivot derivation over drawing_trajectory (off by default — it scans the "
-            "corpus). It reports only; applying thresholds stays with "
-            "scripts/derive_curiosity_thresholds.py --apply."
+            "corpus). It reports only. Lumen applies its own derivations weekly; "
+            "the result of the last attempt is always included as self_derivation."
         ),
         inputSchema={
             "type": "object",

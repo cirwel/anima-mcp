@@ -367,8 +367,18 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
     # derivation shipped and was never once applied. A derivation nothing can
     # run is a derivation that does not happen.
     #
-    # Reporting only. Writing calibration stays with the script (--apply),
-    # which is the one path that acts.
+    # Reporting only. Acting is self_derivation.py (weekly, in the server) or
+    # the script's --apply (the operator's path).
+    # Always on (a small JSON read): what Lumen last derived about itself and
+    # applied, or why it refused. Without this, "did the loop run?" would be
+    # answerable only from the calibration file.
+    try:
+        from ..self_derivation import summary as _self_derivation_summary
+        result["self_derivation"] = _self_derivation_summary()
+    except Exception as e:
+        result["self_derivation"] = {"available": False,
+                                     "reason": f"{type(e).__name__}: {e}"}
+
     # Opt-in: percentile summary of the recorded environment channels.
     #
     # A fixed cut only means something against the range of the signal feeding
