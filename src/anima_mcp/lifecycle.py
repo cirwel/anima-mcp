@@ -385,6 +385,18 @@ def sleep():
 
     _ctx = _get_ctx()
 
+    # Persist metacognition (baselines, curiosity log, self-forecast). It
+    # otherwise saves only every 100 observations, so a shutdown could lose
+    # ~10 minutes of what Lumen learned about itself.
+    if _ctx and getattr(_ctx, "metacog_monitor", None) is not None:
+        try:
+            _ctx.metacog_monitor.save()
+        except Exception as e:
+            try:
+                print(f"[Sleep] Error saving metacognition: {e}", file=sys.stderr, flush=True)
+            except (ValueError, OSError):
+                pass
+
     # Persist calibration drift state
     if _ctx and _ctx.calibration_drift:
         try:

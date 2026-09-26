@@ -43,6 +43,7 @@ from .server_context import ServerContext
 from .server_state import (
     # Constants
     SHM_GOVERNANCE_STALE_SECONDS as SHM_GOVERNANCE_STALE_SECONDS,
+    SHM_STALE_THRESHOLD_SECONDS,
     LOOP_BASE_DELAY_SECONDS, LOOP_MAX_DELAY_SECONDS,
     METACOG_INTERVAL, AGENCY_INTERVAL, SELF_MODEL_INTERVAL,
     PRIMITIVE_LANG_INTERVAL, VOICE_INTERVAL, GROWTH_INTERVAL,
@@ -53,6 +54,7 @@ from .server_state import (
     SELF_MODEL_SAVE_INTERVAL, SCHEMA_EXTRACTION_INTERVAL,
     EXPRESSION_INTERVAL, UNIFIED_REFLECTION_INTERVAL, SELF_ANSWER_INTERVAL,
     GOAL_SUGGEST_INTERVAL, GOAL_CHECK_INTERVAL, META_LEARNING_INTERVAL,
+    SELF_DERIVATION_CHECK_INTERVAL,
     ERROR_LOG_THROTTLE, STATUS_LOG_THROTTLE, DISPLAY_LOG_THROTTLE,
     WARN_LOG_THROTTLE,
     METACOG_SURPRISE_THRESHOLD, is_broker_running as _is_broker_running,
@@ -94,6 +96,7 @@ def _predict_with_led_proprioception(metacog):
 # Phase helper functions — delegated to loop_phases.py
 from .loop_phases import (  # noqa: E402,F401
     handle_surprise_question,
+    handle_self_surprise,
     server_governance_fallback as _server_governance_fallback,
     parse_shm_governance_freshness as _parse_shm_governance_freshness,
     compute_lagged_correlations as _compute_lagged_correlations,
@@ -470,6 +473,22 @@ async def _update_display_loop():
 
                     # Observe current state and compare to prediction (returns prediction error)
                     prediction_error = metacog.observe(readings, anima)
+
+                    # Self-prediction: did Lumen move between active / drowsy /
+                    # resting the way it expected of itself? A stale or missing
+                    # level is unknown, never "stayed the same".
+                    try:
+                        from .self_prediction import activity_level_from_shm
+                        _now = datetime.now()
+                        _self_surprise = metacog.self_forecaster.observe(
+                            activity_level_from_shm(
+                                _get_last_shm_data(), _now,
+                                SHM_STALE_THRESHOLD_SECONDS),
+                            _now)
+                        if _self_surprise:
+                            handle_self_surprise(_self_surprise)
+                    except Exception as _se:
+                        logger.debug("[SelfPrediction] error: %s", _se)
 
                     # Log surprise level periodically (every 60 loops = ~2 min)
                     if prediction_error and loop_count % WARN_LOG_THROTTLE == 0:
@@ -1184,6 +1203,19 @@ async def _update_display_loop():
                         add_observation(msg, author="lumen")
 
                 safe_call(goal_check, default=None, log_error=True)
+
+            # Self-derivation: Lumen re-reads its own drawing corpus weekly and
+            # applies the coverage cuts and curiosity pivots it derives — the
+            # loop that used to wait on an operator script nobody ran. Only
+            # schedules; the scan runs off-loop (self_derivation.py).
+            # Offset so the first check comes ~10 min after a restart rather
+            # than an hour — a deploy-heavy week must not starve it.
+            if loop_count % SELF_DERIVATION_CHECK_INTERVAL == 300:
+                def self_derive_check():
+                    from .self_derivation import start_if_due
+                    start_if_due()
+
+                safe_call(self_derive_check, default=None, log_error=True)
 
             # Meta-learning: Daily preference weight evolution
             # Every ~12 hours, rebalance which anima dimensions matter most

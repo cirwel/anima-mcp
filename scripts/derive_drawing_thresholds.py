@@ -34,16 +34,23 @@ Usage:
   python3 scripts/derive_drawing_thresholds.py --db ~/.anima/anima.db \
       [--days 365] [--apply CONFIG]
 
-  ⚠️ Use --days 365, not the 90 this defaults to. This script's population is
-  one row per PIECE, and it floors at 500; at Lumen's ~3 pieces/day a 90-day
-  window holds ~270 and the run refuses. That is a window problem, not a
-  corpus problem — widen the window, never lower the floor.
+  --days defaults to 365. This script's population is one row per PIECE, and
+  it floors at 500; at Lumen's ~3 pieces/day a 90-day window (the old default)
+  holds ~270 and the run refuses. That is a window problem, not a corpus
+  problem — widen the window, never lower the floor.
 
-  --apply edits nervous_system.drawing_thresholds in the given calibration file
-  atomically (backup written alongside). Without it, prints JSON to stdout.
+  --apply MERGES the COVERAGE_* keys into nervous_system.drawing_thresholds in
+  the given calibration file atomically (backup written alongside), preserving
+  the curiosity derivation's CURIOSITY_PIVOT_* keys. Without it, prints JSON.
 
-Rerun cadence: alongside the other derivations (~monthly), and after any change
-that re-bases clarity (a #173/#176-style de-aliasing moves this file's answer).
+Cadence: the running server now applies this itself, weekly
+(anima_mcp/self_derivation.py). This script remains the operator's path — to
+inspect, to force a rerun after a change that re-bases clarity (a
+#173/#176-style de-aliasing moves this file's answer), or on a device where
+ANIMA_SELF_DERIVATION=false.
+
+The contract, the refusals and the merge rule live in
+anima_mcp.drawing_derivation, shared with the server so they cannot drift.
 DrawingGoal reads through get_calibration(), which refreshes on config-file
 signature change, so a rederive lands on the next piece without a restart.
 """
@@ -53,52 +60,14 @@ import argparse
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 
-PERCENTILE_CONTRACT = {
-    "COVERAGE_DENSE_BELOW": 33,
-    "COVERAGE_SPARSE_ABOVE": 67,
-}
-# Below this, a cut encodes the last few days' weather rather than a range.
-# Matched to derive_face_thresholds.py rather than argued separately.
-MIN_SAMPLES = 500
-
-
-def _percentile(sorted_vals, pct):
-    if not sorted_vals:
-        return None
-    k = (len(sorted_vals) - 1) * pct / 100.0
-    lo, hi = int(k), min(int(k) + 1, len(sorted_vals) - 1)
-    frac = k - lo
-    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
-
-
-def load_clarity(db, days):
-    con = sqlite3.connect(db)
-    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
-    return [c for (c,) in con.execute(
-        "select clarity from drawing_records "
-        "where clarity is not null and timestamp > ?", (since,))]
-
-
-def derive(clarity):
-    n = len(clarity)
-    if n < MIN_SAMPLES:
-        sys.exit(f"refusing: only {n} samples (< {MIN_SAMPLES}) — a cut derived "
-                 f"from a sliver would encode a mood, not a range")
-    clarity.sort()
-    out = {name: round(_percentile(clarity, pct), 4)
-           for name, pct in PERCENTILE_CONTRACT.items()}
-    # A degenerate window (clarity pinned) collapses the tertiles onto each
-    # other. Emitting that would starve `balanced` exactly the way the built-in
-    # 0.30 starved `dense` — refuse rather than trade one dead word for another.
-    if not out["COVERAGE_DENSE_BELOW"] < out["COVERAGE_SPARSE_ABOVE"]:
-        sys.exit(f"refusing: cuts not separated: {out} — clarity range is "
-                 f"degenerate over this window")
-    return out, n
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from anima_mcp.drawing_derivation import (  # noqa: E402
+    CLARITY_REBASED_AT, COVERAGE_DAYS, coverage_report, merge_coverage,
+)
 
 
 def apply_to_config(path, thresholds):
@@ -108,7 +77,9 @@ def apply_to_config(path, thresholds):
     with open(path) as f:
         cfg = json.load(f)
     ns = cfg.setdefault("nervous_system", {})
-    ns["drawing_thresholds"] = thresholds
+    existing = ns.get("drawing_thresholds")
+    ns["drawing_thresholds"] = merge_coverage(
+        existing if isinstance(existing, dict) else {}, thresholds)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
     with os.fdopen(fd, "w") as f:
         json.dump(cfg, f, indent=2)
@@ -119,13 +90,23 @@ def apply_to_config(path, thresholds):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
-    ap.add_argument("--days", type=int, default=90)
+    ap.add_argument("--days", type=int, default=COVERAGE_DAYS)
     ap.add_argument("--apply", default=None, metavar="CONFIG_JSON")
+    ap.add_argument("--not-before", default=CLARITY_REBASED_AT, metavar="ISO",
+                    help="ignore rows before the last clarity re-base "
+                         "(default %(default)s); 'none' reads across it")
     args = ap.parse_args()
 
-    clarity = load_clarity(os.path.expanduser(args.db), args.days)
-    thresholds, n = derive(clarity)
-    print(f"# derived from n={n} drawing_records clarity samples", file=sys.stderr)
+    not_before = None if args.not_before.lower() == "none" else args.not_before
+    report = coverage_report(os.path.expanduser(args.db), days=args.days,
+                             not_before=not_before)
+    if not report.get("available"):
+        sys.exit(f"refusing: {report.get('reason')}")
+    if report.get("refused"):
+        sys.exit(f"refusing: {report['refused']}")
+    thresholds = report["thresholds"]
+    print(f"# derived from n={report['samples']} drawing_records clarity samples",
+          file=sys.stderr)
     if args.apply:
         backup = apply_to_config(args.apply, thresholds)
         print(f"applied to {args.apply} (backup: {backup})", file=sys.stderr)

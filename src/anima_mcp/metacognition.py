@@ -236,6 +236,14 @@ class MetacognitiveMonitor:
         # from stillness itself — occasionally, so it doesn't flood the queue.
         self._contemplative_curiosity_rate: float = 0.02
 
+        # Self-prediction (self_prediction.py): forecasting Lumen's own
+        # activity transitions, and a record-only band of its own surprise.
+        # Only the server feeds the forecaster; both persist with the
+        # baselines, whose sole writer is the server.
+        from .self_prediction import SelfForecaster, SurpriseBand
+        self.self_forecaster = SelfForecaster()
+        self.surprise_band = SurpriseBand()
+
         # Load persisted baselines from disk
         self._load_baselines()
 
@@ -278,6 +286,9 @@ class MetacognitiveMonitor:
                         and isinstance(entry.get("errors_at_time"), dict)
                         and isinstance(entry.get("obs_count"), int)
                     ]
+                from .self_prediction import SelfForecaster, SurpriseBand
+                self.self_forecaster = SelfForecaster.from_dict(data.get("self_forecast"))
+                self.surprise_band = SurpriseBand.from_dict(data.get("surprise_band"))
                 observation_count = data.get("observation_count")
                 if isinstance(observation_count, int) and observation_count >= 0:
                     self._save_counter = observation_count
@@ -319,6 +330,8 @@ class MetacognitiveMonitor:
                 "diurnal_light": {str(h): vals for h, vals in self._diurnal_light.items() if vals},
                 "domain_weights": self._domain_weights,
                 "curiosity_log": self._curiosity_log[-50:],
+                "self_forecast": self.self_forecaster.to_dict(),
+                "surprise_band": self.surprise_band.to_dict(),
                 "saved_at": datetime.now().isoformat(),
                 "observation_count": self._save_counter,
             }
@@ -660,6 +673,8 @@ class MetacognitiveMonitor:
         
         error.surprise_sources = sources
         self._cumulative_surprise = 0.9 * self._cumulative_surprise + 0.1 * error.surprise
+        # Record-only: how a self-relative gate would compare to the fixed one.
+        self.surprise_band.observe(error.surprise, self.surprise_threshold)
         self._error_history.append(error)
 
         # Evaluate past curiosity: did prediction improve in domains we were curious about?

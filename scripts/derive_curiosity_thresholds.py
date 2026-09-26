@@ -16,7 +16,7 @@ invariant 1, on the signal meant to end a piece.
 The percentile contract, the refusal semantics and the replay all live in
 `anima_mcp.drawing_derivation` — imported here rather than restated, and shared
 with the `diagnostics` tool so the report is readable on a device with no shell.
-This file is the ACTING half: it is the only path that writes calibration.
+This file is the operator's acting half; self_derivation.py is the creature's.
 
 Usage:
   python3 scripts/derive_curiosity_thresholds.py --db ~/.anima/anima.db \
@@ -31,8 +31,10 @@ Usage:
   Without --apply it prints the report and JSON and changes nothing. Absent
   keys fall back to the built-in 0.4, so an un-applied derivation moves no mark.
 
-Rerun cadence: alongside the other derivations (~monthly), and after any change
-that re-bases behavioural C. `_curiosity_pivot()` reads through
+Cadence: the running server now applies this itself, weekly
+(anima_mcp/self_derivation.py). This script remains the operator's path — to
+inspect, to force a rerun after a change that re-bases behavioural C, or on a
+device where ANIMA_SELF_DERIVATION=false. `_curiosity_pivot()` reads through
 get_calibration(), which refreshes on config-file signature change, so a
 rederive lands without a restart.
 """
@@ -47,7 +49,7 @@ import tempfile
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from anima_mcp.drawing_derivation import derive_report  # noqa: E402
+from anima_mcp.drawing_derivation import derive_report, merge_curiosity  # noqa: E402
 
 
 def apply_to_config(path, thresholds):
@@ -63,14 +65,8 @@ def apply_to_config(path, thresholds):
         cfg = json.load(f)
     ns = cfg.setdefault("nervous_system", {})
     existing = ns.get("drawing_thresholds")
-    if not isinstance(existing, dict):
-        existing = {}
-    # Drop stale pivots for eras this run did not emit, so a since-retired or
-    # since-refused era stops being steered by a number nothing re-verified.
-    existing = {k: v for k, v in existing.items()
-                if not k.startswith("CURIOSITY_PIVOT_")}
-    existing.update(thresholds)
-    ns["drawing_thresholds"] = existing
+    ns["drawing_thresholds"] = merge_curiosity(
+        existing if isinstance(existing, dict) else {}, thresholds)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
     with os.fdopen(fd, "w") as f:
         json.dump(cfg, f, indent=2)

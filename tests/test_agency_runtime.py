@@ -152,3 +152,47 @@ def test_live_phase_records_actuator_exception_as_failed_execution():
     assert result.execution_succeeded is False
     assert result.execution_detail == "actuator error: RuntimeError: LED bus fault"
     assert ctx.last_action is result
+
+
+def _led_execute(leds, direction):
+    action = Action(ActionType.LED_BRIGHTNESS, {"direction": direction})
+    execute_action(
+        action,
+        ctx=SimpleNamespace(leds=leds),
+        action_selector=MagicMock(),
+        anima=SimpleNamespace(),
+        readings=SimpleNamespace(),
+        prediction_error=None,
+        metacog=None,
+        surprise_level=0.0,
+        surprise_sources=[],
+    )
+    return action
+
+
+def _preset_leds(preset):
+    from anima_mcp.display.leds.display import LEDDisplay
+
+    leds = LEDDisplay(brightness=0.04)
+    leds._dots = object()  # is_available() without hardware
+    leds._manual_brightness_factor = preset
+    leds.set_all = lambda state: None
+    leds.update_from_anima(0.5, 0.5, 0.5, 0.5)
+    return leds
+
+
+def test_led_action_reports_the_target_it_actually_applied():
+    leds = _preset_leds(0.12)
+    action = _led_execute(leds, "decrease")
+    assert action.execution_succeeded is True
+    assert "0.120 -> 0.096" in action.execution_detail
+    assert abs(leds._target_brightness - 0.096) < 1e-9
+    assert leds._base_brightness == 0.04  # preset-overridden base untouched
+
+
+def test_led_action_at_preset_ceiling_reports_no_change():
+    leds = _preset_leds(0.12)
+    action = _led_execute(leds, "increase")
+    assert action.execution_succeeded is False
+    assert "unchanged" in action.execution_detail
+    assert leds._target_brightness == 0.12

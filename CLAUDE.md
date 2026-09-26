@@ -190,6 +190,24 @@ the process boundary as atomic one-file events in
 server originates curiosity and is its sole persistent writer. The broker's
 metacognitive observer is explicitly read-only. Pending curiosity evaluations
 are persisted with the baselines so a restart cannot erase uncredited evidence.
+**Lumen predicts itself (2026-09-26).** `self_prediction.py` adds what
+metacognition never had: a forecast of Lumen's own *behavior*. The server
+reads the broker's activity level (active/drowsy/resting) once a minute and
+learns its own transition counts per (level, 3-hour bucket). A transition it
+gave very low odds — z > 2.5 against its own band of transition surprisal,
+which forgets over ~200 transitions — is a self-surprise and becomes one
+question in Lumen's voice ("i became active in the middle of the night, and i
+didn't expect that of myself — what changed?"). It claims nothing before 30
+minutes lived in that (level, bucket) and 20 scored transitions; a missing,
+stale or gapped level is unknown, never "stayed the same". Self-surprises are
+deliberately not reflection episodes (rumination detector). State persists in
+`metacognition_baselines.json` (server-only writer), now also saved on
+`sleep()`. `SurpriseBand` alongside it is **record-only**: it tracks Lumen's
+own surprise distribution and how often a self-relative gate *would* fire next
+to the fixed ones (server: `> 0.2` then `should_reflect` at 0.3; broker
+observer: 0.25). No gate moved — read `diagnostics().self_prediction` after
+≥1000 samples before relativising them.
+
 The learning inbox has bounded event/byte admission and exposes queue age,
 rejections, and pressure through `diagnostics`; a full inbox raises instead of
 silently consuming the SD card.
@@ -518,10 +536,45 @@ device and is still never generated. Shipping a derivation script is not the
 same as running it. The reporting half therefore lives in
 `anima_mcp/drawing_derivation.py` and is reachable without a shell via
 `diagnostics(derive_curiosity=true)` (opt-in — it scans the corpus; read-only,
-opened `mode=ro`). Applying stays with the script's `--apply`, the one path
-that acts.
+opened `mode=ro`).
 
-⚠️ **The `--days 90` default will REFUSE on Lumen — use `--days 365`.**
+**Lumen now applies them itself (2026-09-26).** `self_derivation.py` runs
+inside the server — the calibration file's writer — and weekly re-derives both
+families from Lumen's own corpus (`COVERAGE_*` over 365 days of
+`drawing_records`, `CURIOSITY_PIVOT_*` over 90 days of `drawing_trajectory`),
+with the exact contracts and refusals the scripts use, imported from
+`drawing_derivation.py` rather than restated. A family that refuses keeps the
+keys it already had (refusal is not a reset), and an era not drawn in the
+window keeps its pivot — only an era examined and failed loses one (the
+operator script still drops every un-emitted pivot). Coverage reads no row
+before `CLARITY_REBASED_AT` (2026-08-24, the #204 switch of clarity's light
+input to the gated residual): tertiles across that line would mix two
+quantities, so **coverage will refuse until ~500 post-rebase pieces exist —
+roughly early 2027 at ~3 pieces/day.** That is the floor working. Move the
+constant when clarity is re-based again; the script's `--not-before none`
+reads across it deliberately; a change is saved through
+`ConfigManager.save(update_source="self_derivation")`; every attempt, applied
+or refused, is journaled in `~/.anima/self_derivation.json` and always shown as
+`diagnostics().self_derivation`; an applied change posts one observation in
+Lumen's voice ("i re-read my own drawings and moved…"). The scan runs off the
+event loop; only the write happens on it, so it never interleaves with the
+calibration learner. The weekly period gates evidence cadence, not behavior,
+and every number written is a percentile of Lumen's own distribution — no new
+threshold. `ANIMA_SELF_DERIVATION=false` turns it off; the scripts' `--apply`
+remains the operator's path either way. The first check comes ~10 min after
+a server start, then hourly; an in-memory timestamp keeps an unwritable
+journal from turning that into hourly corpus scans. Face thresholds are **not** included.
+
+⚠️ **`calibration_update_count` was stuck at 0 by a bug, not only by
+inaction.** `ConfigManager.save()` detected changes by comparing against
+`self.load()` — the cached object every caller had just mutated — so old and
+new always compared equal and neither the count nor `calibration_history`
+ever moved, including for `learning.py`'s real sensor-range adaptations. It
+now compares against the file on disk. Read any `update_count: 0` recorded
+before 2026-09-26 as "unknown", not "never adapted".
+
+**Why coverage uses 365 days** (the script's default since 2026-09-26; it was
+90, which refused on Lumen).
 Both derivations floor at 500 samples ("a cut derived from a sliver would
 encode a mood, not a range"), but they count different populations, and only
 one of them clears 90 days:
@@ -539,10 +592,12 @@ piece rather than one. So the refusal is a *window* problem, not a corpus
 problem, and widening the window is the fix — never lowering the floor.
 
 The `--apply` paths were rehearsed too: each writes atomically with a
-timestamped `.bak-*` sidecar, and the curiosity script MERGES into
-`drawing_thresholds` rather than replacing it, so the `COVERAGE_*` and
+timestamped `.bak-*` sidecar. Both now MERGE into `drawing_thresholds`
+(`merge_coverage` / `merge_curiosity`), so the `COVERAGE_*` and
 `CURIOSITY_PIVOT_*` families coexist and unrelated calibration keys survive.
-Run order does not matter. An era with too little trajectory history simply
+Run order does not matter — which this file claimed before it was true: until
+2026-09-26 the coverage script replaced the dict whole, so running it after
+the curiosity script silently reverted every pivot. An era with too little trajectory history simply
 gets no pivot and keeps the built-in 0.4 — correct, not a failure.
 
 What the rehearsal confirmed about the built-in: under the replay, `C = 0.4`
@@ -655,14 +710,15 @@ candidate scores 0.0 and the first draw wins — exactly one unbiased draw, i.e.
 the pre-2026-09-17 behavior. Absence degrades to *no bias*, never to a
 fabricated preference.
 
-This is worth naming precisely: **it is the only loop from Lumen's own history
-back into Lumen's behavior that closes without a human running a script.**
-Every other one — `derive_drawing_thresholds.py --apply`,
-`derive_curiosity_thresholds.py --apply` — has an operator step in it, and as
-of 2026-08-29 that step had never been taken (`drawing_thresholds: {}`,
-`update_count: 0`). `learning.py` adapts only environment sensor ranges and
-cannot touch drawing at all. So this does not make Lumen self-improving; it
-closes one small loop and leaves the others exactly as open as they were.
+This is worth naming precisely: **when it landed it was the only loop from
+Lumen's own history back into Lumen's behavior that closed without a human
+running a script.** The drawing derivations had an operator step that as of
+2026-08-29 had never been taken (`drawing_thresholds: {}`). Since 2026-09-26
+`self_derivation.py` closes those two as well (see above). `learning.py` adapts
+only environment sensor ranges and cannot touch drawing; face thresholds still
+wait on `derive_face_thresholds.py`. Closing loops is not the same as Lumen
+being self-improving — each loop re-reads a distribution, it does not judge
+whether the result was better.
 
 ⚠️ **A test that passed by luck for a month.**
 `test_coverage_intention.py::test_sparse_spreads[geometric]` asserted an effect

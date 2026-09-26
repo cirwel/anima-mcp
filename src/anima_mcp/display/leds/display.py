@@ -92,6 +92,14 @@ class LEDDisplay:
         # Legacy name: the renderer supplies an absolute LED brightness preset
         # here (Full=.28, Medium=.12, Dim=.06, Night=.008), not a multiplier.
         self._manual_brightness_factor = 1.0
+        # The agency learner's actuator: a relative factor in (0, 1] applied
+        # AFTER the user's preset, never instead of it.  1.0 is the preset
+        # itself, so the agency can dim below the user's choice and return
+        # toward it, but can never make the LEDs brighter than the user chose.
+        # Held as an integer count of dimming steps (factor = STEP ** steps)
+        # so repeated steps cannot drift and "back at the preset" is exact.
+        self._agency_dim_steps = 0
+        self._last_activity_scale = 1.0
         self._current_brightness = 0.1
         self._target_brightness = self._base_brightness
         self._brightness_transition_speed = 0.08
@@ -260,6 +268,76 @@ class LEDDisplay:
         self._brightness = self._base_brightness
         self._target_brightness = self._base_brightness
 
+    # Multiplicative step for one agency adjustment.  Relative, so it means the
+    # same thing under every preset; it is a step size, not a gate.
+    AGENCY_BRIGHTNESS_STEP = 0.8
+
+    @property
+    def _agency_brightness_factor(self) -> float:
+        """Relative agency dimmer in (0, 1]; 1.0 means exactly the preset."""
+        return self.AGENCY_BRIGHTNESS_STEP ** getattr(self, "_agency_dim_steps", 0)
+
+    def _requested_target(
+        self,
+        agency_factor: Optional[float] = None,
+        activity_scale: Optional[float] = None,
+    ) -> float:
+        """Target brightness the pipeline requests: preset x agency x activity.
+
+        The renderer value is an absolute preset.  A value of 1.0 is the legacy
+        sentinel meaning "use the configured base".  Activity and the agency
+        factor are independent multipliers in [0, 1] applied to every preset,
+        so neither can push the target above the user's choice.
+        """
+        if self._manual_brightness_factor < 1.0:
+            ceiling = self._manual_brightness_factor
+        else:
+            ceiling = self._base_brightness
+        factor = self._agency_brightness_factor if agency_factor is None else agency_factor
+        factor = max(0.0, min(1.0, float(factor)))
+        scale = self._last_activity_scale if activity_scale is None else activity_scale
+        scale = max(0.0, min(1.0, float(scale)))
+        return max(
+            self._hardware_brightness_floor,
+            min(0.5, ceiling * factor * scale),
+        )
+
+    def adjust_agency_brightness(self, direction: str) -> dict:
+        """Apply one agency step and report what the pipeline will now request.
+
+        ``increase`` moves back toward the user's preset (factor capped at
+        1.0); ``decrease`` dims below it.  A step that would not change the
+        requested target -- already at the preset ceiling, or already at the
+        hardware floor -- is not applied and is reported as unchanged, so the
+        agency never learns a value for an action that did nothing physically.
+        """
+        if direction not in {"increase", "decrease"}:
+            raise ValueError(f"invalid LED direction: {direction}")
+        factor_before = self._agency_brightness_factor
+        target_before = self._requested_target()
+        steps_after = (
+            max(0, self._agency_dim_steps - 1)
+            if direction == "increase" else self._agency_dim_steps + 1
+        )
+        target_after = self._requested_target(
+            agency_factor=self.AGENCY_BRIGHTNESS_STEP ** steps_after
+        )
+        changed = target_after != target_before
+        if changed:
+            self._agency_dim_steps = steps_after
+            # Published immediately as a target change, so light attribution
+            # sees an actuator step rather than a fixed-target sample.
+            self._target_brightness = target_after
+        return {
+            "changed": changed,
+            "direction": direction,
+            "factor_before": factor_before,
+            "factor_after": self._agency_brightness_factor,
+            "target_before": target_before,
+            "target_after": self._requested_target(),
+            "preset_ceiling": self._requested_target(agency_factor=1.0, activity_scale=1.0),
+        }
+
     def clear(self):
         if self._dots:
             try:
@@ -348,6 +426,7 @@ class LEDDisplay:
             "base_brightness": self._base_brightness,
             "current_brightness": self._current_brightness,
             "target_brightness": self._target_brightness,
+            "agency_brightness_factor": self._agency_brightness_factor,
             "last_applied_brightness": self._last_applied_brightness,
             "last_wire_colors": list(self._last_wire_colors),
             "pulse_cycle": self._pulse_cycle,
@@ -470,18 +549,9 @@ class LEDDisplay:
             )
         self._last_colors = [state.led0, state.led1, state.led2]
 
-        # The renderer value is an absolute preset.  A value of 1.0 is the
-        # legacy sentinel meaning "use the configured base".  Activity is an
-        # independent multiplier and must apply to every preset.
-        if self._manual_brightness_factor < 1.0:
-            requested_brightness = self._manual_brightness_factor
-        else:
-            requested_brightness = self._base_brightness
-        activity_scale = max(0.0, min(1.0, float(activity_brightness)))
-        self._target_brightness = max(
-            self._hardware_brightness_floor,
-            min(0.5, requested_brightness * activity_scale),
-        )
+        # Preset x agency factor x activity; see _requested_target.
+        self._last_activity_scale = max(0.0, min(1.0, float(activity_brightness)))
+        self._target_brightness = self._requested_target()
         self._advance_current_brightness(immediate=_manual_just_changed)
         state = LEDState(
             led0=state.led0,

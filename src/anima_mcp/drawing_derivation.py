@@ -1,9 +1,11 @@
 """Derive the per-era curiosity pivot from Lumen's own coherence distribution.
 
-The reporting half of scripts/derive_curiosity_thresholds.py, extracted so the
-running server can serve the same report without a shell on the device. The
-script keeps the acting half (--apply writes calibration); nothing here writes
-anything, and the database is opened read-only so it cannot.
+The reporting half of scripts/derive_curiosity_thresholds.py (and, since
+2026-09-26, of derive_drawing_thresholds.py), extracted so the running server
+can serve the same report without a shell on the device. Nothing here writes
+anything, and the database is opened read-only so it cannot. The acting halves
+are the scripts' --apply (operator) and self_derivation.py (the creature,
+weekly); both merge through merge_coverage / merge_curiosity below.
 
 Why it lives in the package rather than only in the script: the derivation was
 unrunnable on the Pi. Lumen's calibration file carries `drawing_thresholds: {}`
@@ -21,7 +23,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Collection, Dict, List, Optional
 
 from .db_paths import resolve_db_path
 from .display.drawing_engine import curiosity_drain
@@ -315,3 +317,129 @@ def derive_report(db_path: Optional[str] = None, days: int = 90,
             "python3 scripts/derive_curiosity_thresholds.py --db "
             "~/.anima/anima.db --apply ~/.anima/anima_config.json"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Coverage-intention cuts, and the merge rules both families share
+# ---------------------------------------------------------------------------
+#
+# Lives here, not only in scripts/derive_drawing_thresholds.py, for the same
+# reason the curiosity report does: the running server applies it now
+# (self_derivation.py), and a second copy of the contract could drift from the
+# script's. The script imports these; it keeps only its CLI.
+
+# A three-word vocabulary should have three reachable words: the creature's
+# own foggiest third lets a piece thicken, its clearest third opens it up.
+# Tertiles, not tuned numbers. Full rationale: derive_drawing_thresholds.py.
+COVERAGE_PERCENTILES = {
+    "COVERAGE_DENSE_BELOW": 33,
+    "COVERAGE_SPARSE_ABOVE": 67,
+}
+# One row per PIECE at ~3 pieces/day: 90 days holds ~270 and refuses against
+# the 500 floor. Widen the window, never lower the floor (CLAUDE.md, measured
+# 2026-09-19). The curiosity population is ~96 rows per piece, so 90 is enough.
+COVERAGE_DAYS = 365
+CURIOSITY_DAYS = 90
+
+# Clarity changed meaning here: #204 (merged 2026-08-23 15:28 MDT) moved its
+# light input from raw lux to the gated self-glow residual, which compresses
+# the top of the range (696 raw vs 226 residual, measured live). Tertiles over
+# a window straddling that mix two different quantities, so coverage never
+# reads earlier rows. The next midnight is used because the deploy time is not
+# in git. Until ~500 post-rebase pieces exist the derivation refuses — the
+# floor doing its job, not a fault. Move this when clarity is re-based again.
+CLARITY_REBASED_AT = "2026-08-24T00:00:00"
+
+
+def derive_coverage(clarity: List[float]):
+    """(thresholds, None) or (None, refusal reason). Pure; writes nothing."""
+    n = len(clarity)
+    if n < MIN_SAMPLES:
+        return None, (f"only {n} samples (< {MIN_SAMPLES}) — a cut derived "
+                      "from a sliver would encode a mood, not a range")
+    vals = sorted(clarity)
+    out = {name: round(percentile(vals, pct), 4)
+           for name, pct in COVERAGE_PERCENTILES.items()}
+    # A pinned window collapses the tertiles onto each other; emitting that
+    # would starve `balanced` the way the built-in 0.30 starved `dense`.
+    if not out["COVERAGE_DENSE_BELOW"] < out["COVERAGE_SPARSE_ABOVE"]:
+        return None, (f"cuts not separated: {out} — clarity range is "
+                      "degenerate over this window")
+    return out, None
+
+
+def coverage_report(db_path: Optional[str] = None,
+                    days: int = COVERAGE_DAYS,
+                    not_before: Optional[str] = CLARITY_REBASED_AT) -> Dict[str, Any]:
+    """Read-only coverage derivation. Never raises; fails toward unknown.
+
+    `not_before` floors the window at the last clarity re-base; pass None only
+    to deliberately read across one.
+    """
+    path = resolve_db_path(db_path)
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    if not_before and not_before > since:
+        since = not_before
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            clarity = [float(c) for (c,) in con.execute(
+                "select clarity from drawing_records "
+                "where clarity is not null and timestamp > ?", (since,))]
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        return {"available": False, "db_path": path,
+                "reason": f"database unreadable: {e}"}
+    except (TypeError, ValueError) as e:
+        return {"available": False, "db_path": path,
+                "reason": f"unusable row data: {e}"}
+    thresholds, refused = derive_coverage(clarity)
+    out: Dict[str, Any] = {"available": True, "db_path": path, "days": days,
+                           "since": since, "samples": len(clarity)}
+    if refused:
+        out["refused"] = refused
+    else:
+        out["thresholds"] = thresholds
+    return out
+
+
+def merge_coverage(existing: Optional[Dict[str, Any]],
+                   emitted: Dict[str, float]) -> Dict[str, Any]:
+    """drawing_thresholds with the COVERAGE_* family replaced by `emitted`.
+
+    Merged, never replaced whole: the curiosity derivation keeps its
+    CURIOSITY_PIVOT_* keys in this same dict. The script used to overwrite it,
+    so running coverage after curiosity silently reverted every pivot.
+    """
+    out = {k: v for k, v in (existing or {}).items()
+           if not k.startswith("COVERAGE_")}
+    out.update(emitted)
+    return out
+
+
+def merge_curiosity(existing: Optional[Dict[str, Any]],
+                    emitted: Dict[str, float],
+                    evaluated_eras: Optional[Collection[str]] = None
+                    ) -> Dict[str, Any]:
+    """drawing_thresholds with the CURIOSITY_PIVOT_* family updated.
+
+    With `evaluated_eras=None` (the operator script) every pivot not emitted
+    this run is dropped, so a since-retired era stops being steered by a
+    number nothing re-verified. The weekly self-derivation passes the eras it
+    actually evaluated: a pivot is dropped only when its era was examined and
+    failed. An era simply not drawn in the window keeps its pivot — auto-rotate
+    is off by default, so most eras go unvisited for months, and dropping their
+    pivots would fall back to the built-in 0.4 that is known to be unreachable.
+    COVERAGE_* and any other keys are always preserved.
+    """
+    def keep(key: str) -> bool:
+        if not key.startswith("CURIOSITY_PIVOT_"):
+            return True
+        if evaluated_eras is None:
+            return False
+        return key[len("CURIOSITY_PIVOT_"):] not in evaluated_eras
+
+    out = {k: v for k, v in (existing or {}).items() if keep(k)}
+    out.update(emitted)
+    return out

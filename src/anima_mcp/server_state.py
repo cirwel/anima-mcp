@@ -56,6 +56,7 @@ SELF_ANSWER_INTERVAL = 1800
 GOAL_SUGGEST_INTERVAL = 3600   # ~2 hours — suggest new goals
 GOAL_CHECK_INTERVAL = 300      # ~10 minutes — check goal progress
 META_LEARNING_INTERVAL = 21600  # iterations — ~daily at ~2s/iter
+SELF_DERIVATION_CHECK_INTERVAL = 1800  # ~1h — is Lumen's weekly self-derivation due? (self_derivation.py)
 
 # === Identity resolution ===
 # Maps canonical person name → set of aliases (case-insensitive matching)

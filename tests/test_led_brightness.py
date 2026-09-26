@@ -134,3 +134,82 @@ class TestNoLuxImport:
         assert not hasattr(brightness_mod, "LED_LUX_AMBIENT_FLOOR"), (
             "LED_LUX_AMBIENT_FLOOR should not be imported in brightness.py"
         )
+
+
+class TestAgencyBrightnessFactor:
+    """The agency LED action is a real, bounded dimmer under the user preset.
+
+    It used to call set_brightness(), which moved ``_base_brightness`` -- a
+    value the always-set renderer preset overrides -- so it changed nothing
+    physically while reporting a change.
+    """
+
+    PRESETS = (0.28, 0.12, 0.06, 0.008)  # Full, Medium, Dim, Night
+
+    def _display(self, preset: float, activity: float = 1.0) -> LEDDisplay:
+        display = LEDDisplay(brightness=0.04)
+        display._dots = _FakeDots()
+        display._manual_brightness_factor = preset
+        display.update_from_anima(0.5, 0.5, 0.5, 0.5, activity_brightness=activity)
+        return display
+
+    def test_decrease_physically_lowers_requested_target(self):
+        display = self._display(0.12)
+        assert display._target_brightness == 0.12
+        result = display.adjust_agency_brightness("decrease")
+        assert result["changed"] is True
+        assert display._target_brightness < 0.12
+        assert result["target_after"] == display._target_brightness
+        # The next pipeline pass keeps the agency's choice instead of
+        # reverting to the preset (the original bug).
+        display.update_from_anima(0.9, 0.1, 0.9, 0.1)
+        assert abs(display._target_brightness - 0.12 * 0.8) < 1e-9
+        # Easing actually carries the applied brightness down to it.
+        for _ in range(300):
+            display._advance_current_brightness()
+        assert abs(display._current_brightness - 0.12 * 0.8) < 1e-9
+
+    def test_never_exceeds_user_preset(self):
+        for preset in self.PRESETS:
+            for activity in (1.0, 0.6, 0.35):
+                display = self._display(preset, activity)
+                ceiling = display._requested_target(agency_factor=1.0)
+                for direction in ["increase"] * 5 + ["decrease"] * 7 + ["increase"] * 20:
+                    display.adjust_agency_brightness(direction)
+                    display.update_from_anima(0.5, 0.5, 0.5, 0.5, activity_brightness=activity)
+                    assert display._target_brightness <= ceiling + 1e-12
+                    assert display._target_brightness <= max(
+                        preset, display._hardware_brightness_floor
+                    ) + 1e-12
+                    assert 0.0 < display._agency_brightness_factor <= 1.0
+                # Enough increases return exactly to the preset, not past it.
+                assert display._agency_brightness_factor == 1.0
+                assert abs(display._target_brightness - ceiling) < 1e-12
+
+    def test_increase_at_preset_reports_no_change(self):
+        display = self._display(0.12)
+        result = display.adjust_agency_brightness("increase")
+        assert result["changed"] is False
+        assert result["target_before"] == result["target_after"] == 0.12
+        assert display._agency_brightness_factor == 1.0
+
+    def test_decrease_at_hardware_floor_reports_no_change(self):
+        display = self._display(0.008)  # Night preset sits on the floor
+        result = display.adjust_agency_brightness("decrease")
+        assert result["changed"] is False
+        assert display._agency_brightness_factor == 1.0
+        assert display._target_brightness == display._hardware_brightness_floor
+
+    def test_agency_step_is_visible_to_light_attribution_as_target_change(self):
+        from anima_mcp.light_attribution import LearnedLedLuxResidual
+
+        display = self._display(0.06)
+        before = display.get_proprioceptive_state()["target_brightness"]
+        display.adjust_agency_brightness("decrease")
+        after = display.get_proprioceptive_state()["target_brightness"]
+        assert abs(before - after) > LearnedLedLuxResidual.TARGET_BRIGHTNESS_TOLERANCE
+
+    def test_does_not_touch_base_brightness(self):
+        display = self._display(0.06)
+        display.adjust_agency_brightness("decrease")
+        assert display._base_brightness == 0.04
