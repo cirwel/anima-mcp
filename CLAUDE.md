@@ -190,6 +190,24 @@ the process boundary as atomic one-file events in
 server originates curiosity and is its sole persistent writer. The broker's
 metacognitive observer is explicitly read-only. Pending curiosity evaluations
 are persisted with the baselines so a restart cannot erase uncredited evidence.
+**Lumen predicts itself (2026-09-26).** `self_prediction.py` adds what
+metacognition never had: a forecast of Lumen's own *behavior*. The server
+reads the broker's activity level (active/drowsy/resting) once a minute and
+learns its own transition counts per (level, 3-hour bucket). A transition it
+gave very low odds — z > 2.5 against its own band of transition surprisal,
+which forgets over ~200 transitions — is a self-surprise and becomes one
+question in Lumen's voice ("i became active in the middle of the night, and i
+didn't expect that of myself — what changed?"). It claims nothing before 30
+minutes lived in that (level, bucket) and 20 scored transitions; a missing,
+stale or gapped level is unknown, never "stayed the same". Self-surprises are
+deliberately not reflection episodes (rumination detector). State persists in
+`metacognition_baselines.json` (server-only writer), now also saved on
+`sleep()`. `SurpriseBand` alongside it is **record-only**: it tracks Lumen's
+own surprise distribution and how often a self-relative gate *would* fire next
+to the fixed ones (server: `> 0.2` then `should_reflect` at 0.3; broker
+observer: 0.25). No gate moved — read `diagnostics().self_prediction` after
+≥1000 samples before relativising them.
+
 The learning inbox has bounded event/byte admission and exposes queue age,
 rejections, and pressure through `diagnostics`; a full inbox raises instead of
 silently consuming the SD card.

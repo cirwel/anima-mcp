@@ -43,6 +43,7 @@ from .server_context import ServerContext
 from .server_state import (
     # Constants
     SHM_GOVERNANCE_STALE_SECONDS as SHM_GOVERNANCE_STALE_SECONDS,
+    SHM_STALE_THRESHOLD_SECONDS,
     LOOP_BASE_DELAY_SECONDS, LOOP_MAX_DELAY_SECONDS,
     METACOG_INTERVAL, AGENCY_INTERVAL, SELF_MODEL_INTERVAL,
     PRIMITIVE_LANG_INTERVAL, VOICE_INTERVAL, GROWTH_INTERVAL,
@@ -95,6 +96,7 @@ def _predict_with_led_proprioception(metacog):
 # Phase helper functions — delegated to loop_phases.py
 from .loop_phases import (  # noqa: E402,F401
     handle_surprise_question,
+    handle_self_surprise,
     server_governance_fallback as _server_governance_fallback,
     parse_shm_governance_freshness as _parse_shm_governance_freshness,
     compute_lagged_correlations as _compute_lagged_correlations,
@@ -471,6 +473,22 @@ async def _update_display_loop():
 
                     # Observe current state and compare to prediction (returns prediction error)
                     prediction_error = metacog.observe(readings, anima)
+
+                    # Self-prediction: did Lumen move between active / drowsy /
+                    # resting the way it expected of itself? A stale or missing
+                    # level is unknown, never "stayed the same".
+                    try:
+                        from .self_prediction import activity_level_from_shm
+                        _now = datetime.now()
+                        _self_surprise = metacog.self_forecaster.observe(
+                            activity_level_from_shm(
+                                _get_last_shm_data(), _now,
+                                SHM_STALE_THRESHOLD_SECONDS),
+                            _now)
+                        if _self_surprise:
+                            handle_self_surprise(_self_surprise)
+                    except Exception as _se:
+                        logger.debug("[SelfPrediction] error: %s", _se)
 
                     # Log surprise level periodically (every 60 loops = ~2 min)
                     if prediction_error and loop_count % WARN_LOG_THROTTLE == 0:

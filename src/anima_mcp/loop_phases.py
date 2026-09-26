@@ -421,6 +421,32 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
     return False
 
 
+def handle_self_surprise(self_surprise) -> bool:
+    """Lumen did something it did not expect of itself: ask about it.
+
+    The forecaster (self_prediction.py) already judged the transition unusual
+    against Lumen's own history; this only gives it a voice. Deliberately NOT
+    recorded as a metacog reflection episode — a run of self-surprises must
+    not read as rumination to the reflection detector. Question budgets and
+    dedup live in add_question, as for every other question.
+    """
+    from .messages import add_question
+    question = self_surprise.question()
+    result = add_question(question, author="lumen", context=self_surprise.context())
+    if not result:
+        return False
+    print(f"[SelfPrediction] Surprised by myself: {self_surprise.context()}",
+          file=sys.stderr, flush=True)
+    try:
+        from .accessors import _get_growth
+        growth = _get_growth()
+        if growth:
+            growth.add_curiosity(question)
+    except Exception as e:
+        print(f"[Growth] add_curiosity error: {e}", file=sys.stderr, flush=True)
+    return True
+
+
 def generate_experiential_question(surprise_sources, surprise_level: float = 0.0) -> Optional[str]:
     """Generate an OUTWARD, present-tense question about what just shifted in
     Lumen's live experience — so curiosity sometimes points at the world and

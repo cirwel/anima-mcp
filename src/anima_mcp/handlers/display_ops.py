@@ -496,6 +496,23 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
     except Exception as e:
         result["learning_inbox"] = {"error": f"{type(e).__name__}: {e}"}
 
+    # Always on (in-memory): Lumen forecasting itself, and the record-only
+    # comparison of a self-relative surprise gate against the fixed one.
+    try:
+        from ..accessors import _get_metacog_monitor
+        _metacog = _get_metacog_monitor()
+        if _metacog is None:
+            result["self_prediction"] = {"available": False,
+                                         "reason": "metacognition not initialised"}
+        else:
+            result["self_prediction"] = {
+                "activity_forecast": _metacog.self_forecaster.summary(),
+                "surprise_band": _metacog.surprise_band.summary(),
+            }
+    except Exception as e:
+        result["self_prediction"] = {"available": False,
+                                     "reason": f"{type(e).__name__}: {e}"}
+
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
