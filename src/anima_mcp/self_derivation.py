@@ -55,6 +55,9 @@ JOURNAL_MAX_ENTRIES = 52  # a year of weekly attempts
 UPDATE_SOURCE = "self_derivation"
 
 _running = False
+# In-memory twin of the journal's last timestamp: if the journal cannot be
+# written, the corpus scan must still wait out the period, not rerun hourly.
+_last_attempt: Optional[datetime] = None
 _task: Optional["asyncio.Task"] = None  # held so the loop cannot drop it mid-run
 
 
@@ -132,11 +135,14 @@ def _curiosity_outcome(report: Dict[str, Any]):
                      (e.get("reason") or (e.get("verdict") or {}).get("reason")
                       or "not emitted"))
                for era, e in eras.items() if isinstance(e, dict)}
-    if not thresholds:
+    evaluated = [era for era, e in eras.items()
+                 if isinstance(e, dict) and "verdict" in e]
+    if not thresholds and not evaluated:
         return None, {"outcome": "refused", "per_era": per_era,
                       "reason": "no era produced a verifiable pivot"}
-    return thresholds, {"outcome": "derived", "per_era": per_era,
-                        "samples": report.get("usable_intervals")}
+    return (thresholds, evaluated), {
+        "outcome": "derived" if thresholds else "refused",
+        "per_era": per_era, "samples": report.get("usable_intervals")}
 
 
 def apply(computed: Dict[str, Any], config_manager=None,
@@ -162,7 +168,9 @@ def apply(computed: Dict[str, Any], config_manager=None,
         proposed = merge_coverage(proposed, cov)
     cur, families["curiosity"] = _curiosity_outcome(computed.get("curiosity") or {})
     if cur:
-        proposed = merge_curiosity(proposed, cur)
+        # Only eras examined this run can lose a pivot (see merge_curiosity).
+        emitted, evaluated = cur
+        proposed = merge_curiosity(proposed, emitted, evaluated_eras=evaluated)
 
     changes = {k: {"old": existing.get(k), "new": proposed.get(k)}
                for k in sorted(set(existing) | set(proposed))
@@ -245,10 +253,11 @@ def summary(path: Optional[Path] = None) -> Dict[str, Any]:
 
 async def run_once(db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Compute off-loop, apply on-loop, journal, and say so. Never raises."""
-    global _running
+    global _running, _last_attempt
     if _running:
         return None
     _running = True
+    _last_attempt = datetime.now()
     try:
         loop = asyncio.get_running_loop()
         computed = await loop.run_in_executor(None, compute, db_path)
@@ -287,6 +296,9 @@ def start_if_due(db_path: Optional[str] = None) -> bool:
     The main loop must not wait on a corpus scan, so this only schedules.
     """
     if not enabled() or _running:
+        return False
+    if (_last_attempt is not None
+            and datetime.now() - _last_attempt < SELF_DERIVATION_PERIOD):
         return False
     if not is_due(load_journal()):
         return False

@@ -66,7 +66,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from anima_mcp.drawing_derivation import (  # noqa: E402
-    COVERAGE_DAYS, coverage_report, merge_coverage,
+    CLARITY_REBASED_AT, COVERAGE_DAYS, coverage_report, merge_coverage,
 )
 
 
@@ -92,9 +92,14 @@ def main():
     ap.add_argument("--db", required=True)
     ap.add_argument("--days", type=int, default=COVERAGE_DAYS)
     ap.add_argument("--apply", default=None, metavar="CONFIG_JSON")
+    ap.add_argument("--not-before", default=CLARITY_REBASED_AT, metavar="ISO",
+                    help="ignore rows before the last clarity re-base "
+                         "(default %(default)s); 'none' reads across it")
     args = ap.parse_args()
 
-    report = coverage_report(os.path.expanduser(args.db), days=args.days)
+    not_before = None if args.not_before.lower() == "none" else args.not_before
+    report = coverage_report(os.path.expanduser(args.db), days=args.days,
+                             not_before=not_before)
     if not report.get("available"):
         sys.exit(f"refusing: {report.get('reason')}")
     if report.get("refused"):

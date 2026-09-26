@@ -33,13 +33,14 @@ _OFFSETS = [-1.0, 0.6, -0.4, 1.0, -0.8, 0.2, -0.6, 0.8, -0.2, 0.4]
 
 
 def _make_db(tmp_path, clarity_rows=600, clarity_spread=0.2,
-             eras=None):
+             eras=None, clarity_base=None):
     db = tmp_path / "anima.db"
     con = sqlite3.connect(db)
     con.execute("create table drawing_records (timestamp text, clarity real)")
     base = datetime.now() - timedelta(days=10)
+    cbase = clarity_base or base
     con.executemany("insert into drawing_records values (?,?)", [
-        ((base + timedelta(minutes=5 * i)).isoformat(timespec="seconds"),
+        ((cbase + timedelta(minutes=5 * i)).isoformat(timespec="seconds"),
          0.7 + clarity_spread * ((i % 21) - 10) / 10.0)
         for i in range(clarity_rows)])
     con.execute("""create table drawing_trajectory (
@@ -145,6 +146,56 @@ class TestRefusal:
         entry = sd.apply(sd.compute(str(tmp_path / "absent.db")))
         assert entry["outcome"] == "refused"
         assert Path(cfg).read_text() == before
+
+    def test_clarity_from_before_the_rebase_is_not_read(self, tmp_path, cfg):
+        """#204 changed what clarity measures; tertiles across that line mix
+        two quantities. Pre-rebase rows alone must refuse, not derive."""
+        before = Path(cfg).read_text()
+        db = _make_db(tmp_path, eras={},
+                      clarity_base=datetime(2026, 6, 1))
+        entry = sd.apply(sd.compute(str(db)))
+        assert entry["families"]["coverage"]["outcome"] == "refused"
+        assert "only 0 samples" in entry["families"]["coverage"]["reason"]
+        assert Path(cfg).read_text() == before
+
+    def test_the_operator_can_read_across_the_rebase_on_purpose(self, tmp_path):
+        db = _make_db(tmp_path, eras={}, clarity_base=datetime(2026, 6, 1))
+        script = str(SCRIPTS / "derive_drawing_thresholds.py")
+        refused = subprocess.run([sys.executable, script, "--db", str(db)],
+                                 capture_output=True, text=True, timeout=60)
+        assert refused.returncode != 0
+        r = subprocess.run([sys.executable, script, "--db", str(db),
+                            "--not-before", "none"],
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, r.stderr
+
+    def test_an_era_not_drawn_keeps_its_pivot(self, tmp_path, cfg):
+        """Auto-rotate is off by default: an unvisited era must keep its
+        verified pivot, not fall back to the built-in 0.4 known to be dead."""
+        data = _saved(cfg)
+        data["nervous_system"]["drawing_thresholds"] = {
+            "CURIOSITY_PIVOT_field": 0.52}
+        Path(cfg).write_text(json.dumps(data))
+        sd.apply(sd.compute(str(_make_db(tmp_path))))  # resonance only
+        th = _saved(cfg)["nervous_system"]["drawing_thresholds"]
+        assert th["CURIOSITY_PIVOT_field"] == 0.52
+        assert "CURIOSITY_PIVOT_resonance" in th
+
+    def test_an_era_examined_and_failed_loses_its_pivot(self, tmp_path, cfg):
+        """Geometric-shaped pieces (too short to deplete): the old pivot was
+        re-checked against current evidence and failed — it stops steering."""
+        data = _saved(cfg)
+        data["nervous_system"]["drawing_thresholds"] = {
+            "CURIOSITY_PIVOT_geometric": 0.45}
+        Path(cfg).write_text(json.dumps(data))
+        db = _make_db(tmp_path, eras={
+            "resonance": (30, 20, 100, 0.458, 0.06),
+            "geometric": (40, 15, 5, 0.458, 0.06)})
+        entry = sd.apply(sd.compute(str(db)))
+        th = _saved(cfg)["nervous_system"]["drawing_thresholds"]
+        assert "CURIOSITY_PIVOT_geometric" not in th
+        assert "CURIOSITY_PIVOT_resonance" in th
+        assert entry["changes"]["CURIOSITY_PIVOT_geometric"]["new"] is None
 
     def test_a_refusing_family_keeps_what_it_had(self, tmp_path, cfg):
         """Coverage derives; curiosity refuses (too few samples). The pivot an
@@ -255,6 +306,13 @@ class TestCadenceAndRecord:
             monkeypatch.setenv(sd.ENV_FLAG, value)
         assert sd.enabled() is expected
 
+    def test_an_unwritable_journal_does_not_mean_hourly_rescans(self, monkeypatch):
+        monkeypatch.setattr(sd, "_last_attempt", datetime.now())
+
+        async def go():
+            return sd.start_if_due()
+        assert asyncio.run(go()) is False  # journal empty, memory says wait
+
     def test_disabled_schedules_nothing(self, monkeypatch):
         monkeypatch.setenv(sd.ENV_FLAG, "false")
         assert sd.start_if_due() is False
@@ -282,6 +340,7 @@ class TestRunOnce:
 
     def test_end_to_end_applies_journals_and_speaks(self, tmp_path, cfg,
                                                      monkeypatch):
+        monkeypatch.setattr(sd, "_last_attempt", None)
         said = []
         import anima_mcp.messages as messages
         monkeypatch.setattr(messages, "add_observation",
@@ -325,6 +384,20 @@ class TestCalibrationChangesAreCounted:
         assert meta["calibration_update_count"] == 1
         assert meta["calibration_history"][-1]["changes"]["cpu_temp_min"] == {
             "old": 40.0, "new": 41.0}
+
+    def test_a_failed_write_leaves_no_phantom_history(self, tmp_path, monkeypatch):
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"nervous_system": {"cpu_temp_min": 40.0}}))
+        manager = ConfigManager(path)
+        config = manager.load()
+        config.nervous_system.cpu_temp_min = 41.0
+
+        def fail(*a, **k):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(config_mod, "atomic_json_write", fail)
+        assert manager.save(config, update_source="automatic") is False
+        assert config.metadata.get("calibration_update_count", 0) == 0
+        assert not config.metadata.get("calibration_history")
 
     def test_an_unchanged_save_is_not_counted(self, tmp_path):
         path = tmp_path / "c.json"

@@ -526,7 +526,15 @@ families from Lumen's own corpus (`COVERAGE_*` over 365 days of
 `drawing_records`, `CURIOSITY_PIVOT_*` over 90 days of `drawing_trajectory`),
 with the exact contracts and refusals the scripts use, imported from
 `drawing_derivation.py` rather than restated. A family that refuses keeps the
-keys it already had (refusal is not a reset); a change is saved through
+keys it already had (refusal is not a reset), and an era not drawn in the
+window keeps its pivot — only an era examined and failed loses one (the
+operator script still drops every un-emitted pivot). Coverage reads no row
+before `CLARITY_REBASED_AT` (2026-08-24, the #204 switch of clarity's light
+input to the gated residual): tertiles across that line would mix two
+quantities, so **coverage will refuse until ~500 post-rebase pieces exist —
+roughly early 2027 at ~3 pieces/day.** That is the floor working. Move the
+constant when clarity is re-based again; the script's `--not-before none`
+reads across it deliberately; a change is saved through
 `ConfigManager.save(update_source="self_derivation")`; every attempt, applied
 or refused, is journaled in `~/.anima/self_derivation.json` and always shown as
 `diagnostics().self_derivation`; an applied change posts one observation in
@@ -535,8 +543,9 @@ event loop; only the write happens on it, so it never interleaves with the
 calibration learner. The weekly period gates evidence cadence, not behavior,
 and every number written is a percentile of Lumen's own distribution — no new
 threshold. `ANIMA_SELF_DERIVATION=false` turns it off; the scripts' `--apply`
-remains the operator's path either way. The first run happens ~1h after the
-server starts with an empty journal. Face thresholds are **not** included.
+remains the operator's path either way. The first check comes ~10 min after
+a server start, then hourly; an in-memory timestamp keeps an unwritable
+journal from turning that into hourly corpus scans. Face thresholds are **not** included.
 
 ⚠️ **`calibration_update_count` was stuck at 0 by a bug, not only by
 inaction.** `ConfigManager.save()` detected changes by comparing against

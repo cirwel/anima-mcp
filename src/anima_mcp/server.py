@@ -1190,7 +1190,9 @@ async def _update_display_loop():
             # applies the coverage cuts and curiosity pivots it derives — the
             # loop that used to wait on an operator script nobody ran. Only
             # schedules; the scan runs off-loop (self_derivation.py).
-            if loop_count % SELF_DERIVATION_CHECK_INTERVAL == 0 and loop_count > 0:
+            # Offset so the first check comes ~10 min after a restart rather
+            # than an hour — a deploy-heavy week must not starve it.
+            if loop_count % SELF_DERIVATION_CHECK_INTERVAL == 300:
                 def self_derive_check():
                     from .self_derivation import start_if_due
                     start_if_due()

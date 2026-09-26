@@ -356,6 +356,7 @@ class ConfigManager:
             return False
         
         # Track calibration changes
+        metadata = None
         if update_source:
             from datetime import datetime
             # Compare against what is on disk, not self.load(): callers mutate
@@ -386,30 +387,36 @@ class ConfigManager:
                     }
             
             if changes:
-                # Initialize metadata if needed
-                if "calibration_last_updated" not in config.metadata:
-                    config.metadata = {
+                # Built on a copy and committed only after the write lands: a
+                # failed save must not leave a phantom history entry in the
+                # cached config for the next successful save to persist.
+                metadata = dict(config.metadata or {})
+                if "calibration_last_updated" not in metadata:
+                    metadata = {
                         "calibration_last_updated": None,
                         "calibration_last_updated_by": None,
                         "calibration_update_count": 0,
                         "calibration_history": [],
                     }
-                
+
                 # Update metadata
-                config.metadata["calibration_last_updated"] = datetime.now().isoformat()
-                config.metadata["calibration_last_updated_by"] = update_source
-                config.metadata["calibration_update_count"] = config.metadata.get("calibration_update_count", 0) + 1
-                
+                metadata["calibration_last_updated"] = datetime.now().isoformat()
+                metadata["calibration_last_updated_by"] = update_source
+                metadata["calibration_update_count"] = metadata.get("calibration_update_count", 0) + 1
+
                 # Add to history (keep last 10)
                 history_entry = {
                     "timestamp": datetime.now().isoformat(),
                     "source": update_source,
                     "changes": changes,
                 }
-                history = config.metadata.get("calibration_history", [])
+                history = list(metadata.get("calibration_history", []))
                 history.append(history_entry)
-                config.metadata["calibration_history"] = history[-10:]  # Keep last 10
-        
+                metadata["calibration_history"] = history[-10:]  # Keep last 10
+
+        previous_metadata = config.metadata
+        if metadata is not None:
+            config.metadata = metadata
         try:
             data = config.to_dict()
 
@@ -442,6 +449,7 @@ class ConfigManager:
             self._loaded_signature = self._file_signature()
             return True
         except Exception as e:
+            config.metadata = previous_metadata
             print(f"[Config] Error saving config: {e}", file=sys.stderr, flush=True)
             return False
     
