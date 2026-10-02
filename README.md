@@ -4,7 +4,29 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-*Raspberry Pi sensor testbed for EISV trajectories, autonomous drawing, and persistent identity.*
+*Raspberry Pi sensor testbed for longitudinal telemetry, continuity, and state estimation — the embodied deployment behind the UNITARES papers.*
+
+---
+
+## What Is This?
+
+Anima is a Raspberry Pi 4 sensor deployment and MCP server for studying physically grounded agent state. It maps temperature, light, humidity, pressure, and system telemetry into four continuous dimensions — warmth, clarity, stability, presence — then uses those dimensions for local display/drawing loops and periodic [UNITARES](https://github.com/CIRWEL/unitares) check-ins. The repo uses creature-facing vocabulary for the interface, but the research surface is the measured sensor→anima path, its explicitly lossy body-EISV projection, and longitudinal trajectory data.
+
+Its traces are the embodied deployment data behind the [Digital Proprioception & Allostatic Load](https://doi.org/10.5281/zenodo.21930092) and [Trajectory Identity](https://doi.org/10.5281/zenodo.20098168) preprints and the [EISV Trajectories](https://huggingface.co/datasets/hikewa/unitares-eisv-trajectories) dataset.
+
+- **Grounded state** — four continuous dimensions derived from real sensor measurements
+- **Governance** — checks in with [UNITARES](https://github.com/CIRWEL/unitares) every ~180s and receives an advisory verdict
+- **Continuity across restarts** — start count and cumulative uptime persist in the record; discontinuities are first-class rather than hidden
+- **Telemetry-derived reflection** — summarizes state patterns, preferences, and drawing history
+- **On-device learning** — preferences, 13 self-model parameters, goals, and action values evolve through experience
+- **Agency** — TD-learning action selection with exploration management
+- **Autonomous drawing** — 1,526 pieces across five eras (as of 2026-08-21), driven by a behavioral coherence signal derived from its own gestures
+
+As of 2026-08-21: 562 process starts, 3,685 hours of runtime, 69% uptime since first boot.
+
+When this repository says "feels," "mood," "self-sense," "needs," or "experience," read those as interface labels over measured sensor/system state, not claims about subjective experience.
+
+### Drawings
 
 <p align="center">
   <img src="docs/gallery/resonance_era.png" width="44%" alt="Resonance era — marks deposited into a decaying memory field, revisiting accumulated regions"/>
@@ -27,24 +49,6 @@
   Mark position, gesture choice, and hue draw on sensor state — temperature, light, humidity, pressure, CPU — and on Lumen's own gesture history and drive state.<br/>
   The two geometric pieces are the same era code on consecutive days; nothing was configured between them.</em>
 </p>
-
----
-
-## What Is This?
-
-Anima is a Raspberry Pi 4 sensor deployment and MCP server for studying physically grounded agent state. It maps temperature, light, humidity, pressure, and system telemetry into four continuous dimensions — warmth, clarity, stability, presence — then uses those dimensions for local display/drawing loops and periodic [UNITARES](https://github.com/CIRWEL/unitares) check-ins. The repo uses creature-facing vocabulary for the interface, but the research surface is the measured sensor→anima path, its explicitly lossy body-EISV projection, and longitudinal trajectory data.
-
-- **Grounded state** — four continuous dimensions derived from real sensor measurements
-- **Persistent identity** — birth, awakenings, alive time accumulate across restarts; discontinuities are first-class
-- **Autonomous drawing** — 1,526 pieces across five eras (as of 2026-08-21), driven by a behavioral coherence signal derived from its own gestures
-- **Telemetry-derived reflection** — summarizes state patterns, preferences, and drawing history
-- **On-device learning** — preferences, 13 self-model parameters, goals, and action values evolve through experience
-- **Agency** — TD-learning action selection with exploration management
-- **Governance** — checks in with [UNITARES](https://github.com/CIRWEL/unitares) every ~180s and receives an advisory verdict
-
-Live as of 2026-08-21: 562 awakenings, 3,685 hours alive, 69% alive ratio.
-
-When this repository says "feels," "mood," "self-sense," "needs," or "experience," read those as interface labels over measured sensor/system state, not claims about subjective experience.
 
 ---
 
