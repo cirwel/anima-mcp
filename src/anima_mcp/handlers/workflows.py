@@ -633,36 +633,7 @@ async def handle_get_lumen_context(arguments: dict) -> list[TextContent]:
         except Exception as e:
             note_suppressed("workflows.eisv", e)  # optional enrichment
 
-    # Record state for history if we have it (enriched with interaction context)
-    if store and anima and readings:
-        sensors_for_history = readings.to_dict()
-        # New broker snapshots carry capture-aligned LED brightness. Fill from
-        # live proprioception only for older/partial SHM payloads; lux itself
-        # remains the unmodified combined measurement.
-        if sensors_for_history.get("led_brightness") is None:
-            try:
-                from ..accessors import _get_led_brightness
-
-                sensors_for_history["led_brightness"] = _get_led_brightness()
-            except Exception as e:
-                note_suppressed("workflows.led_brightness", e)
-        try:
-            from ..accessors import _get_growth
-
-            growth = _get_growth()
-            if growth is not None:
-                level = growth.interaction_level()
-                if level is not None:
-                    sensors_for_history["interaction_level"] = level
-        except Exception as e:
-            note_suppressed("workflows.interaction_level", e)
-        store.record_state(
-            anima.warmth,
-            anima.clarity,
-            anima.stability,
-            anima.presence,
-            sensors_for_history,
-        )
+    # A read does not record: the main loop writes state_history (state_history.py).
 
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 

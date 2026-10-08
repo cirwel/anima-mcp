@@ -68,6 +68,7 @@ class ServerContext:
     last_server_checkin_time: float = 0.0
     last_unitares_success_time: float = 0.0
     last_preference_decay_at: float = 0.0
+    last_state_history_at: float = 0.0
 
     # Per-iteration cache (updated by _get_readings_and_anima)
     last_shm_data: dict | None = None

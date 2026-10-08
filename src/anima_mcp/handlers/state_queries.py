@@ -107,42 +107,11 @@ async def handle_get_state(arguments: dict) -> list[TextContent]:
     except Exception as e:
         note_suppressed("state_queries.inner_life", e)
 
-    # Record state for history. Each optional enrichment below is allowed to
-    # fail without stopping the record — but the gap is logged and counted, not
-    # swallowed: a sensor that quietly stops appearing in state_history is
-    # indistinguishable from one that had nothing to report.
-    sensors_for_history = readings.to_dict()
+    # A read does not record: the main loop writes state_history on its own
+    # schedule (state_history.py), so the record no longer depends on polling.
     external_light = gated_external_light_lux(light_attribution)
-    sensors_for_history["external_light_lux"] = external_light
-    sensors_for_history["light_attribution_status"] = (
-        light_attribution.get("status")
-        if isinstance(light_attribution, dict)
-        else "unavailable"
-    )
     if external_light is not None:
         sensors_clean["environment"]["external_light_lux"] = external_light
-    # New broker snapshots carry capture-aligned LED brightness. Fill from live
-    # proprioception only for older/partial SHM payloads so history remains
-    # decomposable without relabelling raw lux.
-    if sensors_for_history.get("led_brightness") is None:
-        try:
-            from ..accessors import _get_led_brightness
-            sensors_for_history["led_brightness"] = _get_led_brightness()
-        except Exception as e:
-            note_suppressed("state_queries.led_brightness", e)
-    try:
-        from ..accessors import _get_growth
-        growth = _get_growth()
-        if growth is not None:
-            level = growth.interaction_level()
-            if level is not None:
-                sensors_for_history["interaction_level"] = level
-    except Exception as e:
-        note_suppressed("state_queries.interaction_level", e)
-    store.record_state(
-        anima.warmth, anima.clarity, anima.stability, anima.presence,
-        sensors_for_history
-    )
 
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
