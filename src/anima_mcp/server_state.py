@@ -40,6 +40,11 @@ SERVER_GOVERNANCE_FALLBACK_SECONDS = 240.0  # Server calls UNITARES if broker ha
 SYSTEM_METRICS_RECORD_INTERVAL = 15   # ~30s — persist system metrics to SQLite
 SYSTEM_METRICS_PRUNE_INTERVAL = 1800  # ~1h — delete metrics older than retention
 SYSTEM_METRICS_RETENTION_HOURS = 24.0
+# state_history cadence. Sets how often evidence is recorded, not any behavior.
+# Coupled to identity/store.py's _alive_from_state_history, which counts only
+# gaps of at most 600 s as lived time: at 240 s one missed or failed write still
+# leaves a counted gap (480 s plus loop delay), where 300 s would not.
+STATE_HISTORY_RECORD_SECONDS = 240.0
 THERMAL_RATE_THRESHOLD = 5.0          # °C/min — CPU temp rise rate before concern
 MEMORY_PRESSURE_THRESHOLD = 90.0      # % — memory usage before concern
 # Preference decay sweep. Decay otherwise only runs when a preference is

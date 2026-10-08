@@ -107,35 +107,34 @@ class TestItNeverBreaksTheCaller:
 class TestWiredIntoTheStateRecordingPath:
     """The sites that matter: a gap in state_history is a gap in Lumen's record."""
 
-    def test_state_queries_uses_it(self):
-        import anima_mcp.handlers.state_queries as sq
+    def test_state_history_uses_it(self):
+        """The loop's single writer (state_history.py) replaced the two read
+        handlers' copies of this enrichment; the gaps stay audible there."""
+        import anima_mcp.state_history as sh
 
-        src = __import__("inspect").getsource(sq)
-        assert "note_suppressed(\"state_queries.interaction_level\"" in src
-        assert "note_suppressed(\"state_queries.led_brightness\"" in src
+        src = __import__("inspect").getsource(sh)
+        assert "note_suppressed(\"state_history.interaction_level\"" in src
+        assert "note_suppressed(\"state_history.led_brightness\"" in src
 
-    def test_workflows_uses_it(self):
-        import anima_mcp.handlers.workflows as wf
+    def test_the_loop_write_itself_is_audible(self):
+        import anima_mcp.state_history as sh
 
-        src = __import__("inspect").getsource(wf)
-        assert "note_suppressed(\"workflows.interaction_level\"" in src
-        assert "note_suppressed(\"workflows.led_brightness\"" in src
+        src = __import__("inspect").getsource(sh.maybe_record_state_history)
+        assert "note_suppressed(\"server.state_history\", e)" in src
 
     def test_no_bare_pass_remains_in_the_converted_blocks(self):
         """Guards the regression: these were `except Exception: pass`."""
         import inspect
 
-        import anima_mcp.handlers.state_queries as sq
-        import anima_mcp.handlers.workflows as wf
+        import anima_mcp.state_history as sh
 
-        for mod in (sq, wf):
-            src = inspect.getsource(mod)
-            for marker in ("interaction_level", "led_brightness"):
-                idx = src.find(f'sensors_for_history["{marker}"]')
-                assert idx != -1, f"{marker} block not found in {mod.__name__}"
-                after = src[idx: idx + 400]
-                assert "except Exception:\n            pass" not in after
-                assert "except Exception:\n                pass" not in after
+        src = inspect.getsource(sh)
+        for marker in ("interaction_level", "led_brightness"):
+            idx = src.find(f'sensors["{marker}"]')
+            assert idx != -1, f"{marker} block not found in {sh.__name__}"
+            after = src[idx: idx + 400]
+            assert "except Exception:\n            pass" not in after
+            assert "except Exception:\n                pass" not in after
 
 
 class TestDiagnosticsSurface:

@@ -222,41 +222,8 @@ class TestLumenContextExtended:
         assert data["light_attribution"]["used_by_clarity"] is False
         assert data["clarity_attribution"] == clarity_attribution
         assert "mood" in data
-        store.record_state.assert_called_once()
-        recorded_sensor_data = store.record_state.call_args[0][4]
-        assert recorded_sensor_data["interaction_level"] == 0.5
-
-    async def test_get_lumen_context_omits_interaction_level_when_unknown(self):
-        """No person on record means the key is absent, not 0.0.
-
-        "Nobody has ever visited" and "nobody is here right now" are different
-        claims, and only one of them is a measurement.
-        """
-        from anima_mcp.handlers.workflows import handle_get_lumen_context
-
-        class FakeReadings:
-            def to_dict(self):
-                return {"light_lux": 100}
-
-        store = SimpleNamespace(
-            get_identity=lambda: SimpleNamespace(
-                name="Lumen", creature_id="abc123", born_at=datetime.now(),
-                age_seconds=lambda: 3600, total_awakenings=2, alive_ratio=lambda: 0.7,
-            ),
-            get_session_alive_seconds=lambda: 100,
-            record_state=MagicMock(),
-        )
-        growth = SimpleNamespace(interaction_level=lambda: None)
-
-        with patch("anima_mcp.accessors._get_store", return_value=store), \
-             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace(is_pi=lambda: False)), \
-             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(FakeReadings(), SimpleNamespace(
-                 warmth=0.3, clarity=0.4, stability=0.5, presence=0.6,
-                 feeling=lambda: {"mood": "calm"}))), \
-             patch("anima_mcp.accessors._get_growth", return_value=growth):
-            parse_result(await handle_get_lumen_context({"include": ["identity", "anima"]}))
-
-        assert "interaction_level" not in store.record_state.call_args[0][4]
+        # A read does not record; the main loop owns state_history.
+        store.record_state.assert_not_called()
 
     async def test_get_lumen_context_handles_identity_error(self):
         from anima_mcp.handlers.workflows import handle_get_lumen_context

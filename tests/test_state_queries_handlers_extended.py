@@ -9,7 +9,7 @@ from conftest import parse_result
 
 @pytest.mark.asyncio
 class TestGetStateExtended:
-    async def test_get_state_includes_inner_life_and_records_state(self):
+    async def test_get_state_includes_inner_life_and_does_not_record(self):
         from anima_mcp.handlers.state_queries import handle_get_state
 
         class FakeReadings:
@@ -83,8 +83,8 @@ class TestGetStateExtended:
         assert data["inner_life"]["temperament"] == "gentle"
         assert data["light_attribution"] == light_attribution
         assert data["clarity_attribution"] == clarity_attribution
-        store.record_state.assert_called_once()
-        assert store.record_state.call_args[0][4]["interaction_level"] == 0.75
+        # A read does not record; the main loop owns state_history.
+        store.record_state.assert_not_called()
 
     async def test_get_state_identity_error_returns_error(self):
         from anima_mcp.handlers.state_queries import handle_get_state

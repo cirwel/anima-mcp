@@ -69,8 +69,8 @@ async def test_get_state_happy_path_cleans_sensors_records_state_and_injects_inn
     assert data["inner_life"]["temperament"] == "calm"
     assert data["inner_life"]["strongest_drive"] == "curiosity"
 
-    # History recording
-    assert store.record_state.called
+    # A read does not record; the main loop owns state_history.
+    assert not store.record_state.called
 
 
 @pytest.mark.asyncio

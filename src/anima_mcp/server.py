@@ -33,6 +33,7 @@ from .display.leds import get_led_display
 from .display.screens import ScreenMode
 from .config import get_calibration
 from .light_attribution import gated_external_light_lux
+from .state_history import maybe_record_state_history
 from .learning import get_learner
 from .activity_state import get_activity_manager
 from .primitive_language import get_language_system
@@ -50,6 +51,7 @@ from .server_state import (
     TRAJECTORY_INTERVAL, SERVER_GOVERNANCE_FALLBACK_SECONDS,
     LEARNING_INTERVAL, PREFERENCE_DECAY_INTERVAL_SECONDS,
     SYSTEM_METRICS_RECORD_INTERVAL, SYSTEM_METRICS_PRUNE_INTERVAL,
+    STATE_HISTORY_RECORD_SECONDS,
     SYSTEM_METRICS_RETENTION_HOURS,
     SELF_MODEL_SAVE_INTERVAL, SCHEMA_EXTRACTION_INTERVAL,
     EXPRESSION_INTERVAL, UNIFIED_REFLECTION_INTERVAL, SELF_ANSWER_INTERVAL,
@@ -1048,6 +1050,12 @@ async def _update_display_loop():
                 if _health is not None:
                     _health.heartbeat("thermal_trend")
                     _health.heartbeat("memory_pressure")
+
+            # Durable anima + sensor history, on Lumen's own schedule. The loop is
+            # the only writer: reads no longer record (state_history.py).
+            maybe_record_state_history(
+                _ctx, anima, readings, _get_last_shm_data(), STATE_HISTORY_RECORD_SECONDS
+            )
 
             # System metrics pruning: Every 1800 iterations (~1h), delete old rows
             if loop_count % SYSTEM_METRICS_PRUNE_INTERVAL == 0 and loop_count > 0 and _ctx and _ctx.store:
