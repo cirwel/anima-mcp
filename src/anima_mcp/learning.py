@@ -87,7 +87,7 @@ class AdaptiveLearner:
         except Exception:
             pass  # Events table may not exist
 
-        # Legacy fallback: state_history (sparse — only written by MCP handlers)
+        # Legacy fallback: state_history (the server loop writes it every few minutes)
         row = conn.execute(
             """SELECT timestamp FROM state_history
                ORDER BY timestamp DESC

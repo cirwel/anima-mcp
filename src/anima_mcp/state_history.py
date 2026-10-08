@@ -16,15 +16,25 @@ appearing is indistinguishable from one that had nothing to report.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .error_recovery import note_suppressed
 from .light_attribution import gated_external_light_lux
 
 
-def history_sensors(readings, light_attribution: Any = None) -> dict:
-    """The sensor payload stored with each state_history row."""
+def history_sensors(readings, light_attribution: Any = None,
+                    shm_readings: dict | None = None) -> dict:
+    """The sensor payload stored with each state_history row.
+
+    `shm_readings` is the broker snapshot's `readings`. Its `led_brightness`
+    is capture-aligned to the light sensor and wins: the server loop rewrites
+    `readings.led_brightness` with its own applied brightness (0.0 when
+    unknown) before this runs, which would make lux undecomposable.
+    """
     sensors = readings.to_dict()
+    if isinstance(shm_readings, dict):
+        sensors["led_brightness"] = shm_readings.get("led_brightness")
     sensors["external_light_lux"] = gated_external_light_lux(light_attribution)
     sensors["light_attribution_status"] = (
         light_attribution.get("status")
@@ -54,12 +64,40 @@ def history_sensors(readings, light_attribution: Any = None) -> dict:
     return sensors
 
 
-def record_state_history(store, anima, readings, light_attribution: Any = None) -> None:
+def record_state_history(store, anima, readings, light_attribution: Any = None,
+                         shm_readings: dict | None = None) -> None:
     """Write one state_history row for the current anima and readings."""
     store.record_state(
         anima.warmth,
         anima.clarity,
         anima.stability,
         anima.presence,
-        history_sensors(readings, light_attribution),
+        history_sensors(readings, light_attribution, shm_readings),
     )
+
+
+def maybe_record_state_history(ctx, anima, readings, shm: dict | None,
+                               interval_seconds: float,
+                               now: float | None = None) -> bool:
+    """The main loop's writer: record if `interval_seconds` have passed.
+
+    The attempt is stamped before writing, so a failing write waits a full
+    interval instead of retrying every tick; the failure is counted through
+    `note_suppressed`. Returns True when a row was written.
+    """
+    if not (readings and anima and ctx and ctx.store):
+        return False
+    now = time.time() if now is None else now
+    if now - ctx.last_state_history_at < interval_seconds:
+        return False
+    ctx.last_state_history_at = now
+    try:
+        record_state_history(
+            ctx.store, anima, readings,
+            shm.get("light_attribution") if shm else None,
+            shm.get("readings") if shm else None,
+        )
+        return True
+    except Exception as e:
+        note_suppressed("server.state_history", e)
+        return False

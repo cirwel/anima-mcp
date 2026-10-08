@@ -117,9 +117,9 @@ class TestWiredIntoTheStateRecordingPath:
         assert "note_suppressed(\"state_history.led_brightness\"" in src
 
     def test_the_loop_write_itself_is_audible(self):
-        import anima_mcp.server as server
+        import anima_mcp.state_history as sh
 
-        src = __import__("inspect").getsource(server)
+        src = __import__("inspect").getsource(sh.maybe_record_state_history)
         assert "note_suppressed(\"server.state_history\", e)" in src
 
     def test_no_bare_pass_remains_in_the_converted_blocks(self):

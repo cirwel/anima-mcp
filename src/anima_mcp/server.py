@@ -33,8 +33,7 @@ from .display.leds import get_led_display
 from .display.screens import ScreenMode
 from .config import get_calibration
 from .light_attribution import gated_external_light_lux
-from .error_recovery import note_suppressed
-from .state_history import record_state_history
+from .state_history import maybe_record_state_history
 from .learning import get_learner
 from .activity_state import get_activity_manager
 from .primitive_language import get_language_system
@@ -1054,17 +1053,9 @@ async def _update_display_loop():
 
             # Durable anima + sensor history, on Lumen's own schedule. The loop is
             # the only writer: reads no longer record (state_history.py).
-            if (readings and anima and _ctx and _ctx.store
-                    and time.time() - _ctx.last_state_history_at >= STATE_HISTORY_RECORD_SECONDS):
-                _ctx.last_state_history_at = time.time()
-                try:
-                    _shm = _get_last_shm_data()
-                    record_state_history(
-                        _ctx.store, anima, readings,
-                        _shm.get("light_attribution") if _shm else None,
-                    )
-                except Exception as e:
-                    note_suppressed("server.state_history", e)
+            maybe_record_state_history(
+                _ctx, anima, readings, _get_last_shm_data(), STATE_HISTORY_RECORD_SECONDS
+            )
 
             # System metrics pruning: Every 1800 iterations (~1h), delete old rows
             if loop_count % SYSTEM_METRICS_PRUNE_INTERVAL == 0 and loop_count > 0 and _ctx and _ctx.store:
