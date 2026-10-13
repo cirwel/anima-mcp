@@ -2,7 +2,7 @@
 # For Mac/Linux development with mock sensors
 
 # MCP Server Framework
-mcp>=1.28.1,<2.0.0
+mcp>=1.28.1,<3.0.0
 
 # Configuration
 pyyaml>=6.0,<7.0
