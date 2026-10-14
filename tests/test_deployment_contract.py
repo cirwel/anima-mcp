@@ -330,3 +330,48 @@ def test_zip_overlay_record_merges_into_existing_marker(tmp_path):
     assert data["deployed_zip_sha"] == "cd" * 20
     assert data["source"] == "zip-overlay"
     assert data["head"]  # startup fields survive the merge
+
+
+def test_ship_script_routes_auto_merge_and_detects_agents(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "scripts" / "dev").mkdir(parents=True)
+    (repo / "src" / "anima_mcp").mkdir(parents=True)
+    ship_src = ROOT / "scripts" / "dev" / "ship.sh"
+    ship_dst = repo / "scripts" / "dev" / "ship.sh"
+    ship_dst.write_text(ship_src.read_text(encoding="utf-8"), encoding="utf-8")
+    ship_dst.chmod(0o755)
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Non-runtime change on main -> direct push
+    (repo / "README.md").write_text("updated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    env = {**os.environ, "ANTIGRAVITY_AGENT": "1"}
+    env.pop("CLAUDECODE", None)
+    env.pop("UNITARES_SHIP_AGENT", None)
+    plan_other = subprocess.run(
+        [str(ship_dst), "--plan", "--deploy", "docs: update readme"],
+        cwd=repo, env=env, check=True, capture_output=True, text=True,
+    ).stdout
+    assert "kind=other" in plan_other
+    assert "delivery=direct" in plan_other
+    assert "deploy_pi=1" in plan_other
+    assert "agent_prefix=gemini" in plan_other
+
+    # Runtime change on main -> auto_merge on fresh branch
+    (repo / "src" / "anima_mcp" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/anima_mcp/mod.py"], cwd=repo, check=True)
+    plan_rt = subprocess.run(
+        [str(ship_dst), "--plan", "fix: runtime change"],
+        cwd=repo, env=env, check=True, capture_output=True, text=True,
+    ).stdout
+    assert "kind=runtime" in plan_rt
+    assert "delivery=auto_merge" in plan_rt
+    assert "force_auto_branch=1" in plan_rt
+
