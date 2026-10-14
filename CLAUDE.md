@@ -823,17 +823,23 @@ Service files: `/etc/systemd/system/anima.service`, `/etc/systemd/system/anima-b
 python3 -m pytest tests/ -x -q
 ```
 
-## Deploying to Pi
+## Shipping & Deploying to Pi
+
+Agents handle merges and Pi deploys end-to-end without leaving PRs or Pi syncs for manual operator ceremony:
 
 ```bash
-git push
-# Then from any MCP client:
-mcp__anima__git_pull(restart=true)
+# 1. Ship changes (opens PR + merges on green CI for runtime; direct push on main for docs/scripts)
+#    and deploy the landed main commit to Lumen:
+./scripts/dev/ship.sh --deploy "commit message"
+
+# 2. Or deploy an already-merged origin/main to Lumen (and advance local checkout):
+cirwel update
+# (or directly from a clean origin/main checkout: ./deploy.sh --host lumen)
 ```
 
-Or manually:
+MCP fallback (when deploying from a remote client without SSH):
 ```bash
-ssh unitares-anima@<tailscale-ip> 'cd ~/anima-mcp && git pull && sudo systemctl restart anima-broker anima'
+mcp__anima__git_pull(restart=true)
 ```
 
 **After restart, wait 2 minutes.** The Pi is slow to boot the service. You will see "SSE server unavailable" or "fetch failed" errors during this window — this is normal and expected. Do NOT panic, do NOT retry rapidly, and do NOT fall back to SSH. Hammering the Pi during restart can crash WiFi and require a reflash. Just wait 2 minutes and try again.
