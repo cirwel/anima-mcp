@@ -1111,6 +1111,17 @@ class TestPatternInsightsCanLose:
         srs.generate_insights([])
         assert (insight.validation_count, insight.contradiction_count) == (1, 0)
 
+    def test_conflicting_new_pattern_counts_once(self, srs):
+        night = self._store(srs)
+        srs._pattern_measurements = {night.id: (-0.2, 0.1)}
+        afternoon = StatePattern(
+            condition="the afternoon", outcome="highest warmth", correlation=0.3,
+            sample_count=50, avg_warmth=0.7, avg_clarity=0.5,
+            avg_stability=0.5, avg_presence=0.5,
+        )
+        srs.generate_insights([afternoon])
+        assert night.contradiction_count == 1
+
     def test_judged_at_most_once_per_window(self, srs):
         insight = self._store(srs)
         srs._pattern_measurements = {insight.id: (0.02, 0.1)}
@@ -1170,10 +1181,15 @@ class TestDrawingInsightsCountNewEvidence:
         assert wellness.description == "drawing seems to help me feel better"
         self._run(srs, self._growth(evidence=8, confidence=0.3))
         assert wellness.active is False
-        self._run(srs, self._growth(evidence=9, value=0.2))
+        # Drifting across 0.5 with no new evidence rewords but does not count.
+        self._run(srs, self._growth(evidence=8, value=0.2))
+        assert wellness.contradiction_count == 0
+        assert wellness.description == "my drawings don't always reflect how i feel"
+        # A flip backed by new evidence counts against the claim it replaces.
+        self._run(srs, self._growth(evidence=9, value=0.8))
         assert wellness.active is True
         assert wellness.contradiction_count == 1
-        assert wellness.description == "my drawings don't always reflect how i feel"
+        assert wellness.description == "drawing seems to help me feel better"
 
 
 def test_recount_collapse_migration(tmp_path):
@@ -1183,7 +1199,8 @@ def test_recount_collapse_migration(tmp_path):
     conn.execute("DELETE FROM reflection_state WHERE key = 'migration_insight_recount_collapse_v1'")
     now = datetime.now()
     for iid, v, c in [("drawing_night", 959, 0), ("clarity_rises_stability_rises", 1, 108),
-                      ("reflect_rumination_metacog_light", 92, 0), ("pref_warm_temp", 1351, 0)]:
+                      ("reflect_rumination_metacog_light", 92, 0), ("pref_warm_temp", 1351, 0),
+                      ("the_night_highest_warmth", 300, 100)]:
         first._save_insight(SelfInsight(
             id=iid, category=InsightCategory.BEHAVIORAL, description=iid,
             confidence=0.9, sample_count=1, discovered_at=now, last_validated=now,
@@ -1194,9 +1211,11 @@ def test_recount_collapse_migration(tmp_path):
     second = SelfReflectionSystem(db_path=db)
     counts = {i.id: (i.validation_count, i.contradiction_count)
               for i in second._insights.values()}
-    assert counts["drawing_night"] == (1, 0)
-    assert counts["clarity_rises_stability_rises"] == (1, 1)
-    assert counts["reflect_rumination_metacog_light"] == (1, 0)
+    assert counts["drawing_night"] == (4, 0)
+    # Refuted history stays refuted: not rescued to an even 1:1.
+    assert counts["clarity_rises_stability_rises"] == (0, 4)
+    assert counts["reflect_rumination_metacog_light"] == (4, 0)
+    assert counts["the_night_highest_warmth"] == (3, 1)
     assert counts["pref_warm_temp"] == (1351, 0)  # mirrors a source that can fall
     audit = json.loads(second._get_reflection_state("migration_insight_recount_collapse_v1"))
     assert audit["rows"]["drawing_night"]["validation_count"] == 959

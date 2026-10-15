@@ -423,8 +423,9 @@ claim they *measure* (`_pattern_measurements`), and a stored pattern is judged
 against it at most once per analysis window (`last_judged`), either way; an
 unmeasured claim is unknown. `reflect_*` are judged only on episode pairs newer
 than `last_judged`; `drawing_*` validate only when the preference's
-independent evidence grew. `migration_insight_recount_collapse_v1` collapsed
-the inflated history to 0/1 per count (audit in `reflection_state`), because
+independent evidence grew. `migration_insight_recount_collapse_v1` rescaled
+the inflated history to 4 units with its ratio kept (959:0 -> 4:0, 1:108 -> 0:4;
+audit in `reflection_state`), because
 `strength()` is a validation *ratio* and hundreds of re-counts made any future
 contradiction invisible. `pref_*`/`belief_*`/`trend_*`/`qa_*` are exempt.
 `question_asking_tendency` is likewise judged once per five-minute surprise

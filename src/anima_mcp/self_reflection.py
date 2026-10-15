@@ -393,15 +393,22 @@ class SelfReflectionSystem:
     # source whose own confidence can fall; qa_ rows are Q&A-derived.
     _RECOUNT_EXEMPT_PREFIXES = ("qa_", "pref_", "belief_", "trend_")
 
+    # Weight the collapsed history keeps, in judgment units. A bounded
+    # evidence floor, not a behavioral cut: it decides how many fresh
+    # independent judgments it takes to move an old ratio.
+    _RECOUNT_COLLAPSE_TOTAL = 4
+
     def _migrate_recount_collapse(self) -> None:
-        """Collapse re-counted history to whether it ever validated/contradicted.
+        """Rescale re-counted history to a small total, keeping its ratio.
 
         The overlapping counts cannot be de-duplicated after the fact, and
         left as they were (hundreds of validations) no future contradiction
-        could move ``strength()``, which is a validation ratio. Each count
-        becomes 0 or 1: the sign of the history survives, its inflated
-        magnitude does not. With no contradictions, strength is unchanged.
-        Prior counts are kept in reflection_state as the audit.
+        could move ``strength()``, which is a validation ratio. Each row's
+        counts are rescaled to ``_RECOUNT_COLLAPSE_TOTAL`` with the ratio
+        preserved (rounded), so strength and the newborn-protection
+        comparison keep their direction: 959:0 -> 4:0 (unchanged strength),
+        1:108 -> 0:4 (still refuted), 300:100 -> 3:1. Prior counts are kept
+        in reflection_state as the audit.
         """
         sentinel = "migration_insight_recount_collapse_v1"
         if self._get_reflection_state(sentinel):
@@ -413,11 +420,12 @@ class SelfReflectionSystem:
             if insight.id.startswith(self._RECOUNT_EXEMPT_PREFIXES):
                 continue
             v, c = insight.validation_count, insight.contradiction_count
-            if v <= 1 and c <= 1:
+            total = self._RECOUNT_COLLAPSE_TOTAL
+            if v + c <= total:
                 continue
             audit[insight.id] = {"validation_count": v, "contradiction_count": c}
-            insight.validation_count = min(v, 1)
-            insight.contradiction_count = min(c, 1)
+            insight.validation_count = round(total * v / (v + c))
+            insight.contradiction_count = total - insight.validation_count
             conn.execute(
                 "UPDATE insights SET validation_count = ?, contradiction_count = ? "
                 "WHERE id = ?",
@@ -1967,6 +1975,10 @@ class SelfReflectionSystem:
                 for existing in contradictions:
                     existing.contradiction_count += 1
                     existing.confidence = max(0.1, existing.confidence * 0.7)
+                    # This counts as its judgment for the window; the
+                    # vanished-claim pass below must not count it again.
+                    existing.last_judged = now
+                    judged.add(existing.id)
                     self._save_insight(existing)
                     print(
                         f"[SelfReflection] Contradiction detected: '{description}' vs '{existing.description}' "
@@ -2269,7 +2281,9 @@ class SelfReflectionSystem:
         insight.active = True
         insight.description = desc
         insight.confidence = pref.confidence
-        if contradicted:
+        # A flip with no new evidence is a value drifting across its midpoint,
+        # not a fresh observation; only new evidence can count either way.
+        if contradicted and grew:
             insight.contradiction_count += 1
             insight.last_judged = now
         elif grew:
