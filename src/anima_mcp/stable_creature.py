@@ -144,6 +144,18 @@ def _run_coroutine_with_timeout(coro, loop, timeout: float = 10.0):
         raise
 
 
+def _apply_belief_update_bonus(self_model, exp_marks) -> None:
+    """Hand the self-model the learning-rate bonus its earned marks grant.
+
+    Until 2026-10-15 this ran before ``exp_marks`` was created, so it always
+    saw None: Lumen earned "Adolescent" (+0.15) on 2026-03-18 and never got
+    it. It now runs after both exist and again whenever a mark is earned.
+    """
+    if self_model is None or exp_marks is None:
+        return
+    self_model.belief_update_bonus = exp_marks.get_effect("belief_update_bonus")
+
+
 def _snapshot_self_beliefs(self_model) -> dict:
     """Capture lightweight self-belief state for reflection episode persistence."""
     if not self_model:
@@ -579,8 +591,6 @@ def run_creature():
 
             if _has_module("self_model"):
                 self_model = get_self_model(read_only=False)
-                if exp_marks:
-                    self_model.belief_update_bonus = exp_marks.get_effect("belief_update_bonus")
                 print("[StableCreature] Self-model active - Lumen has beliefs about itself")
 
             if _has_module("agency") and legacy_broker_agency:
@@ -612,6 +622,7 @@ def run_creature():
                 print("[StableCreature] Experiential filter active - perception colored by history")
             if _has_module("experiential_marks"):
                 exp_marks = get_experiential_marks(db_path=db_path)
+                _apply_belief_update_bonus(self_model, exp_marks)
                 print("[StableCreature] Experiential marks active - significant events leave permanent traces")
         except Exception as e:
             print(f"[StableCreature] Experiential accumulation init error: {e}")
@@ -1032,14 +1043,12 @@ def run_creature():
                         _self_model_dt = max(
                             0.0, _self_model_now - last_self_model_observed_at
                         )
-                        _recovery_bonus = exp_marks.get_effect("stability_recovery_bonus") if exp_marks else 0.0
                         _prev_stability = last_self_model_state["stability"]
                         _prev_warmth = last_self_model_state["warmth"]
                         self_model.observe_stability_change(
                             _prev_stability,
                             anima.stability,
                             _self_model_dt,
-                            recovery_bonus=_recovery_bonus,
                         )
                         self_model.observe_warmth_change(
                             _prev_warmth,
@@ -1348,7 +1357,8 @@ def run_creature():
                     pass
             if exp_marks:
                 try:
-                    _exp_state["marks"] = exp_marks.get_stats()
+                    _exp_state["marks"] = exp_marks.get_stats(
+                        legacy_agency=action_selector is not None)
                 except Exception:
                     pass
 
@@ -1618,6 +1628,7 @@ def run_creature():
                             )
                             if _new_marks:
                                 print(f"[Experiential] Earned marks: {_new_marks}", file=sys.stderr, flush=True)
+                                _apply_belief_update_bonus(self_model, exp_marks)
                         except Exception as e:
                             print(f"[Experiential] Mark check error: {e}", file=sys.stderr, flush=True)
 

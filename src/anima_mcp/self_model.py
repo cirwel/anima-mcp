@@ -69,6 +69,10 @@ TIME_PATTERN_MIN_REFERENCE_HOURS = 8
 # reference day plus slack for a broker that was down when the window closed.
 TIME_PATTERN_RETAIN_HOURS = 48
 
+# Grandfathered absolute cut (not new): a recovery counts as "fast" below this
+# many seconds per unit recovered. Restarts no longer widen it.
+RECOVERY_FAST_SECONDS_PER_UNIT = 600.0
+
 
 def _correlation_support_threshold(sample_count: int) -> float:
     """Return the minimum |r| that is meaningful and significant for ``n``.
@@ -828,14 +832,16 @@ class SelfModel:
         episodes: deque,
         belief_id: str,
         duration_seconds: float = 0.0,
-        recovery_bonus: float = 0.0,
     ):
         """Shared recovery-belief observer for any anima dimension.
 
         Tracks drop/recovery episodes and tests the named belief.
-        Fast recovery (< threshold s per unit recovered) = supporting evidence.
-        recovery_bonus: from experiential marks (stability_recovery_bonus),
-            widens the threshold so more recoveries count as "fast".
+        Fast recovery (< RECOVERY_FAST_SECONDS_PER_UNIT) = supporting evidence.
+
+        The cut is the same for every recovery. Until 2026-10-15 the
+        restart-earned ``stability_recovery_bonus`` widened it by up to 30%,
+        so restarting made slow recoveries count as fast: the standard of
+        evidence moved instead of the recovery.
         """
         try:
             elapsed = float(duration_seconds)
@@ -880,8 +886,8 @@ class SelfModel:
         active["recovered"] = True
         active["recovery_seconds"] = recovery_time
 
-        threshold = 600 * _learning_multiplier(recovery_bonus)
-        is_fast = recovery_time / max(0.1, recovery_amount) < threshold
+        is_fast = (recovery_time / max(0.1, recovery_amount)
+                   < RECOVERY_FAST_SECONDS_PER_UNIT)
         self._update_belief(
             belief_id,
             supports=is_fast,
@@ -890,20 +896,18 @@ class SelfModel:
         self._maybe_save()
 
     def observe_stability_change(self, stability_before: float, stability_after: float,
-                                 duration_seconds: float = 0.0, recovery_bonus: float = 0.0):
+                                 duration_seconds: float = 0.0):
         """Record stability change for recovery belief testing."""
         self._observe_recovery(stability_before, stability_after,
                                self._stability_episodes, "stability_recovery",
-                               duration_seconds=duration_seconds,
-                               recovery_bonus=recovery_bonus)
+                               duration_seconds=duration_seconds)
 
     def observe_warmth_change(self, warmth_before: float, warmth_after: float,
-                              duration_seconds: float = 0.0, recovery_bonus: float = 0.0):
+                              duration_seconds: float = 0.0):
         """Record warmth change for warmth_recovery belief testing."""
         self._observe_recovery(warmth_before, warmth_after,
                                self._warmth_episodes, "warmth_recovery",
-                               duration_seconds=duration_seconds,
-                               recovery_bonus=recovery_bonus)
+                               duration_seconds=duration_seconds)
 
     def observe_question_asked(self, surprise_level: float):
         """Record that a curiosity question was generated after surprise.
