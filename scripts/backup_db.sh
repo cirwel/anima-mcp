@@ -28,13 +28,16 @@ trap 'rm -f "$STAGE" "$FINAL.partial"' EXIT
 mkdir -p "$BACKUP_DIR"
 [ -f "$DB_PATH" ] || exit 0
 
+# A run killed outright (SIGKILL/OOM) skips the trap; don't let its RAM stage
+# outlive it.
+find "$STAGE_DIR" -maxdepth 1 -name 'anima_backup_*.db' -mmin +90 -delete 2>/dev/null
+
 # RAM staging needs room for the whole DB plus headroom; otherwise stage
 # beside the destination (the old behaviour, stall included) rather than fail.
 DB_KB=$(( $(stat -c %s "$DB_PATH") / 1024 ))
 FREE_KB=$(df -Pk "$STAGE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -z "$FREE_KB" ] || [ "$FREE_KB" -lt $(( DB_KB * 3 / 2 )) ]; then
     STAGE="$FINAL.partial.stage"
-    trap 'rm -f "$STAGE" "$FINAL.partial"' EXIT
     echo "[$(date)] Staging on disk: not enough room in $STAGE_DIR"
 fi
 

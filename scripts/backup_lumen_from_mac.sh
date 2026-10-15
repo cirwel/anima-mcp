@@ -308,7 +308,7 @@ fi
 # (that ~64G scan dropped the Pi connection with rsync 255).
 DB_CAPTURED=0
 
-# Primary: a recent Pi hourly snapshot (backup_db.sh via sqlite3 .backup).
+# Primary: a recent Pi hourly snapshot (backup_db.sh via the sqlite backup API).
 # Never advance today's success marker from an arbitrarily old file: if the
 # hourly job stalled, mint a fresh snapshot from the live database below.
 PI_BACKUP=$(ssh $SSH_OPTS unitares-anima@$PI_HOST \
