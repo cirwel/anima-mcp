@@ -492,7 +492,8 @@ class SelfModel:
                 for dim, pair in dims.items():
                     try:
                         total, count = float(pair[0]), int(pair[1])
-                    except (TypeError, ValueError, IndexError):
+                    except (TypeError, ValueError, IndexError, KeyError,
+                            OverflowError):
                         continue
                     if math.isfinite(total) and count > 0:
                         kept[str(dim)] = [total, count]
@@ -959,7 +960,7 @@ class SelfModel:
         the belief and every other state returned, so the tally could not lose
         and an N:0 record said nothing. Now the instrument may also contradict
         it: with full coverage (enough balanced breathing differences over a
-        wide enough drive span) and a non-positive equal-direction slope, the
+        wide enough drive span) and a negative equal-direction slope, the
         breathing pulse was measured and the sensor did not follow it.
         Strength mirrors the model's sign score from the other side, so a mixed
         sign record (half or more positive) is unknown and counts as nothing.
@@ -983,7 +984,10 @@ class SelfModel:
                 strength = float(model.get("confidence"))
             except (TypeError, ValueError):
                 return
-        elif model.get("coverage_ready") and slope <= 0.0:
+        # Strictly negative: the instrument admits zero-delta transitions, so
+        # a flat or saturated sensor yields a zero median slope. That is a
+        # channel that measured nothing, not a measured absence of response.
+        elif model.get("coverage_ready") and slope < 0.0:
             supports = False
             try:
                 positive_fraction = float(model.get("positive_fraction"))

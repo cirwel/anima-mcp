@@ -505,6 +505,19 @@ class TestLedCausalEvidenceBoundary:
         belief = model._beliefs["my_leds_affect_lux"]
         assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
 
+    def test_flat_sensor_zero_slope_is_unknown(self, model, monkeypatch):
+        """Zero-delta transitions count as non-positive; a flat or saturated
+        sensor must read as unmeasured, not as a contradiction."""
+        monkeypatch.setattr(
+            model._light_attribution_model,
+            "observe",
+            self._covered_attribution(0.0, 0.0),
+        )
+        model.observe_led_lux(0.2, 200.0, observed_at=1_700_000_000.0)
+
+        belief = model._beliefs["my_leds_affect_lux"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+
     def test_uncovered_negative_slope_is_unknown(self, model, monkeypatch):
         def attribution(*args, observed_at=None, **kwargs):
             return {
