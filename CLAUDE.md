@@ -995,6 +995,8 @@ Things agents keep re-discovering. Read this so you don't waste time.
 | **docs/ folder** | Developer reference only. Agents read CLAUDE.md, not docs/. Don't expect docs/ to reach other agents. |
 | **Backups** | `~/backups/lumen/` — real automated backups (hourly snapshots + rsync mirror). `~/lumen-backups/` is OLD/STALE — ignore it. |
 | **Restore after reflash** | One command: `cd ~/projects/anima-mcp && ./scripts/restore_lumen.sh`. Do NOT do it manually. See `docs/operations/BACKUP_AND_RESTORE.md`. |
+| **Pi hourly snapshot (:15)** | `scripts/backup_db.sh` snapshots into `/dev/shm`, then writes to the SD card in fsync'd 4MB chunks. Writing the ~280MB copy straight to the card stalled the broker ~26s every hour (server: "Too many consecutive errors"); staged, the broker's longest gap was 4.9s (measured 2026-10-15). `ionice` cannot fix it: buffered writeback is not charged to the process. |
+| **Journal retention** | The Pi journal is volatile (`/run/log/journal`). The broker's terminal face is drawn only when stdout is a TTY; in the journal it was ~81% of all lines and held retention to ~32h. Journal timestamps older than that are a retention artifact, not a start time. |
 | **Before declaring data lost** | Run `ls -lt ~/backups/lumen/anima_*.db | head -5` first. Backups run twice daily minimum. |
 
 ## Shared Memory Schema
