@@ -230,8 +230,10 @@ class TestGetStats:
         assert "First Mark" in stats["mark_names"]
         assert "resilience" in stats["categories"]
         assert "skill" in stats["categories"]
-        assert stats["active_effects"]["stability_recovery_bonus"] == pytest.approx(0.15)
-        assert stats["active_effects"]["drawing_attention_bonus"] == pytest.approx(0.05)
+        # Nothing reads these two, so they are earned but inert.
+        assert stats["active_effects"] == {}
+        assert stats["inert_effects"]["stability_recovery_bonus"] == pytest.approx(0.15)
+        assert stats["inert_effects"]["drawing_attention_bonus"] == pytest.approx(0.05)
 
     def test_get_stats_empty(self, marks):
         """Empty stats when no marks earned."""
@@ -283,3 +285,38 @@ class TestMarkCatalog:
         assert "maturity" in categories
         assert "skill" in categories
         assert "sensitivity" in categories
+
+
+class TestEffectsAreReadOrInert:
+    """An earned effect is reported active only if running code reads it."""
+
+    def test_consumer_sets_match_the_source(self):
+        """CONSUMED_EFFECTS | LEGACY_AGENCY_EFFECTS is exactly what src reads."""
+        import re
+        from pathlib import Path
+
+        import anima_mcp
+        from anima_mcp.experiential_marks import (
+            CONSUMED_EFFECTS, LEGACY_AGENCY_EFFECTS,
+        )
+
+        src = Path(anima_mcp.__file__).parent
+        read = set()
+        for path in src.rglob("*.py"):
+            read |= set(re.findall(r'get_effect\("([a-z_]+)"\)', path.read_text()))
+        assert read == CONSUMED_EFFECTS | LEGACY_AGENCY_EFFECTS
+        assert read <= {d.effect_key for d in MARK_CATALOG.values()}
+
+    def test_legacy_agency_effects_are_active_only_with_it(self, marks):
+        marks.earn_mark("maturity_child")  # exploration_floor_reduction
+        marks.earn_mark("maturity_adolescent")  # belief_update_bonus
+
+        default = marks.get_stats()
+        assert set(default["active_effects"]) == {"belief_update_bonus"}
+        assert set(default["inert_effects"]) == {"exploration_floor_reduction"}
+
+        legacy = marks.get_stats(legacy_agency=True)
+        assert set(legacy["active_effects"]) == {
+            "belief_update_bonus", "exploration_floor_reduction",
+        }
+        assert legacy["inert_effects"] == {}

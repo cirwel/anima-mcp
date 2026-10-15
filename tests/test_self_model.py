@@ -330,20 +330,23 @@ class TestRecoveryProfile:
         assert episode["recovered"] is True
         assert episode["recovery_seconds"] == pytest.approx(12.0)
 
-    def test_recovery_bonus_widens_threshold(self, model):
-        """recovery_bonus makes more recoveries count as 'fast'."""
-        # Drop stability
+    def test_restarts_do_not_widen_the_fast_cut(self, model):
+        """A recovery just over the cut is slow however often Lumen restarted.
+
+        The restart-earned stability_recovery_bonus used to widen the cut by
+        up to 30%, which turned slow recoveries into supporting evidence.
+        """
+        import inspect
+
+        assert "recovery_bonus" not in inspect.signature(
+            model.observe_stability_change).parameters
+
         model.observe_stability_change(0.8, 0.4, duration_seconds=10)
-        initial_confidence = model._beliefs["stability_recovery"].confidence
+        # 200s for 0.3 recovered = 667 s/unit: over 600, under the old 780.
+        model.observe_stability_change(0.4, 0.7, duration_seconds=200)
 
-        # Recover with bonus — the wider threshold should make this count as fast
-        model.observe_stability_change(0.4, 0.7, duration_seconds=30,
-                                       recovery_bonus=0.30)
-
-        # With 30% bonus, threshold is 600 * 1.30 = 780s per unit
-        # Recovery: time / amount = 30 / 0.3 = 100 — well under threshold
-        # So it should count as supporting evidence
-        assert model._beliefs["stability_recovery"].confidence > initial_confidence
+        belief = model._beliefs["stability_recovery"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 1)
 
 
 class TestPersistence:

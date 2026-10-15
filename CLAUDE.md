@@ -431,6 +431,23 @@ contradiction invisible. `pref_*`/`belief_*`/`trend_*`/`qa_*` are exempt.
 `question_asking_tendency` is likewise judged once per five-minute surprise
 episode (`question_evidence.py`); V8 retired its 111:0 tally.
 
+**Experiential marks: earned is not applied (2026-10-15).** Ten marks are
+earned, but on Lumen only `belief_update_bonus` and `temp_salience_dampening`
+are read by running code. `exploration_floor_reduction`/`pathway_lr_bonus`
+are read only by the retired broker agency, and four keys have no reader at
+all. `get_stats()` used to call all eight "active"; it now splits
+`active_effects` from `inert_effects`, and a test pins the consumer sets to
+the `get_effect(...)` calls in `src/`. Two real bugs went with it:
+`belief_update_bonus` was read before `exp_marks` existed, so "Adolescent"
+(+0.15, earned 2026-03-18) never applied; and the restart-earned
+`stability_recovery_bonus` widened the cut for a "fast" recovery
+(`RECOVERY_FAST_SECONDS_PER_UNIT`, grandfathered 600) by up to 30%, which moved
+the standard of evidence instead of the recovery. That bonus is now inert.
+Measured 2026-10-15 over 30 days of `state_history`: presence p01–p95 is
+0.704–0.719, so `presence_baseline_low` (<0.35) has a constant verdict
+because the *channel* is flat, not because the cut is wrong; warmth sits below
+its 0.40 cut 16% of the time, so that belief is still live.
+
 **Insight categories:** ENVIRONMENT, TEMPORAL, BEHAVIORAL, WELLNESS, SOCIAL
 
 ### Activity States

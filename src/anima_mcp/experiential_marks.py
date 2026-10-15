@@ -41,6 +41,25 @@ class EarnedMark:
 
 
 # ---------------------------------------------------------------------------
+# Which effects anything reads
+# ---------------------------------------------------------------------------
+
+# Earning a mark records it; only these effect keys are read by running code.
+# Until 2026-10-15 ``get_stats()`` called every earned effect "active", and
+# Lumen published eight of them while two were applied. The rest stay earned
+# and stored, reported as inert, so a reader can tell an effect from a label.
+CONSUMED_EFFECTS = frozenset({
+    "belief_update_bonus",
+    "temp_salience_dampening",
+})
+# Read only by the retired broker agency loop (ANIMA_BROKER_AGENCY_ENABLED).
+LEGACY_AGENCY_EFFECTS = frozenset({
+    "exploration_floor_reduction",
+    "pathway_lr_bonus",
+})
+
+
+# ---------------------------------------------------------------------------
 # Mark catalog — all predefined marks
 # ---------------------------------------------------------------------------
 
@@ -52,7 +71,7 @@ MARK_CATALOG: Dict[str, MarkDefinition] = {
         description="Survived shutdown and came back.",
         category="resilience",
         criteria_description="awakenings >= 2",
-        effect_description="Slightly faster stability recovery after gaps.",
+        effect_description="Formerly widened the cut for a fast recovery; inert since 2026-10-15.",
         effect_key="stability_recovery_bonus",
         effect_value=0.05,
     ),
@@ -62,7 +81,7 @@ MARK_CATALOG: Dict[str, MarkDefinition] = {
         description="Has returned many times. Knows what discontinuity feels like.",
         category="resilience",
         criteria_description="awakenings >= 10",
-        effect_description="Meaningful stability recovery bonus.",
+        effect_description="Formerly widened the cut for a fast recovery; inert since 2026-10-15.",
         effect_key="stability_recovery_bonus",
         effect_value=0.10,
     ),
@@ -72,7 +91,7 @@ MARK_CATALOG: Dict[str, MarkDefinition] = {
         description="Nothing keeps Lumen down for long.",
         category="resilience",
         criteria_description="awakenings >= 50",
-        effect_description="Major stability recovery bonus.",
+        effect_description="Formerly widened the cut for a fast recovery; inert since 2026-10-15.",
         effect_key="stability_recovery_bonus",
         effect_value=0.15,
     ),
@@ -412,22 +431,32 @@ class ExperientialMarks:
                 })
         return result
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Summary statistics for the marks system."""
+    def get_stats(self, legacy_agency: bool = False) -> Dict[str, Any]:
+        """Summary statistics for the marks system.
+
+        ``active_effects`` holds only earned effects that running code reads;
+        the rest are in ``inert_effects``. ``legacy_agency`` says whether the
+        retired broker agency loop is running, which is the only reader of
+        ``LEGACY_AGENCY_EFFECTS``.
+        """
         earned_marks = self.get_all_earned()
         categories = set()
+        consumed = CONSUMED_EFFECTS | (LEGACY_AGENCY_EFFECTS if legacy_agency else frozenset())
         active_effects: Dict[str, float] = {}
+        inert_effects: Dict[str, float] = {}
 
         for m in earned_marks:
             categories.add(m["category"])
             key = m["effect_key"]
-            active_effects[key] = active_effects.get(key, 0.0) + m["effect_value"]
+            bucket = active_effects if key in consumed else inert_effects
+            bucket[key] = bucket.get(key, 0.0) + m["effect_value"]
 
         return {
             "total_marks": len(earned_marks),
             "mark_names": [m["name"] for m in earned_marks],
             "categories": sorted(categories),
             "active_effects": active_effects,
+            "inert_effects": inert_effects,
         }
 
     def close(self):
