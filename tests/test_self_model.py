@@ -5,10 +5,29 @@ Validates belief updates, predictions, correlation testing, and recovery profile
 """
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
 from anima_mcp.self_model import SelfBelief, SelfModel
+
+
+def _live_day(model, *, warmth=lambda h: 0.5, clarity=lambda h: 0.5,
+              skip_hours=frozenset(), samples_per_hour=3):
+    """Feed 2026-10-12 12:00 .. 2026-10-13 23:59 hour by hour.
+
+    Only the 2026-10-13 windows (morning closes 11:00, evening 23:00) have
+    enough reference hours behind them, so each belief is judged once.
+    """
+    start = datetime(2026, 10, 12, 12)
+    for offset in range(36):
+        when = start + timedelta(hours=offset)
+        if when.hour in skip_hours:
+            continue
+        for _ in range(samples_per_hour):
+            model.observe_time_pattern(
+                when.hour, warmth=warmth(when.hour),
+                clarity=clarity(when.hour), now=when)
 
 
 class TestSelfBelief:
@@ -156,14 +175,58 @@ class TestSelfModel:
         assert model._beliefs["interaction_clarity_boost"].contradicting_count == 1
 
     def test_observe_time_pattern_evening(self, model):
-        """Test evening warmth observation."""
-        model.observe_time_pattern(hour=20, warmth=0.8, clarity=0.5)
+        """Warmer evenings than the rest of the day support the belief."""
+        _live_day(model, warmth=lambda h: 0.7 if 18 <= h <= 22 else 0.4 + 0.01 * (h % 3))
         assert model._beliefs["evening_warmth_increase"].supporting_count == 1
+        assert model._beliefs["evening_warmth_increase"].contradicting_count == 0
 
     def test_observe_time_pattern_morning(self, model):
-        """Test morning clarity observation."""
-        model.observe_time_pattern(hour=8, warmth=0.5, clarity=0.8)
+        """Clearer mornings than the rest of the day support the belief."""
+        _live_day(model, clarity=lambda h: 0.9 if 6 <= h <= 10 else 0.6 + 0.01 * (h % 3))
         assert model._beliefs["morning_clarity"].supporting_count == 1
+
+    def test_high_clarity_all_day_is_not_morning_clarity(self, model):
+        """The retired test supported whenever morning clarity exceeded 0.5.
+        Clarity that is high everywhere, and a little lower in the morning,
+        now contradicts instead."""
+        _live_day(model, clarity=lambda h: 0.70 if 6 <= h <= 10 else 0.75 + 0.01 * (h % 3))
+        belief = model._beliefs["morning_clarity"]
+        assert belief.supporting_count == 0
+        assert belief.contradicting_count == 1
+
+    def test_window_is_judged_once_after_it_closes(self, model):
+        start = datetime(2026, 10, 13, 11)
+        belief = model._beliefs["morning_clarity"]
+        for offset in range(31):  # 10-13 11:00 .. 10-14 17:00
+            when = start + timedelta(hours=offset)
+            clarity = 0.9 if 6 <= when.hour <= 10 else 0.6 + 0.01 * (when.hour % 3)
+            model.observe_time_pattern(when.hour, warmth=0.5, clarity=clarity, now=when)
+            if when < datetime(2026, 10, 14, 11):
+                assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+        assert (belief.supporting_count, belief.contradicting_count) == (1, 0)
+
+    def test_sparse_hours_are_unknown(self, model):
+        """A broker that saw only two morning hours has no verdict."""
+        _live_day(model, clarity=lambda h: 0.9 if 6 <= h <= 10 else 0.6 + 0.01 * (h % 3),
+                  skip_hours={6, 7, 8})
+        belief = model._beliefs["morning_clarity"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+
+    def test_hourly_means_survive_restart(self, tmp_path):
+        path = tmp_path / "self_model.json"
+        model = SelfModel(persistence_path=path)
+        day = datetime(2026, 10, 13, 11)
+        for offset in range(20):  # 11:00 .. 06:00 next day
+            when = day + timedelta(hours=offset)
+            model.observe_time_pattern(when.hour, warmth=0.5,
+                                       clarity=0.6 + 0.01 * (when.hour % 3), now=when)
+        model._save()
+
+        restarted = SelfModel(persistence_path=path)
+        for hour in range(7, 12):  # 07:00 .. 11:00
+            when = datetime(2026, 10, 14, hour)
+            restarted.observe_time_pattern(hour, warmth=0.5, clarity=0.9, now=when)
+        assert restarted.beliefs["morning_clarity"].supporting_count == 1
 
 
 class TestPredictions:
@@ -417,9 +480,56 @@ class TestPersistence:
 class TestEpisodeEvidence:
     def test_time_pattern_counts_once_per_day(self, tmp_path):
         model = SelfModel(persistence_path=tmp_path / "self_model.json")
-        for _ in range(100):
-            model.observe_time_pattern(8, warmth=0.5, clarity=0.9)
+        _live_day(model, clarity=lambda h: 0.9 if 6 <= h <= 10 else 0.6 + 0.01 * (h % 3),
+                  samples_per_hour=40)
         assert model.beliefs["morning_clarity"].supporting_count == 1
+
+    def test_v7_migration_retires_absolute_time_evidence(self, tmp_path):
+        path = tmp_path / "self_model.json"
+        path.write_text(json.dumps({
+            "beliefs": {
+                "morning_clarity": {
+                    "confidence": 0.86, "value": 0.79,
+                    "supporting_count": 42, "contradicting_count": 0,
+                },
+                "evening_warmth_increase": {
+                    "confidence": 0.4, "value": 0.45,
+                    "supporting_count": 3, "contradicting_count": 9,
+                },
+            },
+            "evidence_buckets": {
+                "time:morning_clarity": "2026-10-14",
+                "time:evening_warmth": "2026-10-13",
+            },
+            "_migrated_noise_reset": True,
+            "_migrated_episode_evidence_v2": True,
+            "_migrated_dead_channel_reset_v3": True,
+            "_migrated_light_attribution_reset_v4": True,
+            "_migrated_clarity_semantics_reset_v5": True,
+            "_migrated_led_causal_evidence_reset_v6": True,
+        }))
+
+        model = SelfModel(persistence_path=path)
+
+        for belief_id in ("morning_clarity", "evening_warmth_increase"):
+            belief = model.beliefs[belief_id]
+            assert (belief.confidence, belief.value) == (0.3, 0.5)
+            assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+        assert "time:morning_clarity" not in model._evidence_buckets
+        assert "time:evening_warmth" not in model._evidence_buckets
+
+        audit = json.loads(path.read_text())["_migrated_time_pattern_relative_reset_v7"]
+        assert audit["morning_clarity"] == {
+            "confidence": 0.86, "value": 0.79,
+            "supporting_count": 42, "contradicting_count": 0,
+            "retired_evidence": "absolute_threshold_in_window",
+        }
+
+        # A second load must not reset again.
+        model.apply_evidence("morning_clarity", supports=True)
+        model._save()
+        again = SelfModel(persistence_path=path)
+        assert again.beliefs["morning_clarity"].supporting_count == 1
 
     def test_temperament_counts_once_per_hour(self, tmp_path):
         model = SelfModel(persistence_path=tmp_path / "self_model.json")

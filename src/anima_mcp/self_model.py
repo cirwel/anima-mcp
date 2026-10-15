@@ -16,13 +16,13 @@ that can be wrong and corrected through experience.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from collections import deque
 import json
 from pathlib import Path
 import math
-from statistics import NormalDist
+from statistics import NormalDist, fmean, pstdev
 
 from .atomic_write import atomic_json_write
 from .light_attribution import LearnedLedLuxResidual
@@ -47,6 +47,27 @@ CORRELATION_MIN_EFFECT = 0.3
 _CORRELATION_Z_CRITICAL = NormalDist().inv_cdf(
     1.0 - CORRELATION_SIGNIFICANCE_ALPHA / 2.0
 )
+
+
+# Time-of-day beliefs claim "higher in this window than the rest of my day".
+# Until 2026-10-14 they were tested against fixed cuts (clarity > 0.5 in the
+# morning, warmth > 0.5 in the evening), so with clarity living around 0.7 the
+# morning belief collected unbroken support without ever comparing mornings
+# with anything. Each window is now judged once, after it ends, against the hourly
+# means of the 24 hours leading up to its close, outside the window.
+# belief_id -> (evidence bucket key, anima dimension, first hour, last hour),
+# hours inclusive.
+TIME_PATTERN_WINDOWS = {
+    "morning_clarity": ("time:morning_clarity", "clarity", 6, 10),
+    "evening_warmth_increase": ("time:evening_warmth", "warmth", 18, 22),
+}
+# Evidence-quantity floors, not behavioral cuts: an hour with no samples is
+# unknown, and a window judged from one or two hours describes a moment.
+TIME_PATTERN_MIN_WINDOW_HOURS = 3
+TIME_PATTERN_MIN_REFERENCE_HOURS = 8
+# Hourly means older than this are pruned; it covers the latest window's
+# reference day plus slack for a broker that was down when the window closed.
+TIME_PATTERN_RETAIN_HOURS = 48
 
 
 def _correlation_support_threshold(sample_count: int) -> float:
@@ -266,6 +287,14 @@ class SelfModel:
         "my_leds_affect_lux": (0.5, 0.5),
     }
 
+    # The time-of-day beliefs were tested against fixed cuts rather than
+    # against the rest of Lumen's day (see TIME_PATTERN_WINDOWS). Counts from
+    # that test answer a different question, so V7 retires them.
+    _TIME_PATTERN_RELATIVE_RESET_V7 = {
+        "morning_clarity": (0.3, 0.5),
+        "evening_warmth_increase": (0.3, 0.5),
+    }
+
     def __init__(self, persistence_path: Optional[Path] = None,
                  read_only: bool = False):
         self.persistence_path = persistence_path or Path.home() / ".anima" / "self_model.json"
@@ -273,6 +302,8 @@ class SelfModel:
         self._loaded_mtime_ns = 0
         self._evidence_buckets: Dict[str, str] = {}
         self._applied_event_ids: List[str] = []
+        # "YYYY-MM-DDTHH" -> {dimension: [sum, count]}, for time-of-day beliefs.
+        self._time_pattern_hours: Dict[str, Dict[str, List[float]]] = {}
 
         # Core self-beliefs
         self._beliefs: Dict[str, SelfBelief] = {
@@ -448,6 +479,25 @@ class SelfModel:
         self._led_causal_evidence_audit = data.get(
             "_migrated_led_causal_evidence_reset_v6", None
         )
+        self._time_pattern_audit = data.get(
+            "_migrated_time_pattern_relative_reset_v7", None
+        )
+        hours = data.get("time_pattern_hours", {})
+        self._time_pattern_hours = {}
+        if isinstance(hours, dict):
+            for key, dims in hours.items():
+                if not isinstance(dims, dict):
+                    continue
+                kept = {}
+                for dim, pair in dims.items():
+                    try:
+                        total, count = float(pair[0]), int(pair[1])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if math.isfinite(total) and count > 0:
+                        kept[str(dim)] = [total, count]
+                if kept:
+                    self._time_pattern_hours[str(key)] = kept
 
     def _load(self):
         """Load self-model from disk."""
@@ -588,6 +638,32 @@ class SelfModel:
                     self._led_causal_evidence_audit = audit or True
                     migrated = True
 
+                if not self.read_only and not data.get(
+                    "_migrated_time_pattern_relative_reset_v7"
+                ):
+                    audit = {}
+                    for bid, (conf, value) in (
+                        self._TIME_PATTERN_RELATIVE_RESET_V7.items()
+                    ):
+                        belief = self._beliefs.get(bid)
+                        if belief is None:
+                            continue
+                        audit[bid] = {
+                            "confidence": belief.confidence,
+                            "value": belief.value,
+                            "supporting_count": belief.supporting_count,
+                            "contradicting_count": belief.contradicting_count,
+                            "retired_evidence": "absolute_threshold_in_window",
+                        }
+                        belief.confidence = conf
+                        belief.value = value
+                        belief.supporting_count = 0
+                        belief.contradicting_count = 0
+                    for key, *_ in TIME_PATTERN_WINDOWS.values():
+                        self._evidence_buckets.pop(key, None)
+                    self._time_pattern_audit = audit or True
+                    migrated = True
+
                 if migrated:
                     self._save()
 
@@ -640,6 +716,7 @@ class SelfModel:
                 "last_saved": datetime.now().isoformat(),
                 "evidence_buckets": self._evidence_buckets,
                 "applied_event_ids": self._applied_event_ids[-2000:],
+                "time_pattern_hours": self._time_pattern_hours,
                 "light_attribution_model": self._light_attribution_model.to_dict(),
                 "_migrated_noise_reset": True,
                 "_migrated_episode_evidence_v2": True,
@@ -653,6 +730,8 @@ class SelfModel:
                     getattr(self, "_clarity_semantics_audit", None) or True,
                 "_migrated_led_causal_evidence_reset_v6":
                     getattr(self, "_led_causal_evidence_audit", None) or True,
+                "_migrated_time_pattern_relative_reset_v7":
+                    getattr(self, "_time_pattern_audit", None) or True,
             }
             atomic_json_write(self.persistence_path, data, indent=2)
             try:
@@ -874,22 +953,46 @@ class SelfModel:
         self,
         attribution: Dict[str, Any],
     ) -> None:
-        """Credit one belief episode per hour containing fresh causal evidence."""
+        """Score one belief episode per hour containing fresh causal evidence.
+
+        Until 2026-10-14 this could only ever support: a ready model credited
+        the belief and every other state returned, so the tally could not lose
+        and an N:0 record said nothing. Now the instrument may also contradict
+        it: with full coverage (enough balanced breathing differences over a
+        wide enough drive span) and a non-positive equal-direction slope, the
+        breathing pulse was measured and the sensor did not follow it.
+        Strength mirrors the model's sign score from the other side, so a mixed
+        sign record (half or more positive) is unknown and counts as nothing.
+        Every other unready state is still unknown, not evidence either way.
+        """
         model = attribution.get("model", {}) if isinstance(attribution, dict) else {}
-        if not isinstance(model, dict) or not model.get("ready"):
+        if not isinstance(model, dict):
             return
         slope = model.get("slope_lux_per_drive")
-        confidence = model.get("confidence")
         try:
             slope = float(slope)
-            confidence = float(confidence)
         except (TypeError, ValueError):
             return
-        if (
-            not math.isfinite(slope)
-            or slope <= 0.0
-            or not math.isfinite(confidence)
-        ):
+        if not math.isfinite(slope):
+            return
+        if model.get("ready"):
+            if slope <= 0.0:
+                return
+            supports = True
+            try:
+                strength = float(model.get("confidence"))
+            except (TypeError, ValueError):
+                return
+        elif model.get("coverage_ready") and slope <= 0.0:
+            supports = False
+            try:
+                positive_fraction = float(model.get("positive_fraction"))
+            except (TypeError, ValueError):
+                return
+            strength = (0.5 - positive_fraction) / 0.5
+        else:
+            return
+        if not math.isfinite(strength) or strength <= 0.0:
             return
         timestamp = model.get("latest_transition_at_unix")
         try:
@@ -905,8 +1008,8 @@ class SelfModel:
             return
         self._update_belief(
             "my_leds_affect_lux",
-            supports=True,
-            strength=max(0.0, min(1.0, confidence)),
+            supports=supports,
+            strength=min(1.0, strength),
         )
         self._maybe_save()
 
@@ -1037,20 +1140,75 @@ class SelfModel:
             supports=clarity_change > 0, strength=strength)
         self._maybe_save()
 
-    def observe_time_pattern(self, hour: int, warmth: float, clarity: float):
-        """Test time-based beliefs."""
-        day_bucket = datetime.now().date().isoformat()
-        # Evening warmth (6pm-10pm)
-        if (18 <= hour <= 22
-                and self._claim_evidence_bucket("time:evening_warmth", day_bucket)):
-            self._update_belief("evening_warmth_increase",
-                supports=warmth > 0.5, strength=abs(warmth - 0.5))
+    def observe_time_pattern(self, hour: int, warmth: float, clarity: float,
+                             *, now: Optional[datetime] = None):
+        """Accumulate hourly means and test time-of-day beliefs against them.
 
-        # Morning clarity (6am-10am)
-        if (6 <= hour <= 10
-                and self._claim_evidence_bucket("time:morning_clarity", day_bucket)):
-            self._update_belief("morning_clarity",
-                supports=clarity > 0.5, strength=abs(clarity - 0.5))
+        Each belief claims its window runs higher than the rest of Lumen's day,
+        so evidence is relative: once the window has closed, its mean of hourly
+        means is compared with the hourly means of the 24 hours leading up to
+        its close, outside the window. Strength is that difference in units of
+        the reference hours' own spread. Too few hours on either side, or a
+        flat reference, is unknown and scores nothing.
+        """
+        when = (now or datetime.now()).replace(
+            hour=hour, minute=0, second=0, microsecond=0)
+        bucket = self._time_pattern_hours.setdefault(
+            when.strftime("%Y-%m-%dT%H"), {})
+        for dim, value in (("warmth", warmth), ("clarity", clarity)):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            pair = bucket.setdefault(dim, [0.0, 0])
+            pair[0] += value
+            pair[1] += 1
+        oldest = (when - timedelta(hours=TIME_PATTERN_RETAIN_HOURS)).strftime(
+            "%Y-%m-%dT%H")
+        for key in [k for k in self._time_pattern_hours if k < oldest]:
+            del self._time_pattern_hours[key]
+
+        for belief_id, (key, dim, start, end) in TIME_PATTERN_WINDOWS.items():
+            self._test_time_window(belief_id, key, dim, start, end, when)
+
+    def _hourly_mean(self, key: str, dim: str) -> Optional[float]:
+        pair = self._time_pattern_hours.get(key, {}).get(dim)
+        if not pair or pair[1] <= 0:
+            return None
+        return pair[0] / pair[1]
+
+    def _test_time_window(self, belief_id: str, evidence_key: str, dim: str,
+                          start: int, end: int, when: datetime) -> None:
+        """Judge the most recent closed window once (see observe_time_pattern)."""
+        # The window closes at the top of the hour after `end`. Before that
+        # today, the latest closed window is yesterday's.
+        close = when.replace(hour=end) + timedelta(hours=1)
+        if close > when:
+            close -= timedelta(days=1)
+        window_day = (close - timedelta(hours=1)).date().isoformat()
+        if self.read_only or self._evidence_buckets.get(evidence_key) == window_day:
+            return
+        window, reference = [], []
+        for offset in range(1, 25):
+            hour_at = close - timedelta(hours=offset)
+            mean = self._hourly_mean(hour_at.strftime("%Y-%m-%dT%H"), dim)
+            if mean is None:
+                continue
+            (window if start <= hour_at.hour <= end else reference).append(mean)
+        if (len(window) < TIME_PATTERN_MIN_WINDOW_HOURS
+                or len(reference) < TIME_PATTERN_MIN_REFERENCE_HOURS):
+            return
+        spread = pstdev(reference)
+        if not math.isfinite(spread) or spread <= 1e-9:
+            return
+        z = (fmean(window) - fmean(reference)) / spread
+        if not math.isfinite(z) or z == 0.0:
+            return
+        self._claim_evidence_bucket(evidence_key, window_day)
+        self._update_belief(belief_id, supports=z > 0.0,
+                            strength=min(1.0, abs(z) / 2.0))
 
     def observe_temperament(self, temperament: Dict[str, float]):
         """Test temperament baseline beliefs using slow-moving averages.
