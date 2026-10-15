@@ -458,6 +458,87 @@ class TestLedCausalEvidenceBoundary:
         belief = model._beliefs["my_leds_affect_lux"]
         assert belief.supporting_count == 1
 
+    @staticmethod
+    def _covered_attribution(slope, positive_fraction):
+        def attribution(*args, observed_at=None, **kwargs):
+            return {
+                "model": {
+                    "ready": False,
+                    "identification_status": "inconclusive",
+                    "coverage_ready": True,
+                    "confidence": 0.4,
+                    "slope_lux_per_drive": slope,
+                    "positive_fraction": positive_fraction,
+                    "latest_transition_at_unix": observed_at,
+                }
+            }
+        return attribution
+
+    def test_covered_non_positive_response_contradicts(self, model, monkeypatch):
+        """The tally must be able to lose: a fully covered instrument that
+        sees no positive response is evidence against the belief."""
+        monkeypatch.setattr(
+            model._light_attribution_model,
+            "observe",
+            self._covered_attribution(-120.0, 0.2),
+        )
+        belief = model._beliefs["my_leds_affect_lux"]
+        belief.confidence = 0.8
+
+        model.observe_led_lux(0.2, 200.0, observed_at=1_700_000_000.0)
+        model.observe_led_lux(0.8, 800.0, observed_at=1_700_000_100.0)
+        model.observe_led_lux(0.3, 300.0, observed_at=1_700_003_700.0)
+
+        assert belief.supporting_count == 0
+        assert belief.contradicting_count == 2
+        assert belief.confidence < 0.8
+
+    def test_mixed_sign_record_is_unknown(self, model, monkeypatch):
+        monkeypatch.setattr(
+            model._light_attribution_model,
+            "observe",
+            self._covered_attribution(-5.0, 0.55),
+        )
+
+        model.observe_led_lux(0.2, 200.0, observed_at=1_700_000_000.0)
+
+        belief = model._beliefs["my_leds_affect_lux"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+
+    def test_flat_sensor_zero_slope_is_unknown(self, model, monkeypatch):
+        """Zero-delta transitions count as non-positive; a flat or saturated
+        sensor must read as unmeasured, not as a contradiction."""
+        monkeypatch.setattr(
+            model._light_attribution_model,
+            "observe",
+            self._covered_attribution(0.0, 0.0),
+        )
+        model.observe_led_lux(0.2, 200.0, observed_at=1_700_000_000.0)
+
+        belief = model._beliefs["my_leds_affect_lux"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+
+    def test_uncovered_negative_slope_is_unknown(self, model, monkeypatch):
+        def attribution(*args, observed_at=None, **kwargs):
+            return {
+                "model": {
+                    "ready": False,
+                    "identification_status": "collecting",
+                    "coverage_ready": False,
+                    "slope_lux_per_drive": -120.0,
+                    "positive_fraction": 0.1,
+                    "latest_transition_at_unix": observed_at,
+                }
+            }
+
+        monkeypatch.setattr(
+            model._light_attribution_model, "observe", attribution
+        )
+        model.observe_led_lux(0.2, 200.0, observed_at=1_700_000_000.0)
+
+        belief = model._beliefs["my_leds_affect_lux"]
+        assert (belief.supporting_count, belief.contradicting_count) == (0, 0)
+
     def test_v6_migration_retires_closed_loop_belief_evidence(self, tmp_path):
         path = tmp_path / "self_model.json"
         path.write_text(json.dumps({
