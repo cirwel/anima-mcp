@@ -154,6 +154,37 @@ def test_live_phase_records_actuator_exception_as_failed_execution():
     assert ctx.last_action is result
 
 
+def _sensitivity_execute(selector, direction):
+    action = Action(ActionType.ADJUST_SENSITIVITY, {"direction": direction})
+    execute_action(
+        action,
+        ctx=SimpleNamespace(leds=None),
+        action_selector=selector,
+        anima=SimpleNamespace(),
+        readings=SimpleNamespace(),
+        prediction_error=None,
+        metacog=None,
+        surprise_level=0.0,
+        surprise_sources=[],
+    )
+    return action
+
+
+def test_sensitivity_action_at_its_bound_reports_no_change(tmp_path):
+    from anima_mcp.agency import ActionSelector
+
+    selector = ActionSelector(db_path=str(tmp_path / "agency.db"))
+    selector._sensitivity_modifier = 0.5
+
+    action = _sensitivity_execute(selector, "decrease")
+    assert action.execution_succeeded is False
+    assert "unchanged" in action.execution_detail
+
+    action = _sensitivity_execute(selector, "increase")
+    assert action.execution_succeeded is True
+    assert action.execution_detail == "sensitivity increase applied"
+
+
 def _led_execute(leds, direction):
     action = Action(ActionType.LED_BRIGHTNESS, {"direction": direction})
     execute_action(

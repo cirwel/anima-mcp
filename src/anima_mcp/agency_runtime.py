@@ -147,10 +147,15 @@ def execute_action(
     elif action.action_type == ActionType.ADJUST_SENSITIVITY:
         direction = action.parameters.get("direction", "increase")
         if direction in {"increase", "decrease"}:
-            action_selector.adjust_sensitivity(direction)
-            action.execution_succeeded = True
-            action.execution_detail = f"sensitivity {direction} applied"
-            print(f"[Agency] Adjusted sensitivity: {direction}", file=sys.stderr, flush=True)
+            if action_selector.adjust_sensitivity(direction) is False:
+                # At the bound: report the no-op, never a change that did not happen.
+                action.execution_detail = (
+                    f"sensitivity unchanged: {direction} is at its bound"
+                )
+            else:
+                action.execution_succeeded = True
+                action.execution_detail = f"sensitivity {direction} applied"
+                print(f"[Agency] Adjusted sensitivity: {direction}", file=sys.stderr, flush=True)
         else:
             action.execution_detail = f"invalid sensitivity direction: {direction}"
 
