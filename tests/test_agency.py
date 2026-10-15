@@ -289,6 +289,52 @@ class TestActionSelection:
         assert action.action_type != ActionType.EXPLORE
         assert action.parameters["sensor"] == "ambient_temp"
 
+    def test_adjust_sensitivity_reports_whether_it_moved(self, selector):
+        for _ in range(4):
+            assert selector.adjust_sensitivity("decrease") is True
+        assert selector.get_sensitivity_modifier() == 0.5
+        assert selector.adjust_sensitivity("decrease") is False
+        assert selector.get_sensitivity_modifier() == 0.5
+        assert selector.adjust_sensitivity("increase") is True
+
+    def test_satisfied_state_does_not_offer_a_decrease_at_the_floor(self, selector):
+        """The live loop: satisfaction > 0.7 offered "decrease" every tick, the
+        modifier sat at its floor, and the no-op won about half of all actions."""
+        state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.5, "presence": 0.5}
+        preferences = MagicMock()
+        preferences.get_overall_satisfaction.return_value = 0.9
+        preferences.get_preferred_direction.return_value = 0.0
+        selector._exploration_rate = 0.0
+        available = {ActionType.STAY_QUIET, ActionType.ADJUST_SENSITIVITY}
+
+        with patch("anima_mcp.agency.random.gauss", return_value=0.0):
+            first = selector.select_action(
+                state, preferences=preferences, available_actions=available,
+            )
+            assert first.action_type == ActionType.ADJUST_SENSITIVITY
+            while selector.can_adjust_sensitivity("decrease"):
+                selector.adjust_sensitivity("decrease")
+            at_floor = selector.select_action(
+                state, preferences=preferences, available_actions=available,
+            )
+
+        assert at_floor.action_type == ActionType.STAY_QUIET
+
+    def test_stability_drive_does_not_offer_a_decrease_at_the_floor(self, selector):
+        state = {"warmth": 0.5, "clarity": 0.5, "stability": 0.5, "presence": 0.5}
+        selector._exploration_rate = 0.0
+        selector._sensitivity_modifier = 0.5
+        available = {ActionType.STAY_QUIET, ActionType.ADJUST_SENSITIVITY}
+
+        with patch("anima_mcp.agency.random.gauss", return_value=0.0):
+            action = selector.select_action(
+                state,
+                drives={"stability": 0.9, "warmth": 0.0},
+                available_actions=available,
+            )
+
+        assert action.action_type == ActionType.STAY_QUIET
+
 
 class TestRecordOutcome:
     """Test value learning from outcomes."""

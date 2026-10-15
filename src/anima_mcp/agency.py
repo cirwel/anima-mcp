@@ -31,6 +31,10 @@ from .db_paths import resolve_db_path
 
 AGENCY_REWARD_VERSION = 2
 
+# Bounds of the surprise-sensitivity multiplier.
+SENSITIVITY_MIN = 0.5
+SENSITIVITY_MAX = 2.0
+
 
 class ActionType(Enum):
     """Types of actions Lumen can take."""
@@ -562,10 +566,17 @@ class ActionSelector:
 
         # The runtime declares what it can actually execute. Never learn from
         # a candidate that has no effect in the current process/capability set.
+        # A sensitivity step against its bound is the same kind of no-op: the
+        # satisfied-state "decrease" pinned the modifier at its 0.5 floor within
+        # four ticks and then won ~half of all selections while changing nothing.
         candidates = [
             (action, value)
             for action, value in candidates
             if action.action_type in available_actions
+            and not (
+                action.action_type == ActionType.ADJUST_SENSITIVITY
+                and not self.can_adjust_sensitivity(action.parameters.get("direction"))
+            )
         ]
 
         # 7. Prediction-informed adjustments
@@ -814,12 +825,21 @@ class ActionSelector:
         """Get sensitivity modifier for surprise threshold."""
         return self._sensitivity_modifier
 
-    def adjust_sensitivity(self, direction: str):
-        """Adjust sensitivity modifier."""
+    def _sensitivity_after(self, direction: Optional[str]) -> float:
         if direction == "increase":
-            self._sensitivity_modifier = min(2.0, self._sensitivity_modifier * 1.2)
-        else:
-            self._sensitivity_modifier = max(0.5, self._sensitivity_modifier * 0.8)
+            return min(SENSITIVITY_MAX, self._sensitivity_modifier * 1.2)
+        return max(SENSITIVITY_MIN, self._sensitivity_modifier * 0.8)
+
+    def can_adjust_sensitivity(self, direction: Optional[str]) -> bool:
+        """Whether a step in this direction would move the modifier at all."""
+        return self._sensitivity_after(direction) != self._sensitivity_modifier
+
+    def adjust_sensitivity(self, direction: str) -> bool:
+        """Adjust sensitivity modifier. Returns False when already at the bound."""
+        after = self._sensitivity_after(direction)
+        changed = after != self._sensitivity_modifier
+        self._sensitivity_modifier = after
+        return changed
 
     def get_action_stats(self) -> Dict[str, Any]:
         """Get statistics about actions."""
