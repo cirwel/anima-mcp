@@ -490,9 +490,14 @@ class TestGenerateInsights:
             avg_warmth=0.7, avg_clarity=0.5, avg_stability=0.5, avg_presence=0.5,
         )
         srs.generate_insights([pattern])
-        srs.generate_insights([pattern])  # Second time
         insight_id = "the_night_highest_warmth"
-        assert srs._insights[insight_id].validation_count >= 2
+        # Same analysis window: the same hours, so no second count.
+        srs.generate_insights([pattern])
+        assert srs._insights[insight_id].validation_count == 1
+        # A full window later the data is independent and counts.
+        srs._insights[insight_id].last_judged -= timedelta(hours=25)
+        srs.generate_insights([pattern])
+        assert srs._insights[insight_id].validation_count == 2
 
 
 # ==================== Preference Insights ====================
@@ -1031,3 +1036,167 @@ class TestContradictionDetection:
         rises = srs._insights["warmth_rises_presence_rises"]
         assert falls.contradiction_count == 1
         assert rises.contradiction_count == 1
+
+
+# ==================== Evidence counts once and can lose (2026-10-15) ====================
+
+class TestMetaInsightsJudgeOnlyNewPairs:
+    _record_episode = staticmethod(TestReflectionDynamics._record_episode)
+
+    def _ruminate(self, srs, base):
+        for i in range(3):
+            self._record_episode(srs, kind="metacog", timestamp=base + timedelta(seconds=i),
+                                 topics=["light"], surprise=0.55, discrepancy=0.2,
+                                 belief_value=0.4, pref_value=0.4)
+
+    def test_rereading_the_same_episodes_does_not_validate(self, srs):
+        """The live failure: 'validated 86 times' from re-reading 50 episodes hourly."""
+        self._ruminate(srs, datetime(2026, 4, 5, 12, 0, 0))
+        [created] = srs._analyze_reflection_episode_insights()
+        for _ in range(5):
+            srs._analyze_reflection_episode_insights()
+        stored = srs._insights[created.id]
+        assert (stored.validation_count, stored.contradiction_count) == (1, 0)
+
+    def test_new_rumination_validates_once(self, srs):
+        base = datetime(2026, 4, 5, 12, 0, 0)
+        self._ruminate(srs, base)
+        [created] = srs._analyze_reflection_episode_insights()
+        self._record_episode(srs, kind="metacog", timestamp=base + timedelta(seconds=3),
+                             topics=["light"], surprise=0.56, discrepancy=0.21,
+                             belief_value=0.4, pref_value=0.4)
+        srs._analyze_reflection_episode_insights()
+        srs._analyze_reflection_episode_insights()
+        assert srs._insights[created.id].validation_count == 2
+
+    def test_a_productive_pair_contradicts_rumination(self, srs):
+        base = datetime(2026, 4, 5, 12, 0, 0)
+        self._ruminate(srs, base)
+        [created] = srs._analyze_reflection_episode_insights()
+        self._record_episode(srs, kind="metacog", timestamp=base + timedelta(seconds=3),
+                             topics=["light"], surprise=0.4, discrepancy=0.2,
+                             belief_value=0.7, pref_value=0.7)
+        srs._analyze_reflection_episode_insights()
+        stored = srs._insights[created.id]
+        assert (stored.validation_count, stored.contradiction_count) == (1, 1)
+
+
+class TestPatternInsightsCanLose:
+    def _store(self, srs, claim_id="the_night_highest_warmth"):
+        pattern = StatePattern(
+            condition="the night", outcome="highest warmth", correlation=0.3,
+            sample_count=50, avg_warmth=0.7, avg_clarity=0.5,
+            avg_stability=0.5, avg_presence=0.5,
+        )
+        srs.generate_insights([pattern])
+        insight = srs._insights[claim_id]
+        insight.last_judged -= timedelta(hours=25)
+        return insight
+
+    def test_measured_but_faded_pattern_is_contradicted(self, srs):
+        insight = self._store(srs)
+        srs._pattern_measurements = {insight.id: (0.02, 0.1)}
+        srs.generate_insights([])
+        assert (insight.validation_count, insight.contradiction_count) == (1, 1)
+
+    def test_measured_claim_that_still_holds_validates_without_being_strongest(self, srs):
+        insight = self._store(srs)
+        srs._pattern_measurements = {insight.id: (0.15, 0.1)}
+        srs.generate_insights([])
+        assert (insight.validation_count, insight.contradiction_count) == (2, 0)
+
+    def test_unmeasured_pattern_is_unknown(self, srs):
+        insight = self._store(srs)
+        srs._pattern_measurements = {}
+        srs.generate_insights([])
+        assert (insight.validation_count, insight.contradiction_count) == (1, 0)
+
+    def test_judged_at_most_once_per_window(self, srs):
+        insight = self._store(srs)
+        srs._pattern_measurements = {insight.id: (0.02, 0.1)}
+        for _ in range(5):
+            srs.generate_insights([])
+        assert insight.contradiction_count == 1
+
+    def test_sensor_analyzer_measures_every_dimension(self, srs):
+        rows = [
+            {"timestamp": "2026-10-15T00:00:00", "warmth": 0.3 + 0.03 * i,
+             "clarity": 0.2 + 0.05 * i, "stability": 0.5, "presence": 0.5,
+             "sensors": json.dumps({"ambient_temp_c": 18 + i})}
+            for i in range(12)
+        ]
+        srs._pattern_measurements = {}
+        pattern = srs._analyze_sensor_correlation(rows, "ambient_temp_c", "Temperature")
+        assert pattern.outcome == "higher clarity"
+        effect, cut = srs._pattern_measurements["high_temperature_higher_warmth"]
+        assert effect > cut  # warmth holds too, though clarity was strongest
+        effect, _ = srs._pattern_measurements["high_temperature_lower_warmth"]
+        assert effect < 0
+
+
+class TestDrawingInsightsCountNewEvidence:
+    def _growth(self, *, evidence, confidence=0.9, value=0.8):
+        from anima_mcp.growth import GrowthPreference, PreferenceCategory
+        growth = MagicMock()
+        growth._drawings_observed = 10
+        pref = {}
+        for name in ("drawing_night", "drawing_wellbeing"):
+            p = GrowthPreference(
+                category=PreferenceCategory.ACTIVITY, name=name, description=name,
+                value=value, confidence=confidence, observation_count=evidence,
+                first_noticed=datetime.now(), last_confirmed=datetime.now(),
+            )
+            p.evidence_count = evidence
+            pref[name] = p
+        growth._preferences = pref
+        return growth
+
+    def _run(self, srs, growth):
+        with patch("anima_mcp.growth.get_growth_system", return_value=growth):
+            srs._analyze_drawing_insights()
+
+    def test_unchanged_preference_does_not_revalidate(self, srs):
+        growth = self._growth(evidence=8)
+        for _ in range(4):
+            self._run(srs, growth)
+        assert srs._insights["drawing_night"].validation_count == 1
+        growth._preferences["drawing_night"].evidence_count = 9
+        self._run(srs, growth)
+        assert srs._insights["drawing_night"].validation_count == 2
+
+    def test_wellness_retires_and_flips(self, srs):
+        self._run(srs, self._growth(evidence=8))
+        wellness = srs._insights["drawing_wellness"]
+        assert wellness.description == "drawing seems to help me feel better"
+        self._run(srs, self._growth(evidence=8, confidence=0.3))
+        assert wellness.active is False
+        self._run(srs, self._growth(evidence=9, value=0.2))
+        assert wellness.active is True
+        assert wellness.contradiction_count == 1
+        assert wellness.description == "my drawings don't always reflect how i feel"
+
+
+def test_recount_collapse_migration(tmp_path):
+    db = str(tmp_path / "recount.db")
+    first = SelfReflectionSystem(db_path=db)
+    conn = first._connect()
+    conn.execute("DELETE FROM reflection_state WHERE key = 'migration_insight_recount_collapse_v1'")
+    now = datetime.now()
+    for iid, v, c in [("drawing_night", 959, 0), ("clarity_rises_stability_rises", 1, 108),
+                      ("reflect_rumination_metacog_light", 92, 0), ("pref_warm_temp", 1351, 0)]:
+        first._save_insight(SelfInsight(
+            id=iid, category=InsightCategory.BEHAVIORAL, description=iid,
+            confidence=0.9, sample_count=1, discovered_at=now, last_validated=now,
+            validation_count=v, contradiction_count=c,
+        ))
+    conn.commit()
+
+    second = SelfReflectionSystem(db_path=db)
+    counts = {i.id: (i.validation_count, i.contradiction_count)
+              for i in second._insights.values()}
+    assert counts["drawing_night"] == (1, 0)
+    assert counts["clarity_rises_stability_rises"] == (1, 1)
+    assert counts["reflect_rumination_metacog_light"] == (1, 0)
+    assert counts["pref_warm_temp"] == (1351, 0)  # mirrors a source that can fall
+    audit = json.loads(second._get_reflection_state("migration_insight_recount_collapse_v1"))
+    assert audit["rows"]["drawing_night"]["validation_count"] == 959

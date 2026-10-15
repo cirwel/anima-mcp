@@ -412,7 +412,23 @@ Goals are **data-grounded** — they emerge from Lumen's actual experience:
 | `_analyze_belief_insights()` | Self-model beliefs (confidence > 0.7, 10+ evidence) | "i am fairly confident that light affects my warmth" |
 | `_analyze_drawing_insights()` | Drawing preferences (5+ drawings) | "i tend to draw at night", "drawing seems to help me feel better" |
 
-Insights persist in SQLite (`insights` table), validated/contradicted on each cycle. Strongest 5 insights are used in grounded self-answers and observations as "Things I've learned about myself."
+Insights persist in SQLite (`insights` table). Strongest 5 insights are used in grounded self-answers and observations as "Things I've learned about myself."
+
+**Evidence counts once and can lose (2026-10-15).** Each hourly run used to
+re-count the same evidence: pattern insights re-read 23 of the same 24 hours,
+`reflect_*` re-read the same 50 episodes (one reached "validated 86 times"),
+`drawing_*` validated whenever the preference was merely still ready. Nothing
+could contradict a pattern that faded. Now: pattern analyzers record every
+claim they *measure* (`_pattern_measurements`), and a stored pattern is judged
+against it at most once per analysis window (`last_judged`), either way; an
+unmeasured claim is unknown. `reflect_*` are judged only on episode pairs newer
+than `last_judged`; `drawing_*` validate only when the preference's
+independent evidence grew. `migration_insight_recount_collapse_v1` collapsed
+the inflated history to 0/1 per count (audit in `reflection_state`), because
+`strength()` is a validation *ratio* and hundreds of re-counts made any future
+contradiction invisible. `pref_*`/`belief_*`/`trend_*`/`qa_*` are exempt.
+`question_asking_tendency` is likewise judged once per five-minute surprise
+episode (`question_evidence.py`); V8 retired its 111:0 tally.
 
 **Insight categories:** ENVIRONMENT, TEMPORAL, BEHAVIORAL, WELLNESS, SOCIAL
 

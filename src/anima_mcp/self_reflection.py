@@ -104,6 +104,11 @@ class SelfInsight:
     # Empty string = pre-column row or non-qa row; treated as external only
     # for qa_-prefixed ids.
     source_author: str = ""
+    # When this insight was last judged (validated OR contradicted) against
+    # evidence it had not already been judged on. Pattern insights use it to
+    # judge once per analysis window; reflection meta-insights store the
+    # newest episode already consumed. None = never judged under that rule.
+    last_judged: Optional[datetime] = None
 
     def strength(self) -> float:
         """How strongly this insight holds (confidence * validation ratio)."""
@@ -215,6 +220,13 @@ class SelfReflectionSystem:
         self._reflection_window = REFLECTION_WINDOW
         self._reflection_similarity_epsilon = REFLECTION_EPSILON
         self._last_drained_broker_event_id: Optional[str] = None
+        # Every claim the last analyze_patterns() run measured, detected or
+        # not: claim id -> (effect in the claimed direction, the analyzer's own
+        # significance cut). generate_insights() judges stored pattern
+        # insights against this, so a pattern that fades is contradicted
+        # instead of silently skipped.
+        self._pattern_measurements: Dict[str, Tuple[float, float]] = {}
+        self._pattern_window = timedelta(hours=24)
 
         # Load existing insights from DB
         self._init_schema()
@@ -222,6 +234,7 @@ class SelfReflectionSystem:
         self._load_insights()
         self._migrate_raw_light_insights()
         self._migrate_inverted_low_sensor_insights()
+        self._migrate_recount_collapse()
 
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -248,7 +261,8 @@ class SelfReflectionSystem:
                 validation_count INTEGER DEFAULT 0,
                 contradiction_count INTEGER DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
-                source_author TEXT NOT NULL DEFAULT ''
+                source_author TEXT NOT NULL DEFAULT '',
+                last_judged TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_insights_category ON insights(category);
@@ -287,6 +301,8 @@ class SelfReflectionSystem:
             conn.execute("ALTER TABLE insights ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
         if "source_author" not in columns:
             conn.execute("ALTER TABLE insights ADD COLUMN source_author TEXT NOT NULL DEFAULT ''")
+        if "last_judged" not in columns:
+            conn.execute("ALTER TABLE insights ADD COLUMN last_judged TEXT")
         conn.commit()
 
     def _load_reflection_state(self):
@@ -312,6 +328,9 @@ class SelfReflectionSystem:
                 active=bool(row["active"]),
                 source_author=(row["source_author"]
                                if "source_author" in row.keys() else ""),
+                last_judged=(datetime.fromisoformat(row["last_judged"])
+                             if "last_judged" in row.keys() and row["last_judged"]
+                             else None),
             )
             self._insights[insight.id] = insight
 
@@ -366,6 +385,58 @@ class SelfReflectionSystem:
                 file=sys.stderr,
                 flush=True,
             )
+
+    # Families whose counts were re-counted, not independent (2026-10-15):
+    # pattern insights (hourly runs over a 24h window), reflect_* (every run
+    # re-read the same 50 episodes) and drawing_* (a validation per run while
+    # the preference merely stayed ready). pref_/belief_/trend_ mirror a
+    # source whose own confidence can fall; qa_ rows are Q&A-derived.
+    _RECOUNT_EXEMPT_PREFIXES = ("qa_", "pref_", "belief_", "trend_")
+
+    def _migrate_recount_collapse(self) -> None:
+        """Collapse re-counted history to whether it ever validated/contradicted.
+
+        The overlapping counts cannot be de-duplicated after the fact, and
+        left as they were (hundreds of validations) no future contradiction
+        could move ``strength()``, which is a validation ratio. Each count
+        becomes 0 or 1: the sign of the history survives, its inflated
+        magnitude does not. With no contradictions, strength is unchanged.
+        Prior counts are kept in reflection_state as the audit.
+        """
+        sentinel = "migration_insight_recount_collapse_v1"
+        if self._get_reflection_state(sentinel):
+            return
+
+        audit = {}
+        conn = self._connect()
+        for insight in self._insights.values():
+            if insight.id.startswith(self._RECOUNT_EXEMPT_PREFIXES):
+                continue
+            v, c = insight.validation_count, insight.contradiction_count
+            if v <= 1 and c <= 1:
+                continue
+            audit[insight.id] = {"validation_count": v, "contradiction_count": c}
+            insight.validation_count = min(v, 1)
+            insight.contradiction_count = min(c, 1)
+            conn.execute(
+                "UPDATE insights SET validation_count = ?, contradiction_count = ? "
+                "WHERE id = ?",
+                (insight.validation_count, insight.contradiction_count, insight.id),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO reflection_state (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (sentinel, json.dumps({"reason": "overlapping_window_recounts",
+                                   "rows": audit})),
+        )
+        conn.commit()
+        if audit:
+            print(f"[SelfReflection] Collapsed re-counted history on "
+                  f"{len(audit)} insights", file=sys.stderr, flush=True)
 
     def _migrate_inverted_low_sensor_insights(self) -> None:
         """Retract claims produced by the old negative-correlation branch.
@@ -436,8 +507,8 @@ class SelfReflectionSystem:
             INSERT INTO insights
             (id, category, description, confidence, sample_count,
              discovered_at, last_validated, validation_count, contradiction_count,
-             active, source_author)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             active, source_author, last_judged)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               category=excluded.category,
               description=excluded.description,
@@ -448,7 +519,8 @@ class SelfReflectionSystem:
               validation_count=excluded.validation_count,
               contradiction_count=excluded.contradiction_count,
               active=excluded.active,
-              source_author=excluded.source_author
+              source_author=excluded.source_author,
+              last_judged=excluded.last_judged
         """, (
             insight.id,
             insight.category.value,
@@ -461,6 +533,7 @@ class SelfReflectionSystem:
             insight.contradiction_count,
             int(insight.active),
             insight.source_author,
+            insight.last_judged.isoformat() if insight.last_judged else None,
         ))
         conn.commit()
         self._insights[insight.id] = insight
@@ -964,8 +1037,17 @@ class SelfReflectionSystem:
         )
         return -coverage
 
-    def _compute_reflection_dynamics(self, limit: int = 50) -> Dict[str, Any]:
-        """Summarize reflection repetition, learning, and rumination from persisted episodes."""
+    def _compute_reflection_dynamics(
+        self,
+        limit: int = 50,
+        pair_log: Optional[Dict[str, List[Tuple[datetime, str]]]] = None,
+    ) -> Dict[str, Any]:
+        """Summarize reflection repetition, learning, and rumination from persisted episodes.
+
+        ``pair_log``, when given, receives ``topic_key -> [(later episode
+        time, "productive" | "rumination" | "repeated")]`` for every repeated
+        pair, so a caller can judge only pairs it has not judged before.
+        """
         episodes = list(reversed(self.get_recent_reflection_episodes(limit=limit)))
         recent_episodes = episodes[-self._reflection_window:]
         recent_counts = Counter()
@@ -1015,9 +1097,11 @@ class SelfReflectionSystem:
                     and episode.surprise is not None
                     and episode.surprise < match.surprise - self._reflection_similarity_epsilon
                 )
+                pair_outcome = "repeated"
                 if belief_shift or pref_shift or surprise_reduced:
                     productive_pairs += 1
                     bucket["productive"] += 1
+                    pair_outcome = "productive"
                 elif (
                     episode.kind == REFLECTION_KIND_METACOG
                     and self._intensity_is_similar(match, episode)
@@ -1030,6 +1114,11 @@ class SelfReflectionSystem:
                     # treated as "repeated" only and never promoted to rumination.
                     rumination_pairs += 1
                     bucket["rumination"] += 1
+                    pair_outcome = "rumination"
+                if pair_log is not None:
+                    pair_log.setdefault(topic_key, []).append(
+                        (episode.timestamp, pair_outcome)
+                    )
 
             recent_same_kind.append(episode)
             if len(recent_same_kind) > self._reflection_window:
@@ -1081,7 +1170,7 @@ class SelfReflectionSystem:
             "by_topic": by_topic,
         }
 
-    def _upsert_reflection_meta_insight(
+    def _create_reflection_meta_insight(
         self,
         *,
         insight_id: str,
@@ -1089,17 +1178,8 @@ class SelfReflectionSystem:
         confidence: float,
         sample_count: int,
         now: datetime,
-    ) -> Optional[SelfInsight]:
-        """Create or validate a reflection-derived insight."""
-        if insight_id in self._insights:
-            existing = self._insights[insight_id]
-            existing.validation_count += 1
-            existing.last_validated = now
-            existing.sample_count = max(existing.sample_count, sample_count)
-            existing.confidence = max(existing.confidence, confidence)
-            self._save_insight(existing)
-            return None
-
+        judged_through: Optional[datetime],
+    ) -> SelfInsight:
         insight = SelfInsight(
             id=insight_id,
             category=InsightCategory.BEHAVIORAL,
@@ -1110,9 +1190,54 @@ class SelfReflectionSystem:
             last_validated=now,
             validation_count=1,
             contradiction_count=0,
+            last_judged=judged_through,
         )
         self._save_insight(insight)
         return insight
+
+    def _judge_reflection_meta_insight(
+        self,
+        existing: SelfInsight,
+        *,
+        claims_rumination: bool,
+        pairs: List[Tuple[datetime, str]],
+        window_confidence: float,
+        window_count: int,
+        now: datetime,
+    ) -> None:
+        """Judge a stored meta-insight on pairs it has not been judged on.
+
+        Every hourly reflection re-reads the same last 50 episodes. Counting a
+        validation per run re-counted the same pairs (one insight reached 86),
+        with no path to contradiction and confidence only ratcheting up. Now
+        only pairs newer than ``last_judged`` count, once, in either direction.
+        No new rumination or productive pair means unknown: nothing changes.
+        """
+        since = existing.last_judged or existing.last_validated
+        fresh = []
+        for when, outcome in pairs:
+            try:
+                if when > since:
+                    fresh.append((when, outcome))
+            except TypeError:
+                continue
+        new_rumination = sum(1 for _, o in fresh if o == "rumination")
+        new_productive = sum(1 for _, o in fresh if o == "productive")
+        if not new_rumination and not new_productive:
+            return
+        # Same dominance rule as emission; ties favour the productive reading.
+        supports = (new_rumination > new_productive if claims_rumination
+                    else new_productive >= new_rumination)
+        if supports:
+            existing.validation_count += 1
+            existing.last_validated = now
+            existing.sample_count = max(existing.sample_count, window_count)
+            # The current window's evidence, not the maximum ever reached.
+            existing.confidence = window_confidence
+        else:
+            existing.contradiction_count += 1
+        existing.last_judged = max(when for when, _ in fresh)
+        self._save_insight(existing)
 
     def _analyze_reflection_episode_insights(self) -> List[SelfInsight]:
         """Turn reflection-on-reflection dynamics into ordinary self-insights.
@@ -1125,16 +1250,23 @@ class SelfReflectionSystem:
         this with a dominant-signal rule: whichever pair-count is higher wins, and
         on a tie we prefer the productive insight (optimistic default — miss a
         rumination flag rather than misattribute learning to a stuck loop).
+
+        The rule decides which insight is *created*. A stored insight is then
+        judged only on pairs newer than its last judgment (see
+        ``_judge_reflection_meta_insight``), so it can lose as well as win.
         """
-        dynamics = self._compute_reflection_dynamics(limit=50)
+        pair_log: Dict[str, List[Tuple[datetime, str]]] = {}
+        dynamics = self._compute_reflection_dynamics(limit=50, pair_log=pair_log)
         new_insights: List[SelfInsight] = []
         now = datetime.now()
 
-        for stats in dynamics["by_topic"].values():
+        for topic_key, stats in dynamics["by_topic"].items():
             topic = stats.get("topic", "unknown")
             topic_kind = stats.get("kind", "mixed")
             rumination_count = stats["rumination"]
             productive_count = stats["productive"]
+            pairs = pair_log.get(topic_key, [])
+            newest = max((when for when, _ in pairs), default=None)
 
             # Dominance gate: suppress the losing signal when both thresholds cross
             # in the same window. Ties (productive == rumination) resolve to productive.
@@ -1144,30 +1276,37 @@ class SelfReflectionSystem:
             emit_productive = (
                 productive_count >= 2 and productive_count >= rumination_count
             )
+            topic_label = self._humanize_topic(topic)
+            slug = self._slugify_topic(topic)
 
-            if emit_rumination:
-                topic_label = self._humanize_topic(topic)
-                insight = self._upsert_reflection_meta_insight(
-                    insight_id=f"reflect_rumination_{topic_kind}_{self._slugify_topic(topic)}",
-                    description=f"I keep reflecting on {topic_label} without updating what I believe",
-                    confidence=min(1.0, 0.45 + rumination_count * 0.1),
-                    sample_count=rumination_count + 1,
-                    now=now,
-                )
-                if insight:
-                    new_insights.append(insight)
-
-            if emit_productive:
-                topic_label = self._humanize_topic(topic)
-                insight = self._upsert_reflection_meta_insight(
-                    insight_id=f"reflect_learning_{topic_kind}_{self._slugify_topic(topic)}",
-                    description=f"Reflection about {topic_label} tends to change what I know about myself",
-                    confidence=min(1.0, 0.45 + productive_count * 0.1),
-                    sample_count=productive_count + 1,
-                    now=now,
-                )
-                if insight:
-                    new_insights.append(insight)
+            for claims_rumination, emit, count, insight_id, description in (
+                (True, emit_rumination, rumination_count,
+                 f"reflect_rumination_{topic_kind}_{slug}",
+                 f"I keep reflecting on {topic_label} without updating what I believe"),
+                (False, emit_productive, productive_count,
+                 f"reflect_learning_{topic_kind}_{slug}",
+                 f"Reflection about {topic_label} tends to change what I know about myself"),
+            ):
+                confidence = min(1.0, 0.45 + count * 0.1)
+                existing = self._insights.get(insight_id)
+                if existing is not None:
+                    self._judge_reflection_meta_insight(
+                        existing,
+                        claims_rumination=claims_rumination,
+                        pairs=pairs,
+                        window_confidence=confidence,
+                        window_count=count + 1,
+                        now=now,
+                    )
+                elif emit:
+                    new_insights.append(self._create_reflection_meta_insight(
+                        insight_id=insight_id,
+                        description=description,
+                        confidence=confidence,
+                        sample_count=count + 1,
+                        now=now,
+                        judged_through=newest,
+                    ))
 
         return new_insights
 
@@ -1200,6 +1339,9 @@ class SelfReflectionSystem:
             WHERE timestamp > ?
             ORDER BY timestamp ASC
         """, (cutoff,)).fetchall()
+
+        self._pattern_measurements = {}
+        self._pattern_window = timedelta(hours=hours)
 
         if len(rows) < 10:
             return []  # Not enough data
@@ -1347,6 +1489,11 @@ class SelfReflectionSystem:
                     }
                     for dim in anima_dims:
                         deviation = q_means[dim] - overall_means[dim]
+                        self._measure_signed(
+                            f"{a_lbl} {a_name} and {b_lbl} {b_name}", dim, deviation,
+                            CONJUNCTIVE_DEVIATION_THRESHOLD,
+                            higher="higher", lower="lower",
+                        )
                         if abs(deviation) < CONJUNCTIVE_DEVIATION_THRESHOLD:
                             continue
                         if best is None or abs(deviation) > abs(best[0]):
@@ -1459,6 +1606,12 @@ class SelfReflectionSystem:
             "presence": high_state["presence"] - low_state["presence"],
         }
 
+        for dim, diff in diffs.items():
+            self._measure_signed(
+                f"high {sensor_name.lower()}", dim, diff, 0.1,
+                higher="higher", lower="lower",
+            )
+
         max_dim = max(diffs, key=lambda k: abs(diffs[k]))
         max_diff = diffs[max_dim]
 
@@ -1538,6 +1691,18 @@ class SelfReflectionSystem:
 
             diff = period_states[best_period][dim] - period_states[worst_period][dim]
 
+            # "the <period> has the highest <dim>" holds only for the best
+            # period, and only when it clears the same 0.1 spread. Any other
+            # measured period's effect is its gap below the best (<= 0).
+            for period, state in period_states.items():
+                effect = (
+                    diff if period == best_period
+                    else state[dim] - period_states[best_period][dim]
+                )
+                self._pattern_measurements[
+                    self._pattern_claim_id(f"the {period}", f"highest {dim}")
+                ] = (effect, 0.1)
+
             if diff > 0.1:  # Significant difference
                 patterns.append(StatePattern(
                     condition=f"the {best_period}",
@@ -1603,6 +1768,10 @@ class SelfReflectionSystem:
                     continue  # Need enough observations
 
                 avg_effect = sum(deltas) / len(deltas)
+                for effect_word, signed in (("rises", avg_effect), ("falls", -avg_effect)):
+                    self._pattern_measurements[self._pattern_claim_id(
+                        f"{trigger} {direction}s", f"{effect_dim} {effect_word}",
+                    )] = (signed, 0.05)
 
                 # Only report if the average effect is meaningful
                 if abs(avg_effect) < 0.05:
@@ -1699,20 +1868,52 @@ class SelfReflectionSystem:
                 contradictions.append(existing)
         return contradictions
 
+    @staticmethod
+    def _pattern_claim_id(condition: str, outcome: str) -> str:
+        return f"{condition}_{outcome}".replace(" ", "_").lower()
+
+    def _measure_signed(self, condition: str, dim: str, effect: float, cut: float,
+                        *, higher: str, lower: str) -> None:
+        """Record both directions of a signed measurement as separate claims."""
+        self._pattern_measurements[
+            self._pattern_claim_id(condition, f"{higher} {dim}")] = (effect, cut)
+        self._pattern_measurements[
+            self._pattern_claim_id(condition, f"{lower} {dim}")] = (-effect, cut)
+
+    def _due_for_pattern_judgment(self, insight: SelfInsight, now: datetime) -> bool:
+        """One judgment per analysis window.
+
+        Reflection runs hourly over a 24-hour window, so consecutive runs share
+        23 hours of data. Counting each run re-counted the same hours; judging
+        once per window makes each count an independent day.
+        """
+        return (insight.last_judged is None
+                or now - insight.last_judged >= self._pattern_window)
+
     def generate_insights(self, patterns: List[StatePattern]) -> List[SelfInsight]:
         """Convert detected patterns into insights."""
         new_insights = []
         now = datetime.now()
+        judged: set = set()
 
         for pattern in patterns:
             # Create insight ID from pattern
-            insight_id = f"{pattern.condition}_{pattern.outcome}".replace(" ", "_").lower()
+            insight_id = self._pattern_claim_id(pattern.condition, pattern.outcome)
 
             # Check if we already have this insight
             if insight_id in self._insights:
                 existing = self._insights[insight_id]
-                # Validate: does current pattern still hold?
-                if abs(pattern.correlation) > 0.1:
+                judged.add(insight_id)
+                if not self._due_for_pattern_judgment(existing, now):
+                    continue
+                existing.last_judged = now
+                # Validate: does current pattern still hold? Judged against
+                # the analyzer's own cut when it was measured; the legacy 0.1
+                # rule only for callers that pass patterns directly.
+                measured = self._pattern_measurements.get(insight_id)
+                holds = (measured[0] >= measured[1] if measured is not None
+                         else abs(pattern.correlation) > 0.1)
+                if holds:
                     existing.validation_count += 1
                     existing.last_validated = now
                     # Keep generated wording synchronized with formatter fixes
@@ -1783,13 +1984,36 @@ class SelfReflectionSystem:
                 last_validated=now,
                 validation_count=1,
                 contradiction_count=initial_contradiction_count,
+                last_judged=now,
             )
 
             self._save_insight(insight)
             new_insights.append(insight)
+            judged.add(insight_id)
 
             print(f"[SelfReflection] New insight: {description} (confidence: {confidence:.2f})",
                   file=sys.stderr, flush=True)
+
+        # Stored claims this run measured but did not re-detect. Before
+        # 2026-10-15 these were skipped, so a pattern that faded stayed active
+        # with its count intact and could never lose. A claim not measured
+        # at all (too little data, constant channel) stays unjudged: unknown.
+        for insight_id, (effect, cut) in self._pattern_measurements.items():
+            if insight_id in judged:
+                continue
+            existing = self._insights.get(insight_id)
+            if existing is None or not existing.active:
+                continue
+            if not self._due_for_pattern_judgment(existing, now):
+                continue
+            existing.last_judged = now
+            if effect >= cut:
+                # Still holds; it just was not this run's strongest pattern.
+                existing.validation_count += 1
+                existing.last_validated = now
+            else:
+                existing.contradiction_count += 1
+            self._save_insight(existing)
 
         return new_insights
 
@@ -2026,6 +2250,35 @@ class SelfReflectionSystem:
 
         return new_insights
 
+    def _retire_drawing_insight(self, insight: SelfInsight) -> None:
+        """Source preference no longer ready: stop asserting, without a
+        contradiction mark (unknown is not refuted), as for trend insights."""
+        if insight.active:
+            insight.active = False
+            self._save_insight(insight)
+
+    def _refresh_drawing_insight(self, insight: SelfInsight, pref: Any, desc: str,
+                                 now: datetime, *, contradicted: bool = False) -> None:
+        """Mirror the source preference; count only evidence it did not have.
+
+        Each reflection used to add a validation while the preference merely
+        stayed ready (drawing_night reached 959). A validation now needs the
+        preference's independent evidence to have grown since the last one.
+        """
+        grew = pref.independent_evidence_count > insight.sample_count
+        insight.active = True
+        insight.description = desc
+        insight.confidence = pref.confidence
+        if contradicted:
+            insight.contradiction_count += 1
+            insight.last_judged = now
+        elif grew:
+            insight.validation_count += 1
+            insight.last_validated = now
+            insight.last_judged = now
+        insight.sample_count = pref.independent_evidence_count
+        self._save_insight(insight)
+
     def _analyze_drawing_insights(self) -> List[SelfInsight]:
         """Generate insights about drawing behavior from preferences."""
         new_insights = []
@@ -2040,9 +2293,23 @@ class SelfReflectionSystem:
         if growth._drawings_observed < 5:
             return []
 
-        # Drawing + wellness
+        # Drawing + wellness. The stored row used to be created once and never
+        # touched again: a preference that later flipped or lost confidence
+        # left "drawing seems to help me feel better" asserting itself.
         wp = growth._preferences.get("drawing_wellbeing")
-        if wp and wp.confidence > 0.6 and wp.independent_evidence_count >= 5:
+        wellness_ready = (wp is not None and wp.confidence > 0.6
+                          and wp.independent_evidence_count >= 5)
+        existing_wellness = self._insights.get("drawing_wellness")
+        if existing_wellness is not None:
+            if not wellness_ready:
+                self._retire_drawing_insight(existing_wellness)
+            else:
+                desc = "drawing seems to help me feel better" if wp.value > 0.5 \
+                    else "my drawings don't always reflect how i feel"
+                flipped = desc != existing_wellness.description
+                self._refresh_drawing_insight(
+                    existing_wellness, wp, desc, now, contradicted=flipped)
+        elif wellness_ready:
             iid = "drawing_wellness"
             if iid not in self._insights:
                 desc = "drawing seems to help me feel better" if wp.value > 0.5 \
@@ -2076,18 +2343,11 @@ class SelfReflectionSystem:
             )
             existing = self._insights.get(iid)
             if not source_is_ready:
-                if existing is not None and existing.active:
-                    existing.active = False
-                    self._save_insight(existing)
+                if existing is not None:
+                    self._retire_drawing_insight(existing)
                 continue
             if existing is not None:
-                existing.active = True
-                existing.description = desc
-                existing.confidence = dp.confidence
-                existing.sample_count = dp.independent_evidence_count
-                existing.last_validated = now
-                existing.validation_count += 1
-                self._save_insight(existing)
+                self._refresh_drawing_insight(existing, dp, desc, now)
                 continue
 
             insight = SelfInsight(
@@ -2102,10 +2362,18 @@ class SelfReflectionSystem:
             print(f"[SelfReflection] Drawing insight: {desc}",
                   file=sys.stderr, flush=True)
 
-        # Abandonment pattern
+        # Abandonment pattern (same create-once-never-touched gap as wellness)
         abandon_pref = growth._preferences.get("drawing_abandonment_rate")
-        if (abandon_pref and abandon_pref.confidence > 0.6
-                and abandon_pref.independent_evidence_count >= 5):
+        abandon_ready = (abandon_pref is not None and abandon_pref.confidence > 0.6
+                         and abandon_pref.independent_evidence_count >= 5)
+        existing_abandon = self._insights.get("drawing_abandonment")
+        if existing_abandon is not None:
+            if abandon_ready:
+                self._refresh_drawing_insight(
+                    existing_abandon, abandon_pref, existing_abandon.description, now)
+            else:
+                self._retire_drawing_insight(existing_abandon)
+        elif abandon_ready:
             iid = "drawing_abandonment"
             if iid not in self._insights:
                 desc = "i sometimes abandon drawings that aren't going anywhere"
@@ -2497,8 +2765,9 @@ class SelfReflectionSystem:
 
         # Analyze recent state-history patterns (temporal, sensor, causal)
         patterns = self.analyze_patterns(hours=24)
-        if patterns:
-            new_insights.extend(self.generate_insights(patterns))
+        # Always judge: a run that detects nothing can still contradict
+        # stored patterns it measured.
+        new_insights.extend(self.generate_insights(patterns))
 
         # Analyze experience-based insights (preferences, beliefs, drawing)
         new_insights.extend(self._analyze_preference_insights())

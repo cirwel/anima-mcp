@@ -387,38 +387,32 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
                     growth.add_curiosity(curiosity_question)
             except Exception as e:
                 print(f"[Growth] add_curiosity error: {e}", file=sys.stderr, flush=True)
-            # The broker owns self_model.json.  Queue a real posted-question
-            # episode instead of racing its whole-file snapshot.
-            try:
-                from .learning_events import enqueue_self_belief_evidence
-                enqueue_self_belief_evidence(
-                    "question_asking_tendency",
-                    supports=True,
-                    strength=min(1.0, prediction_error.surprise),
-                    source="server:question_posted",
-                )
-            except Exception as e:
-                print(f"[SelfModel] question evidence enqueue error: {e}",
-                      file=sys.stderr, flush=True)
+            # The broker owns self_model.json. The episode tracker judges
+            # this surprise once and queues the result through the inbox.
+            _note_question_episode(prediction_error.surprise, asked=True,
+                                   source="surprise_posted")
             return True
+        # A question was generated but the message board suppressed it: the
+        # surprise did not become a question. This used to record nothing,
+        # which left only the support side of the belief reachable here.
+        _note_question_episode(prediction_error.surprise, asked=False,
+                               source="surprise_suppressed")
         return False
-    # Surprised but no question generated — contradicting evidence. Note:
-    # some channels (humidity, pressure, presence) have no question template
-    # below surprise 0.25, so this branch also fires on missing templates,
-    # not only on a genuine choice to stay quiet.
-    try:
-        from .learning_events import enqueue_self_belief_evidence
-        if prediction_error.surprise > 0.2:
-            enqueue_self_belief_evidence(
-                "question_asking_tendency",
-                supports=False,
-                strength=min(1.0, prediction_error.surprise * 0.5),
-                source="server:surprise_without_question",
-            )
-    except Exception as e:
-        print(f"[SelfModel] no-question evidence enqueue error: {e}",
-              file=sys.stderr, flush=True)
+    # Surprised but no question generated. Note: some channels (humidity,
+    # pressure, presence) have no question template below surprise 0.25, so
+    # this also fires on missing templates, not only on a choice to stay quiet.
+    _note_question_episode(prediction_error.surprise, asked=False,
+                           source="surprise_unasked")
     return False
+
+
+def _note_question_episode(surprise: float, *, asked: bool, source: str) -> None:
+    try:
+        from .question_evidence import note_question
+        note_question(surprise, asked=asked, source=source)
+    except Exception as e:
+        print(f"[SelfModel] question episode error: {e}",
+              file=sys.stderr, flush=True)
 
 
 def handle_self_surprise(self_surprise) -> bool:

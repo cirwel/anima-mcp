@@ -295,6 +295,14 @@ class SelfModel:
         "evening_warmth_increase": (0.3, 0.5),
     }
 
+    # question_asking_tendency counted a posted question at any surprise level
+    # as support, while a missed question counted against it only above 0.2
+    # surprise and at half strength. It ran 111:0. V8 retires that tally; the
+    # server now judges each surprise episode once (QuestionEpisodes).
+    _QUESTION_EPISODE_RESET_V8 = {
+        "question_asking_tendency": (0.5, 0.7),
+    }
+
     def __init__(self, persistence_path: Optional[Path] = None,
                  read_only: bool = False):
         self.persistence_path = persistence_path or Path.home() / ".anima" / "self_model.json"
@@ -482,6 +490,9 @@ class SelfModel:
         self._time_pattern_audit = data.get(
             "_migrated_time_pattern_relative_reset_v7", None
         )
+        self._question_episode_audit = data.get(
+            "_migrated_question_episode_reset_v8", None
+        )
         hours = data.get("time_pattern_hours", {})
         self._time_pattern_hours = {}
         if isinstance(hours, dict):
@@ -665,6 +676,30 @@ class SelfModel:
                     self._time_pattern_audit = audit or True
                     migrated = True
 
+                if not self.read_only and not data.get(
+                    "_migrated_question_episode_reset_v8"
+                ):
+                    audit = {}
+                    for bid, (conf, value) in (
+                        self._QUESTION_EPISODE_RESET_V8.items()
+                    ):
+                        belief = self._beliefs.get(bid)
+                        if belief is None:
+                            continue
+                        audit[bid] = {
+                            "confidence": belief.confidence,
+                            "value": belief.value,
+                            "supporting_count": belief.supporting_count,
+                            "contradicting_count": belief.contradicting_count,
+                            "retired_evidence": "unsurprised_posts_and_half_weight_misses",
+                        }
+                        belief.confidence = conf
+                        belief.value = value
+                        belief.supporting_count = 0
+                        belief.contradicting_count = 0
+                    self._question_episode_audit = audit or True
+                    migrated = True
+
                 if migrated:
                     self._save()
 
@@ -733,6 +768,8 @@ class SelfModel:
                     getattr(self, "_led_causal_evidence_audit", None) or True,
                 "_migrated_time_pattern_relative_reset_v7":
                     getattr(self, "_time_pattern_audit", None) or True,
+                "_migrated_question_episode_reset_v8":
+                    getattr(self, "_question_episode_audit", None) or True,
             }
             atomic_json_write(self.persistence_path, data, indent=2)
             try:
