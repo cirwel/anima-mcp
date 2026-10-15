@@ -144,6 +144,14 @@ def _run_coroutine_with_timeout(coro, loop, timeout: float = 10.0):
         raise
 
 
+def _stdout_is_terminal() -> bool:
+    """Whether the live ASCII face has a terminal to draw on."""
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def _apply_belief_update_bonus(self_model, exp_marks) -> None:
     """Hand the self-model the learning-rate bonus its earned marks grant.
 
@@ -430,7 +438,8 @@ def _direct_i2c_initialization_failed(sensors) -> bool:
 def run_creature():
     print("[StableCreature] Starting up...")
     legacy_broker_agency = broker_agency_enabled()
-    
+    terminal_face = _stdout_is_terminal()
+
     # Initialize components with error handling
     identity = None
     db_path = str(resolve_db_path())
@@ -1532,43 +1541,46 @@ def run_creature():
 
             shm_client.write(shm_data)
 
-            # 4. Render Face
-            face_state = derive_face_state(anima)
+            # 4. Render Face (terminal only). Under systemd stdout is the
+            # journal, and this 8-line frame every tick was ~81% of all
+            # journal lines on Lumen, cutting retention to ~32 hours.
+            if terminal_face:
+                face_state = derive_face_state(anima)
 
-            # Modify face based on activity state (sleeping/drowsy)
-            if activity_state and activity_state.level == ActivityLevel.RESTING:
-                # Eyes closed when resting
-                face_state.eyes = EyeState.CLOSED
-                face_state.eye_openness = 0.0
-            elif activity_state and activity_state.level == ActivityLevel.DROWSY:
-                # Droopy eyes when drowsy
-                face_state.eyes = EyeState.DROOPY
-                face_state.eye_openness = 0.4
+                # Modify face based on activity state (sleeping/drowsy)
+                if activity_state and activity_state.level == ActivityLevel.RESTING:
+                    # Eyes closed when resting
+                    face_state.eyes = EyeState.CLOSED
+                    face_state.eye_openness = 0.0
+                elif activity_state and activity_state.level == ActivityLevel.DROWSY:
+                    # Droopy eyes when drowsy
+                    face_state.eyes = EyeState.DROOPY
+                    face_state.eye_openness = 0.4
 
-            ascii_face = face_to_ascii(face_state)
-            
-            # Clear screen (terminal) - use ANSI codes to prevent flicker
-            # \033[2J = clear screen, \033[H = move cursor to top-left
-            print("\033[2J\033[H", end="")
-            
-            # Print identity and mood
-            print(f"Name: {identity.name or 'Anima'} | Mood: {anima.feeling()['mood']}")
-            print(f"W: {anima.warmth:.2f} | C: {anima.clarity:.2f} | S: {anima.stability:.2f} | P: {anima.presence:.2f}")
-            
-            # Print face
-            print(ascii_face)
-            
-            # Print governance if available
-            if last_decision:
-                action = last_decision.get("action", "UNKNOWN")
-                reason = last_decision.get("reason", "")
-                print(f"Governance: {action.upper()} - {reason}")
-            
-            # Print metacognition if surprise is notable
-            if pred_error.surprise > 0.1:
-                sources = ", ".join(pred_error.surprise_sources) if pred_error.surprise_sources else "general"
-                print(f"Surprise: {pred_error.surprise:.0%} ({sources})")
-            
+                ascii_face = face_to_ascii(face_state)
+
+                # Clear screen (terminal) - use ANSI codes to prevent flicker
+                # \033[2J = clear screen, \033[H = move cursor to top-left
+                print("\033[2J\033[H", end="")
+
+                # Print identity and mood
+                print(f"Name: {identity.name or 'Anima'} | Mood: {anima.feeling()['mood']}")
+                print(f"W: {anima.warmth:.2f} | C: {anima.clarity:.2f} | S: {anima.stability:.2f} | P: {anima.presence:.2f}")
+
+                # Print face
+                print(ascii_face)
+
+                # Print governance if available
+                if last_decision:
+                    action = last_decision.get("action", "UNKNOWN")
+                    reason = last_decision.get("reason", "")
+                    print(f"Governance: {action.upper()} - {reason}")
+
+                # Print metacognition if surprise is notable
+                if pred_error.surprise > 0.1:
+                    sources = ", ".join(pred_error.surprise_sources) if pred_error.surprise_sources else "general"
+                    print(f"Surprise: {pred_error.surprise:.0%} ({sources})")
+
             # DB writes removed: server owns identity DB (Option 1 - no contention).
             # Broker only writes to shared memory; server does record_state/heartbeat.
 
