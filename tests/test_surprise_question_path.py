@@ -49,7 +49,7 @@ class TestSurpriseQuestionPath:
         error = _real_error()
         growth = MagicMock()
         with patch("anima_mcp.messages.add_question", return_value={"id": "q1"}) as add_q, \
-             patch("anima_mcp.learning_events.enqueue_self_belief_evidence") as enq, \
+             patch("anima_mcp.question_evidence.note_question") as note, \
              patch("anima_mcp.accessors._get_growth", return_value=growth):
             posted = handle_surprise_question(metacog, error)
 
@@ -69,12 +69,11 @@ class TestSurpriseQuestionPath:
         growth.add_curiosity.assert_called_once()
         posted_question = add_q.call_args.args[0]
         assert growth.add_curiosity.call_args.args[0] == posted_question
-        # Supporting question_asking_tendency evidence enqueued — both the
-        # belief id AND the direction must be right.
-        enq.assert_called_once()
-        assert enq.call_args.args[0] == "question_asking_tendency"
-        assert enq.call_args.kwargs["supports"] is True
-        assert enq.call_args.kwargs["source"] == "server:question_posted"
+        # The surprise episode is noted as one that became a question; the
+        # episode tracker (question_evidence) judges it once.
+        note.assert_called_once()
+        assert note.call_args.args[0] == pytest.approx(0.5)
+        assert note.call_args.kwargs["asked"] is True
 
     def test_real_prediction_error_has_no_legacy_fields(self):
         # The regression #189 fixed: the old block read .predicted/.actual.
@@ -84,30 +83,32 @@ class TestSurpriseQuestionPath:
         assert not hasattr(error, "predicted")
         assert not hasattr(error, "actual")
 
-    def test_no_question_enqueues_contradicting_evidence(self, metacog):
+    def test_no_question_notes_a_missed_episode(self, metacog):
         error = _real_error(surprise=0.5)
         with patch.object(metacog, "generate_curiosity_question", return_value=None), \
-             patch("anima_mcp.learning_events.enqueue_self_belief_evidence") as enq:
+             patch("anima_mcp.question_evidence.note_question") as note:
             posted = handle_surprise_question(metacog, error)
         assert posted is False
-        enq.assert_called_once()
-        args, kwargs = enq.call_args
-        assert args[0] == "question_asking_tendency"
-        assert kwargs["supports"] is False
-        assert kwargs["source"] == "server:surprise_without_question"
+        note.assert_called_once()
+        assert note.call_args.kwargs["asked"] is False
+        assert note.call_args.kwargs["source"] == "surprise_unasked"
 
-    def test_rate_limited_question_records_nothing(self, metacog):
+    def test_rate_limited_question_is_a_missed_episode(self, metacog):
         # add_question returning None must not credit curiosity. (This
         # injects the None; the board's actual rate-limit/dedup gates are
         # covered by tests/test_messages.py — here the contract under test
         # is the helper's handling of a rejected post.)
         error = _real_error()
         with patch("anima_mcp.messages.add_question", return_value=None), \
-             patch("anima_mcp.learning_events.enqueue_self_belief_evidence") as enq:
+             patch("anima_mcp.question_evidence.note_question") as note:
             posted = handle_surprise_question(metacog, error)
         assert posted is False
         assert not metacog._curiosity_log
-        enq.assert_not_called()
+        # The surprise did not become a question. This used to record
+        # nothing, which left only the support side reachable on this path.
+        note.assert_called_once()
+        assert note.call_args.kwargs["asked"] is False
+        assert note.call_args.kwargs["source"] == "surprise_suppressed"
 
     def test_domain_weights_parked_by_default(self, metacog):
         # The credit rule has never run in production and is structurally

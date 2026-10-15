@@ -21,22 +21,18 @@ def _record_question_evidence(
     surprise_level: float,
     source: str,
 ) -> None:
-    """Best-effort handoff to the broker-owned self-model."""
-    try:
-        from .learning_events import enqueue_self_belief_evidence
+    """Note a question attempt for the episode-level self-belief test.
 
-        strength = (
-            max(0.05, min(1.0, surprise_level))
-            if supports else min(1.0, surprise_level * 0.5)
-        )
-        enqueue_self_belief_evidence(
-            "question_asking_tendency",
-            supports=supports,
-            strength=strength,
-            source=source,
-        )
+    ``question_evidence`` judges each surprise episode once, so a low-surprise
+    post or miss is noted here and simply carries no evidence on its own.
+    """
+    try:
+        from .question_evidence import note_question
+
+        note_question(surprise_level, asked=supports, source=source)
     except Exception as exc:
-        logger.debug("[SelfModel] agency question evidence enqueue error: %s", exc)
+        print(f"[SelfModel] agency question evidence error: {exc}",
+              file=sys.stderr, flush=True)
 
 
 def _choose_question(
@@ -101,12 +97,11 @@ def execute_action(
         question = _choose_question(action, surprise_sources, surprise_level)
         if not question:
             action.execution_detail = "no grounded question available"
-            if surprise_level > 0.2:
-                _record_question_evidence(
-                    supports=False,
-                    surprise_level=surprise_level,
-                    source="server:agency_question_unavailable",
-                )
+            _record_question_evidence(
+                supports=False,
+                surprise_level=surprise_level,
+                source="server:agency_question_unavailable",
+            )
             print("[Agency] Skipped (no questions available)", file=sys.stderr, flush=True)
             return action
 
@@ -126,12 +121,11 @@ def execute_action(
             print(f"[Agency] Asked: {question}", file=sys.stderr, flush=True)
         else:
             action.execution_detail = "message board suppressed question"
-            if surprise_level > 0.2:
-                _record_question_evidence(
-                    supports=False,
-                    surprise_level=surprise_level,
-                    source="server:agency_question_suppressed",
-                )
+            _record_question_evidence(
+                supports=False,
+                surprise_level=surprise_level,
+                source="server:agency_question_suppressed",
+            )
 
     elif action.action_type == ActionType.FOCUS_ATTENTION:
         sensor = action.parameters.get("sensor")
@@ -318,7 +312,7 @@ def run_agency_phase(
     except Exception as exc:
         action.execution_succeeded = False
         action.execution_detail = f"actuator error: {type(exc).__name__}: {exc}"
-        if action.action_type == ActionType.ASK_QUESTION and surprise_level > 0.2:
+        if action.action_type == ActionType.ASK_QUESTION:
             _record_question_evidence(
                 supports=False,
                 surprise_level=surprise_level,
