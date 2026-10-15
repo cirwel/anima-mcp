@@ -301,13 +301,21 @@ async def handle_lumen_qa(arguments: dict) -> list[TextContent]:
     if callable(expire_old_questions):
         expire_old_questions()
 
-    # Find questions that have NO actual answer (responds_to link), even if auto-expired
+    # Find questions that have NO external answer (responds_to link), even if auto-expired
     all_questions = [m for m in board._messages if m.msg_type == MESSAGE_TYPE_QUESTION]
-    # Find which questions have actual answers (agent messages with responds_to)
-    agent_msgs = [m for m in board._messages if m.msg_type == "agent"]
-    answered_ids = {m.responds_to for m in agent_msgs if m.responds_to}
+    agent_msgs = [m for m in board._messages if m.msg_type == "agent" and getattr(m, "responds_to", None)]
+    answered_ids = {
+        m.responds_to for m in agent_msgs
+        if (getattr(m, "author", None) or "").strip().lower() != "lumen"
+    }
+    self_answers_by_qid = {
+        m.responds_to: getattr(m, "text", None)
+        for m in agent_msgs
+        if (getattr(m, "author", None) or "").strip().lower() == "lumen"
+        and getattr(m, "text", None)
+    }
 
-    # Questions without actual answers (includes expired ones)
+    # Questions without external answers (includes expired and self-answered ones)
     truly_unanswered = [q for q in all_questions if q.message_id not in answered_ids]
 
     questions = truly_unanswered[-limit:] if truly_unanswered else []
@@ -324,6 +332,8 @@ async def handle_lumen_qa(arguments: dict) -> list[TextContent]:
         }
         if q.state_snapshot:
             entry["state_when_asked"] = q.state_snapshot
+        if q.message_id in self_answers_by_qid:
+            entry["self_answer"] = self_answers_by_qid[q.message_id]
         entry.update(qa_record_provenance(q.text, has_answer=False))
         question_list.append(entry)
 

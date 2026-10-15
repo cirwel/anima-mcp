@@ -918,6 +918,34 @@ class TestLocalEvidencePhrasing:
 
         assert result == "A past Q&A claim suggested: Light affects clarity"
 
+    def test_unrelated_open_ended_question_does_not_match_past_qa_claim(self):
+        from anima_mcp.loop_phases import grounded_self_answer
+
+        qa_claim = SimpleNamespace(
+            insight_id="abc999",
+            confidence=0.95,
+            references=3,
+            text=(
+                "When I asked 'why does sound follow movement? what would I notice "
+                "if I attended to something?', I learned: sound lags behind motion"
+            ),
+        )
+
+        with patch("anima_mcp.self_reflection.get_reflection_system") as mock_refl, \
+             patch("anima_mcp.knowledge.get_insights", return_value=[qa_claim]), \
+             patch("anima_mcp.knowledge.get_top_convictions", return_value=[qa_claim]), \
+             patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_refl.return_value.get_insights.return_value = []
+            mock_sm.return_value.beliefs = {}
+            result = grounded_self_answer(
+                "what would I notice if I attended to something I usually ignore?",
+                make_anima(),
+                make_readings(),
+            )
+
+        assert result is None
+
+
 
 # ---------------------------------------------------------------------------
 # lumen_self_answer

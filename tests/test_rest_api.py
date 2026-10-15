@@ -583,6 +583,40 @@ class TestRestQaAndMessages:
         assert record["expired_unanswered"] is True
         assert record["epistemic_status"] == "open_question"
 
+    async def test_rest_qa_keeps_self_answered_question_open_with_self_answer(self):
+        q1 = SimpleNamespace(
+            message_id="q1",
+            msg_type="question",
+            text="What changes when the room cools?",
+            answered=False,
+            expired_at=None,
+            timestamp=1,
+        )
+        self_a1 = SimpleNamespace(
+            message_id="sa1",
+            msg_type="agent",
+            text="Warmth averaged 0.512.",
+            author="lumen",
+            timestamp=2,
+            responds_to="q1",
+        )
+        board = SimpleNamespace(_messages=[q1, self_a1], _load=MagicMock())
+
+        with patch("anima_mcp.messages.get_board", return_value=board), patch(
+            "anima_mcp.messages.MESSAGE_TYPE_QUESTION",
+            "question",
+        ):
+            response = await rest_api.rest_qa(_make_request(path="/qa"))
+            data = json.loads(response.body)
+
+        record = data["questions"][0]
+        assert data["unanswered"] == 1
+        assert record["answered"] is False
+        assert record["answer"] is None
+        assert record["self_answer"]["author"] == "lumen"
+        assert record["self_answer"]["text"] == "Warmth averaged 0.512."
+        assert record["epistemic_status"] == "open_question"
+
     async def test_rest_messages_returns_serialized_messages(self):
         m1 = SimpleNamespace(message_id="m1", text="hello", msg_type="user", author="u", timestamp=1, responds_to=None)
         m2 = SimpleNamespace(message_id="m2", text="world", msg_type="agent", author="a", timestamp=2, responds_to="m1")

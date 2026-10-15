@@ -560,21 +560,24 @@ async def rest_qa(request):
         # Get all questions
         questions = [m for m in board._messages if m.msg_type == MESSAGE_TYPE_QUESTION]
 
-        # Build Q&A pairs with answers
+        # Build Q&A pairs with external answers and optional Lumen self-answers
         qa_pairs = []
         for q in questions:
-            # Find answer for this question
             answer = None
+            self_answer = None
             for m in board._messages:
                 if getattr(m, "responds_to", None) == q.message_id:
-                    answer = {
+                    payload = {
                         "text": m.text,
                         "author": m.author,
                         "timestamp": m.timestamp,
                         **qa_answer_provenance(),
                     }
-                    break
-            qa_pairs.append({
+                    if (getattr(m, "author", None) or "").strip().lower() == "lumen":
+                        self_answer = payload
+                    else:
+                        answer = payload
+            qa_entry = {
                 "id": q.message_id,
                 "question": q.text,
                 "answered": answer is not None,
@@ -592,9 +595,12 @@ async def rest_qa(request):
                     q.text,
                     has_answer=answer is not None,
                 ),
-            })
+            }
+            if self_answer is not None:
+                qa_entry["self_answer"] = self_answer
+            qa_pairs.append(qa_entry)
 
-        # Count truly unanswered (no actual answer message) from ALL questions
+        # Count truly unanswered (no external answer message) from ALL questions
         truly_unanswered = sum(1 for q in qa_pairs if q["answer"] is None)
 
         # Reverse to show newest first

@@ -568,13 +568,17 @@ class MessagesMixin:
             questions = [m for m in all_messages if m.msg_type == MESSAGE_TYPE_QUESTION]
             qa_pairs = []
             for q in questions:
-                # Find answer
+                # Find answer (prefer external answers over Lumen self-answers)
                 answer = None
+                self_answer = None
                 for m in all_messages:
                     if getattr(m, 'responds_to', None) == q.message_id:
-                        answer = m
-                        break
-                qa_pairs.append((q, answer))
+                        if (getattr(m, 'author', None) or '').strip().lower() == 'lumen':
+                            self_answer = m
+                        else:
+                            answer = m
+                            break
+                qa_pairs.append((q, answer or self_answer))
 
             # Reverse to show newest first
             qa_pairs = list(reversed(qa_pairs))

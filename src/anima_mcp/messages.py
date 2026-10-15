@@ -142,6 +142,24 @@ def questions_similar(q1: str, q2: str) -> bool:
     return False
 
 
+def _is_self_answer(msg: Any) -> bool:
+    """Return True when an answer message was authored by Lumen itself."""
+    return (
+        getattr(msg, "msg_type", None) == MESSAGE_TYPE_AGENT
+        and bool(getattr(msg, "responds_to", None))
+        and (getattr(msg, "author", None) or "").strip().lower() == "lumen"
+    )
+
+
+def _is_external_answer(msg: Any) -> bool:
+    """Return True when an answer message came from an external agent or user."""
+    return (
+        getattr(msg, "msg_type", None) == MESSAGE_TYPE_AGENT
+        and bool(getattr(msg, "responds_to", None))
+        and not _is_self_answer(msg)
+    )
+
+
 def _get_persistent_path() -> Path:
     """Get persistent path for messages - survives reboots."""
     # Use ~/.anima/ directory for persistent data
@@ -276,31 +294,31 @@ class MessageBoard:
         """Trim messages by type, preserving limits for each category.
 
         IMPORTANT: Preserves agent messages that are answers to questions (have responds_to)
-        to maintain Q&A consistency. Without this, answered questions would show as
-        'expired' when their answer messages get trimmed.
+        to maintain Q&A consistency, while keeping regular visitor messages in their own
+        MAX_VISITORS budget so answers (especially Lumen self-answers) never evict visitors.
         """
         # Separate messages by type
         observations = [m for m in self._messages if m.msg_type == MESSAGE_TYPE_OBSERVATION]
         questions = [m for m in self._messages if m.msg_type == MESSAGE_TYPE_QUESTION]
+        questions = questions[-self.MAX_QUESTIONS:]
 
         # Get question IDs for checking responds_to links
         question_ids = {q.message_id for q in questions}
 
-        # Separate visitors into answers (must preserve) and regular messages
+        # Separate visitors into external answers, self-answers, and regular visitor messages
         visitors = [m for m in self._messages if m.msg_type in (MESSAGE_TYPE_USER, MESSAGE_TYPE_AGENT)]
-        answers = [m for m in visitors if m.responds_to and m.responds_to in question_ids]
+        external_answers = [m for m in visitors if _is_external_answer(m) and m.responds_to in question_ids]
+        self_answers = [m for m in visitors if _is_self_answer(m) and m.responds_to in question_ids]
         regular_visitors = [m for m in visitors if not (m.responds_to and m.responds_to in question_ids)]
 
         # Trim each category to its limit (keep most recent)
         observations = observations[-self.MAX_OBSERVATIONS:]
-        questions = questions[-self.MAX_QUESTIONS:]
-        # Keep all answers (capped at MAX_QUESTIONS since they map 1:1)
-        # Trim regular visitors to fill remaining space
-        answers = answers[-self.MAX_QUESTIONS:]
-        regular_visitors = regular_visitors[-(self.MAX_VISITORS - len(answers)):]
+        external_answers = external_answers[-self.MAX_QUESTIONS:]
+        self_answers = self_answers[-self.MAX_QUESTIONS:]
+        regular_visitors = regular_visitors[-self.MAX_VISITORS:]
 
         # Merge back and sort by timestamp
-        self._messages = observations + questions + answers + regular_visitors
+        self._messages = observations + questions + external_answers + self_answers + regular_visitors
         self._messages.sort(key=lambda m: m.timestamp)
 
     def add_observation(self, text: str, author: str = "lumen") -> Optional[Message]:
@@ -366,6 +384,7 @@ class MessageBoard:
         """Add an agent message, optionally responding to a question."""
         msg = self.add_message(text, MESSAGE_TYPE_AGENT, author=agent_name)
         if responds_to:
+            is_self_answer = (agent_name or "").strip().lower() == "lumen"
             # Validate that the question exists - require exact match
             question_text = None
             question_context = None
@@ -374,7 +393,8 @@ class MessageBoard:
             # First try exact match
             for m in self._messages:
                 if m.message_id == responds_to and m.msg_type == MESSAGE_TYPE_QUESTION:
-                    m.answered = True
+                    if not is_self_answer:
+                        m.answered = True
                     question_text = m.text
                     question_context = getattr(m, 'context', None)
                     question_found = True
@@ -390,7 +410,8 @@ class MessageBoard:
                 if len(matching_questions) == 1:
                     # Single match - use it
                     q = matching_questions[0]
-                    q.answered = True
+                    if not is_self_answer:
+                        q.answered = True
                     question_text = q.text
                     question_context = getattr(q, 'context', None)
                     question_found = True
@@ -402,7 +423,8 @@ class MessageBoard:
                     print(f"[MessageBoard] WARNING: Partial ID '{responds_to}' matches {len(matching_questions)} questions. Use full ID.", file=sys.stderr, flush=True)
                     # Use the most recent one
                     q = matching_questions[-1]
-                    q.answered = True
+                    if not is_self_answer:
+                        q.answered = True
                     question_text = q.text
                     question_context = getattr(q, 'context', None)
                     question_found = True
@@ -420,9 +442,9 @@ class MessageBoard:
                 if similar:
                     print(f"[MessageBoard] Similar question IDs: {similar[:3]}", file=sys.stderr, flush=True)
 
-            # If this answer resolved a question Lumen had asked, mirror that into
+            # If this external answer resolved a question Lumen had asked, mirror that into
             # growth curiosities so "find an answer to: X" goals can auto-complete.
-            if question_found and question_text:
+            if question_found and question_text and not is_self_answer:
                 try:
                     from .accessors import _get_growth
                     growth = _get_growth()
@@ -649,21 +671,21 @@ class MessageBoard:
         return questions[-limit:]
 
     def repair_orphaned_answered(self) -> int:
-        """Fix questions marked ``answered`` but with no actual answer message.
+        """Fix questions marked ``answered`` but with no external answer message.
 
-        Older files used ``answered=True`` for both replies and time-based
-        expiry. Migrate those stale rows to ``expired_at`` while repairing
-        recent orphaned flags. After this method, ``answered`` means a linked
+        Older files used ``answered=True`` for both replies, self-answers, and
+        time-based expiry. Migrate stale rows to ``expired_at`` while repairing
+        recent flags. After this method, ``answered`` means a linked external
         answer exists.
 
         Returns: Number of questions repaired.
         """
         self._load()
 
-        # Find all answer links (responds_to pointing to questions)
+        # Find all external answer links (responds_to pointing to questions)
         answered_ids = {
             m.responds_to for m in self._messages
-            if m.msg_type == MESSAGE_TYPE_AGENT and m.responds_to
+            if _is_external_answer(m)
         }
 
         # Find orphaned questions. Old rows beyond the expiry cutoff are legacy
@@ -699,7 +721,7 @@ class MessageBoard:
         return questions[-limit:]
 
     def get_answered_question_texts(self, hours: int = 168) -> set:
-        """Texts of questions that received a REAL answer, not just an expiry.
+        """Texts of questions that received a REAL external answer, not just an expiry or self-answer.
 
         The linked-answer check remains authoritative even though current rows
         now track expiry separately; it also handles legacy data safely.
@@ -708,7 +730,7 @@ class MessageBoard:
         cutoff = time.time() - (hours * 3600)
         answered_ids = {
             m.responds_to for m in self._messages
-            if m.msg_type == MESSAGE_TYPE_AGENT and m.responds_to
+            if _is_external_answer(m)
         }
         return {
             m.text for m in self._messages
