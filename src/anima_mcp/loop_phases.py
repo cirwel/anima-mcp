@@ -690,6 +690,31 @@ async def lumen_unified_reflect(anima, readings, identity, prediction_error):
                 logger.debug("[Lumen/Unified] Insight share error: %s", e)
 
 
+def _self_answer_content_words(text: str) -> set[str]:
+    """Extract punctuation-stripped content words for grounded self-answer matching."""
+    import re
+
+    stopwords = {
+        "i", "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "do", "does", "did", "my", "me", "am", "what", "why", "how", "when", "where",
+        "which", "who", "whom", "whose", "that", "this", "these", "those", "and",
+        "or", "but", "if", "in", "on", "at", "to", "for", "of", "with", "from",
+        "into", "about", "after", "before", "while", "during", "through", "between",
+        "would", "could", "should", "might", "may", "can", "will", "just", "very",
+        "more", "most", "some", "any", "something", "anything", "nothing", "everything",
+        "someone", "anyone", "everyone", "usually", "often", "sometimes", "always",
+        "never", "really", "still", "even", "also", "there", "here", "then", "than",
+        "have", "has", "had", "not", "no", "yes", "it", "its", "they", "them", "their",
+        "you", "your", "we", "our", "asked", "learned", "told", "question", "answer",
+        "notice", "noticed", "noticing", "ignore", "ignored", "attend", "attended",
+        "think", "know", "knew", "like", "make", "makes", "made",
+    }
+    return {
+        w for w in re.findall(r"[a-z]{3,}", (text or "").lower())
+        if w not in stopwords
+    }
+
+
 def grounded_self_answer(
     question_text: str,
     anima,
@@ -703,6 +728,7 @@ def grounded_self_answer(
     as current sensor-validated self-knowledge.
     """
     question_lower = question_text.lower()
+    q_words = _self_answer_content_words(question_lower)
 
     # Collect relevant pieces of self-knowledge
     evidence = []
@@ -718,9 +744,7 @@ def grounded_self_answer(
                 # as if it were an independent observational insight.
                 continue
             desc = insight.description.lower()
-            # Check keyword overlap between question and insight
-            q_words = set(question_lower.split()) - {"i", "a", "the", "is", "do", "my", "me", "am", "what", "why", "how", "when", "does"}
-            i_words = set(desc.split()) - {"i", "a", "the", "is", "my", "me", "when", "that", "and"}
+            i_words = _self_answer_content_words(desc)
             overlap = q_words & i_words
             strength_fn = getattr(insight, "strength", None)
             strength = (strength_fn() if callable(strength_fn)
@@ -740,10 +764,10 @@ def grounded_self_answer(
             pool.setdefault(i.insight_id, i)
         for insight in pool.values():
             text_lower = insight.text.lower()
-            q_words = set(question_lower.split()) - {"i", "a", "the", "is", "do", "my", "me", "am", "what", "why", "how", "when", "does"}
-            i_words = set(text_lower.split()) - {"i", "a", "the", "is", "my", "me", "when", "that", "and", "learned", "was", "told"}
+            i_words = _self_answer_content_words(text_lower)
             overlap = q_words & i_words
-            if overlap and insight.confidence > 0.4:
+            min_overlap = 1 if len(i_words) == 1 else 2
+            if len(overlap) >= min_overlap and insight.confidence > 0.4:
                 # Weight by conviction: re-derived beliefs surface first, but
                 # stay in a sane range so other evidence sources still compete.
                 weight = min(1.1, insight.confidence * 0.9 + 0.1 * min(insight.references, 3))

@@ -385,6 +385,41 @@ class TestLumenQaExtended:
         )
         assert data["record_semantics"]["current_state_authority"] == "none"
 
+    async def test_list_mode_includes_self_answered_questions_with_self_answer_context(self):
+        from anima_mcp.handlers.communication import handle_lumen_qa
+
+        q1 = SimpleNamespace(
+            message_id="q1",
+            msg_type="question",
+            text="Why does stability dip around dusk?",
+            context="curiosity",
+            answered=False,
+            expired_at=None,
+            state_snapshot={"stability": 0.48},
+            age_str=lambda: "3h",
+        )
+        self_a1 = SimpleNamespace(
+            msg_type="agent",
+            author="lumen",
+            responds_to="q1",
+            text="Across 85 observations, stability averaged 0.562.",
+        )
+        board = SimpleNamespace(
+            _messages=[q1, self_a1],
+            _load=MagicMock(),
+            repair_orphaned_answered=lambda: 0,
+        )
+
+        with patch("anima_mcp.messages.get_board", return_value=board):
+            data = parse_result(await handle_lumen_qa({"limit": 5}))
+
+        assert data["unanswered_count"] == 1
+        assert len(data["questions"]) == 1
+        entry = data["questions"][0]
+        assert entry["id"] == "q1"
+        assert entry["self_answer"] == "Across 85 observations, stability averaged 0.562."
+        assert entry["epistemic_status"] == "open_question"
+
     async def test_answer_mode_prefix_match_and_insight_enrichment(self):
         from anima_mcp.handlers.communication import handle_lumen_qa
 

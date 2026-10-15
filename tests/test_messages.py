@@ -402,3 +402,76 @@ class TestAnsweredQuestionTexts:
         texts = board.get_answered_question_texts()
         assert a.text in texts
         assert b.text not in texts
+
+    def test_lumen_self_answer_keeps_question_open_for_external_qa(self, board, monkeypatch):
+        calls = []
+
+        class FakeGrowth:
+            def mark_curiosity_explored(self, question, notes=None):
+                calls.append((question, notes))
+
+        monkeypatch.setattr("anima_mcp.accessors._get_growth", lambda: FakeGrowth())
+        q = board.add_question("What would I notice if I attended to something I usually ignore?")
+        board.add_agent_message(
+            "Across 85 observations, stability averaged 0.562.",
+            agent_name="lumen",
+            responds_to=q.message_id,
+        )
+
+        assert board.get_by_id(q.message_id).answered is False
+        assert any(m.message_id == q.message_id for m in board.get_unanswered_questions(auto_expire=False))
+        assert board.get_answered_question_texts() == set()
+        assert calls == []
+
+    def test_repair_orphaned_answered_reopens_self_answered_questions(self, board):
+        q = board.add_question("How does warmth change after midnight?")
+        q.answered = True
+        ans = board.add_message("My recorded warmth was 0.541.", msg_module.MESSAGE_TYPE_AGENT, author="lumen")
+        ans.responds_to = q.message_id
+        board._save()
+
+        repaired = board.repair_orphaned_answered()
+        assert repaired == 1
+        assert board.get_by_id(q.message_id).answered is False
+
+    def test_self_answers_do_not_evict_regular_visitors(self, board):
+        base_t = time.time() - 5000
+        for i in range(board.MAX_VISITORS):
+            board._messages.append(
+                Message(
+                    message_id=f"vis{i}",
+                    text=f"Visitor hello {i}",
+                    msg_type=MESSAGE_TYPE_USER,
+                    timestamp=base_t + i,
+                    author="kenny",
+                )
+            )
+        for i in range(board.MAX_QUESTIONS):
+            qid = f"q{i}"
+            board._messages.append(
+                Message(
+                    message_id=qid,
+                    text=f"Question {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=base_t + 100 + i,
+                    author="lumen",
+                )
+            )
+            board._messages.append(
+                Message(
+                    message_id=f"self{i}",
+                    text=f"Self answer {i}",
+                    msg_type=msg_module.MESSAGE_TYPE_AGENT,
+                    timestamp=base_t + 200 + i,
+                    author="lumen",
+                    responds_to=qid,
+                )
+            )
+        board._trim_by_type()
+
+        regular_visitors = [
+            m for m in board._messages
+            if m.msg_type == MESSAGE_TYPE_USER
+        ]
+        assert len(regular_visitors) == board.MAX_VISITORS
+
