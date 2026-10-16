@@ -45,6 +45,10 @@ updates:
         versions: [">=2.0.0"]
       - dependency-name: "types-psutil"
         versions: [">=8.0.0"]
+      # mcp 2.x changes the tool-schema and transport APIs this server uses
+      # (#251 failed the schema contract tests). Migrate deliberately.
+      - dependency-name: "mcp"
+        versions: [">=2.0.0"]
     labels:
       - "dependencies"
 
