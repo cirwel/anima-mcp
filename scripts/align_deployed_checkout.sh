@@ -11,10 +11,11 @@
 #
 # rsync also runs without --delete, because the checkout holds untracked
 # runtime state beside the code, so a file the deployed history deleted is left
-# behind. Such a leftover is removed only when it is byte-identical to the
-# version its deleting commit removed: Git still holds every byte, and nothing
-# written on the Pi is lost. Any other untracked or modified file stays, fails
-# the clean check, and is named on stderr.
+# behind. Such a leftover is removed only when it is a regular file
+# byte-identical to some version of the same path in the deployed history: Git
+# still holds every byte, and nothing written on the Pi is lost. A symlink, or
+# any other untracked or modified file, stays, fails the clean check, and is
+# named on stderr.
 
 set -euo pipefail
 
@@ -31,16 +32,22 @@ git -C "$REPO_ROOT" reset --mixed "$DEPLOYED_REF" >/dev/null
 test "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$DEPLOYED_REF"
 
 while IFS= read -r -d '' path; do
-    deleted_by="$(git -C "$REPO_ROOT" log -1 --format=%H --no-renames --diff-filter=D "$DEPLOYED_REF" -- "$path")"
-    [ -n "$deleted_by" ] || continue
-    [ "$(git -C "$REPO_ROOT" hash-object -- "$path")" = \
-        "$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$deleted_by^:$path")" ] || continue
-    rm -- "$REPO_ROOT/$path"
-    echo "  Removed $path (deleted by ${deleted_by:0:7})"
+    file="$REPO_ROOT/$path"
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+        continue
+    fi
+    blob="$(git -C "$REPO_ROOT" hash-object -- "$path")" || continue
+    # awk reads the whole log, so pipefail cannot see an early-exit SIGPIPE.
+    git -C "$REPO_ROOT" log --raw --no-abbrev --no-renames --format= "$DEPLOYED_REF" -- ":(literal)$path" \
+        | awk -v blob="$blob" '$3 == blob || $4 == blob { found = 1 } END { exit !found }' \
+        || continue
+    rm -- "$file"
+    echo "  Removed leftover $path (an old version Git still holds)"
 done < <(git -C "$REPO_ROOT" ls-files -z --others --exclude-standard)
 
 LEFT="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
-if [ -n "$LEFT" ] || ! git -C "$REPO_ROOT" diff-index --quiet "$DEPLOYED_REF" --; then
+if [ -n "$LEFT" ]; then
     echo "$LEFT" >&2
     exit 1
 fi
+git -C "$REPO_ROOT" diff-index --quiet "$DEPLOYED_REF" --
