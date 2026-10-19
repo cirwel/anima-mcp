@@ -59,6 +59,7 @@ def test_deploy_syncs_core_units_before_restart():
 
 def test_deploy_records_the_exact_clean_commit_after_rsync():
     script = (ROOT / "deploy.sh").read_text()
+    aligner = (ROOT / "scripts" / "align_deployed_checkout.sh").read_text()
 
     clean_at = script.index("refusing deploy from a dirty source checkout")
     sync_at = script.index("Syncing code")
@@ -67,16 +68,106 @@ def test_deploy_records_the_exact_clean_commit_after_rsync():
 
     assert clean_at < sync_at < align_at < restart_at
     assert 'DEPLOYED_REF="$(git rev-parse --verify HEAD^{commit}' in script
-    assert "git status --porcelain --untracked-files=all" in script
-    tracking_fetch = 'fetch --quiet --no-tags origin;'
-    exact_fetch = "fetch --quiet --no-tags origin '$DEPLOYED_REF'"
-    assert tracking_fetch in script
-    assert script.index(tracking_fetch) < script.index(exact_fetch)
-    assert "fetch --quiet --no-tags origin '$DEPLOYED_REF'" in script
-    assert "reset --mixed '$DEPLOYED_REF'" in script
-    assert "diff-index --quiet '$DEPLOYED_REF' --" in script
+    assert "bash $PI_PATH/scripts/align_deployed_checkout.sh '$DEPLOYED_REF'" in script
+    assert "status --porcelain --untracked-files=all" in aligner
+    tracking_fetch = "fetch --quiet --no-tags origin\n"
+    exact_fetch = 'fetch --quiet --no-tags origin "$DEPLOYED_REF"'
+    assert tracking_fetch in aligner
+    assert aligner.index(tracking_fetch) < aligner.index(exact_fetch)
+    assert 'reset --mixed "$DEPLOYED_REF"' in aligner
+    assert 'diff-index --quiet "$DEPLOYED_REF" --' in aligner
     assert "Git HEAD, index, and deployed files agree" in script
     assert "Services were not restarted" in script
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _rsynced_checkout(tmp_path):
+    """A checkout at commit A after rsync copied commit C over it without --delete.
+
+    B edits stale.txt. C deletes it and gone.txt, renames moved.txt to
+    renamed.txt and edits keep.txt. Returns the checkout and C's SHA.
+    """
+    source = tmp_path / "source"
+    _git(tmp_path, "init", "-q", "-b", "main", "source")
+    _git(source, "config", "user.email", "test@example.com")
+    _git(source, "config", "user.name", "Test")
+    (source / "scripts").mkdir()
+    aligner = ROOT / "scripts" / "align_deployed_checkout.sh"
+    (source / "scripts" / aligner.name).write_text(aligner.read_text(encoding="utf-8"), encoding="utf-8")
+    for name in ("keep.txt", "gone.txt", "moved.txt", "stale.txt"):
+        (source / name).write_text(f"{name} at A\n", encoding="utf-8")
+    _git(source, "add", "-A")
+    _git(source, "commit", "-q", "-m", "A")
+    first = _git(source, "rev-parse", "HEAD")
+    (source / "stale.txt").write_text("stale.txt at B\n", encoding="utf-8")
+    _git(source, "commit", "-q", "-am", "B")
+    _git(source, "rm", "-q", "gone.txt", "stale.txt")
+    _git(source, "mv", "moved.txt", "renamed.txt")
+    (source / "keep.txt").write_text("keep.txt at C\n", encoding="utf-8")
+    _git(source, "commit", "-q", "-am", "C")
+    deployed = _git(source, "rev-parse", "HEAD")
+
+    _git(tmp_path, "clone", "-q", "--bare", "source", "origin.git")
+    _git(tmp_path, "clone", "-q", "origin.git", "pi")
+    pi = tmp_path / "pi"
+    _git(pi, "reset", "-q", "--hard", first)
+    for name in ("keep.txt", "renamed.txt"):
+        (pi / name).write_text((source / name).read_text(encoding="utf-8"), encoding="utf-8")
+    return pi, deployed
+
+
+def _align(checkout, ref):
+    return subprocess.run(
+        ["bash", str(checkout / "scripts" / "align_deployed_checkout.sh"), ref],
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_aligner_removes_leftovers_of_files_the_deployed_history_deleted(tmp_path):
+    pi, deployed = _rsynced_checkout(tmp_path)
+
+    result = _align(pi, deployed)
+
+    assert result.returncode == 0, result.stderr
+    assert "Removed leftover gone.txt" in result.stdout
+    assert not (pi / "gone.txt").exists()
+    # A rename leaves its old path behind too.
+    assert not (pi / "moved.txt").exists()
+    # The Pi missed B, so its copy matches A, not the version C deleted.
+    assert not (pi / "stale.txt").exists()
+    assert _git(pi, "rev-parse", "HEAD") == deployed
+    assert _git(pi, "status", "--porcelain", "--untracked-files=all") == ""
+
+
+def test_aligner_keeps_and_names_files_git_cannot_restore(tmp_path):
+    pi, deployed = _rsynced_checkout(tmp_path)
+    (pi / "moved.txt").write_text("edited on the Pi\n", encoding="utf-8")
+    (pi / "notes.txt").write_text("never tracked\n", encoding="utf-8")
+    # Git stored the file, never a link, even one whose target has its bytes.
+    (pi / "stale-copy.txt").write_text("stale.txt at A\n", encoding="utf-8")
+    (pi / "stale.txt").unlink()
+    (pi / "stale.txt").symlink_to("stale-copy.txt")
+    # A glob in a name must not borrow the deleted gone.txt's history, whether
+    # the entry holds gone.txt's bytes or cannot be hashed at all.
+    (pi / "gon?.txt").write_text("gone.txt at A\n", encoding="utf-8")
+    (pi / "go?e.txt").symlink_to("missing-target")
+
+    result = _align(pi, deployed)
+
+    assert result.returncode == 1
+    assert not (pi / "gone.txt").exists()
+    assert (pi / "moved.txt").read_text(encoding="utf-8") == "edited on the Pi\n"
+    assert (pi / "notes.txt").exists()
+    assert (pi / "stale.txt").is_symlink()
+    assert (pi / "gon?.txt").exists()
+    assert (pi / "go?e.txt").is_symlink()
+    for name in ("moved.txt", "notes.txt", "stale.txt", "stale-copy.txt", "gon?.txt", "go?e.txt"):
+        assert f"?? {name}" in result.stderr
 
 
 def test_deploy_fails_closed_on_permissive_rest_and_hardens_state_modes():
