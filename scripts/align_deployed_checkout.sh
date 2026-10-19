@@ -38,8 +38,9 @@ while IFS= read -r -d '' path; do
     fi
     blob="$(git -C "$REPO_ROOT" hash-object -- "$path")" || continue
     # awk reads the whole log, so pipefail cannot see an early-exit SIGPIPE.
+    # Appending "" compares hashes as strings; awk compares 0e12... as numbers.
     git -C "$REPO_ROOT" log --raw --no-abbrev --no-renames --format= "$DEPLOYED_REF" -- ":(literal)$path" \
-        | awk -v blob="$blob" '$3 == blob || $4 == blob { found = 1 } END { exit !found }' \
+        | awk -v blob="$blob" '($3 "") == (blob "") || ($4 "") == (blob "") { found = 1 } END { exit !found }' \
         || continue
     rm -- "$file"
     echo "  Removed leftover $path (an old version Git still holds)"

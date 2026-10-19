@@ -152,8 +152,10 @@ def test_aligner_keeps_and_names_files_git_cannot_restore(tmp_path):
     (pi / "stale-copy.txt").write_text("stale.txt at A\n", encoding="utf-8")
     (pi / "stale.txt").unlink()
     (pi / "stale.txt").symlink_to("stale-copy.txt")
-    # A glob in a name must not match the deleted gone.txt.
-    (pi / "gon?.txt").symlink_to("missing-target")
+    # A glob in a name must not borrow the deleted gone.txt's history, whether
+    # the entry holds gone.txt's bytes or cannot be hashed at all.
+    (pi / "gon?.txt").write_text("gone.txt at A\n", encoding="utf-8")
+    (pi / "go?e.txt").symlink_to("missing-target")
 
     result = _align(pi, deployed)
 
@@ -162,8 +164,9 @@ def test_aligner_keeps_and_names_files_git_cannot_restore(tmp_path):
     assert (pi / "moved.txt").read_text(encoding="utf-8") == "edited on the Pi\n"
     assert (pi / "notes.txt").exists()
     assert (pi / "stale.txt").is_symlink()
-    assert (pi / "gon?.txt").is_symlink()
-    for name in ("moved.txt", "notes.txt", "stale.txt", "stale-copy.txt", "gon?.txt"):
+    assert (pi / "gon?.txt").exists()
+    assert (pi / "go?e.txt").is_symlink()
+    for name in ("moved.txt", "notes.txt", "stale.txt", "stale-copy.txt", "gon?.txt", "go?e.txt"):
         assert f"?? {name}" in result.stderr
 
 
