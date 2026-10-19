@@ -59,11 +59,11 @@ def _make_request(
 
 class TestRestAuthHelpers:
     def test_is_trusted_network_uses_client_host(self):
-        request = _make_request(client_host="100.88.1.8")
+        request = _make_request(client_host="100.64.0.20")
         assert rest_api._is_trusted_network(request) is True
 
     def test_is_trusted_network_ignores_x_forwarded_for_from_untrusted_peer(self):
-        request = _make_request(headers={"x-forwarded-for": "100.88.1.8"}, client_host="8.8.8.8")
+        request = _make_request(headers={"x-forwarded-for": "100.64.0.20"}, client_host="8.8.8.8")
         assert rest_api._is_trusted_network(request) is False
 
     def test_is_trusted_network_uses_x_forwarded_for_from_trusted_proxy(self, monkeypatch):
@@ -72,7 +72,7 @@ class TestRestAuthHelpers:
             "_TRUSTED_PROXY_NETWORKS",
             [rest_api.ipaddress.ip_network("127.0.0.0/8")],
         )
-        request = _make_request(headers={"x-forwarded-for": "100.88.1.8"}, client_host="127.0.0.1")
+        request = _make_request(headers={"x-forwarded-for": "100.64.0.20"}, client_host="127.0.0.1")
         assert rest_api._is_trusted_network(request) is True
 
     def test_is_trusted_network_rejects_invalid_ip(self):
@@ -796,8 +796,8 @@ class TestExternalHostGate:
     def test_local_host_still_trusted(self):
         """Tailscale and loopback callers must keep working without a token."""
         request = _make_request(
-            client_host="100.84.100.128",
-            headers={"host": "100.84.100.128:8766"},
+            client_host="100.64.0.10",
+            headers={"host": "100.64.0.10:8766"},
         )
         assert rest_api._is_trusted_network(request) is True
 
@@ -897,8 +897,8 @@ class TestGuardedPages:
         )
         request = _make_request(
             path="/dashboard",
-            client_host="100.84.100.128",
-            headers={"host": "100.84.100.128:8766"},
+            client_host="100.64.0.10",
+            headers={"host": "100.64.0.10:8766"},
         )
         response = await rest_api.dashboard(request)
         assert response.status_code == 200
@@ -1033,6 +1033,6 @@ class TestApiSecurityNotLeaked:
     def test_local_caller_sees_gate_posture(self, monkeypatch):
         monkeypatch.setattr(rest_api, "_ANIMA_HTTP_API_TOKEN", "s3cret")
         request = _make_request(
-            client_host="100.84.100.128", headers={"host": "100.84.100.128:8766"}
+            client_host="100.64.0.10", headers={"host": "100.64.0.10:8766"}
         )
         assert "api_security" in rest_api._api_security_fields(request)
