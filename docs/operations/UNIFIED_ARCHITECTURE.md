@@ -152,11 +152,11 @@ Verdicts ("proceed", "pause", "halt") can come from different places depending o
 
 | Source | Where | When | Behavior |
 |--------|-------|------|----------|
-| **Mac governance** | `dynamics.py` → `scoring.py` | Mac reachable (~180s cycle) | Full thermodynamic EISV, calibrated thresholds, almost never pauses Lumen |
+| **Mac governance** | `dynamics.py` → `scoring.py` | Mac reachable (~180s cycle) | Full governance EISV estimate, calibrated thresholds, almost never pauses Lumen |
 | **Local fallback** | `_local_governance()` in `unitares_bridge.py` | Mac unreachable | Simple Entropy/Integrity threshold checks; Valence is telemetry, not a gate |
 | **DrawingEISV** | `screens.py` | Internal to drawing loop | Not a verdict — drives energy drain and save decisions only |
 
-The local fallback is the primary source of "pause" verdicts for Lumen. Mac governance has issued 0 pauses historically because full thermodynamics are more stable than fixed thresholds.
+The local fallback is the primary source of "pause" verdicts for Lumen.
 
 ### What's NOT Connected (Gaps)
 
