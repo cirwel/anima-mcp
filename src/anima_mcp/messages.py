@@ -45,6 +45,11 @@ _QUESTION_BOILERPLATE_PREFIXES = (
     "i was told that ",
     "i learned that ",
     "i know this about myself: ",
+    # Preference-insight stem from self_reflection._analyze_preference_insights.
+    # It is a filing label, not speech: unstripped it produced "what would
+    # change if observational pattern: the quiet of late evening settles me
+    # weren't true?" (observed live 2026-10-29).
+    "observational pattern: ",
     # Storage provenance, not something Lumen said. The retired behavioral
     # bridge historically filed Q&A claims as "From Q&A: <text>"; without this
     # the marker survived into the question and the generator stacked a wrapper,
