@@ -155,6 +155,9 @@ def _format_tendency_question(desc: str) -> Optional[str]:
             "seek ": "seeking ",
             "notice ": "noticing ",
             "return ": "returning ",
+            # "i tend to draw at night" (_analyze_drawing_insights) read as
+            # "what matters about draw at night?" without this.
+            "draw ": "drawing ",
         }
         phrase = predicate
         for prefix, replacement in gerunds.items():

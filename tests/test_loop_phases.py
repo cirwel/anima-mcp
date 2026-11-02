@@ -596,6 +596,20 @@ class TestGenerateLearnedQuestion:
 
     @patch("anima_mcp.messages.get_recent_questions", return_value=[])
     @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_drawing_tendency_becomes_gerund(self, mock_refl, mock_recent):
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(confidence=0.8, description="i tend to draw at night")
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == "what matters about drawing at night?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
     def test_plural_tendency_uses_do(self, mock_refl, mock_recent):
         from anima_mcp.loop_phases import generate_learned_question
 
