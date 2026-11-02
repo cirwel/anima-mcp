@@ -5,7 +5,7 @@
 -r requirements.txt
 
 # Adafruit Blinka - provides board, busio for Pi (required by CircuitPython libs)
-adafruit-blinka>=9.2.0
+adafruit-blinka>=10.1.0
 
 # Raspberry Pi GPIO
 RPi.GPIO>=0.7.1,<1.0.0
