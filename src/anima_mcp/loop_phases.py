@@ -141,12 +141,12 @@ def _format_tendency_question(desc: str) -> Optional[str]:
     """Format a tendency insight without splitting inside the word 'tends'."""
     import re
 
-    match = re.match(r"^(?P<subject>.*?)\btends?\s+to\s+(?P<predicate>.+)$", desc)
+    match = re.match(r"^(?P<subject>.*?)\b(?P<verb>tends?)\s+to\s+(?P<predicate>.+)$", desc)
     if not match:
         return None
 
     subject = match.group("subject").strip()
-    predicate = match.group("predicate").strip()
+    predicate = match.group("predicate").strip().rstrip(".?!").strip()
 
     if subject in {"i", "i usually", "i often"}:
         gerunds = {
@@ -155,6 +155,9 @@ def _format_tendency_question(desc: str) -> Optional[str]:
             "seek ": "seeking ",
             "notice ": "noticing ",
             "return ": "returning ",
+            # "i tend to draw at night" (_analyze_drawing_insights) read as
+            # "what matters about draw at night?" without this.
+            "draw ": "drawing ",
         }
         phrase = predicate
         for prefix, replacement in gerunds.items():
@@ -163,8 +166,14 @@ def _format_tendency_question(desc: str) -> Optional[str]:
                 break
     elif predicate.startswith("be "):
         phrase = f"{subject} being {predicate[3:]}"
+    elif subject:
+        # Gluing subject and bare predicate dropped the verb's agreement:
+        # "what matters about reflection about ambient temp change what i know
+        # about myself?" (observed live 2026-10-30). Keep the tendency as a verb.
+        aux = "does" if match.group("verb") == "tends" else "do"
+        return f"why {aux} {subject} tend to {predicate}?"
     else:
-        phrase = f"{subject} {predicate}".strip()
+        phrase = predicate
 
     return f"what matters about {phrase}?"
 
@@ -280,6 +289,7 @@ def generate_learned_question() -> Optional[str]:
 
     # 2. Questions from beliefs — cap count (was: every belief → 1–2 templates)
     try:
+        from .data_analysis import belief_evidence_verdict
         from .self_model import get_self_model
         model = get_self_model()
         belief_items = list(model.beliefs.items())
@@ -288,12 +298,21 @@ def generate_learned_question() -> Optional[str]:
         for _bid, belief in belief_items:
             if added >= 4:
                 break
+            # Lumen's own evidence outranks the question template: asking
+            # "do I really tend to ask questions when surprised?" about a belief
+            # its self-answer reports as refuted (1+ vs 13-) re-asked a settled
+            # question daily. Same rule as the self-answer, no new cut.
+            verdict = belief_evidence_verdict(belief)
             if 0.3 <= belief.confidence <= 0.5:
+                if verdict is not None:
+                    continue
                 q = _format_uncertain_belief_question(belief.description)
                 if q:
                     candidates.append(q)
                     added += 1
             elif belief.confidence > 0.7:
+                if verdict == "refuted":
+                    continue
                 q = _format_established_belief_question(belief.description)
                 if q:
                     candidates.append(q)

@@ -771,6 +771,24 @@ def analyze_crash_vs_clean(dimension: str) -> Optional[str]:
             f"(n={len(clean_vals)} clean, n={len(crash_vals)} crash)")
 
 
+def belief_evidence_verdict(belief) -> Optional[str]:
+    """Return "refuted", "supported", or None for a self-model belief.
+
+    The one rule both the grounded self-answer and the question generator use,
+    so Lumen never asks "do I really X?" about a claim its own self-answer
+    already reports as refuted. None means the evidence is thin or mixed.
+    """
+    supporting = getattr(belief, "supporting_count", 0) or 0
+    contradicting = getattr(belief, "contradicting_count", 0) or 0
+    if supporting + contradicting < 10:
+        return None
+    if contradicting > 2 * supporting:
+        return "refuted"
+    if supporting > 2 * contradicting:
+        return "supported"
+    return None
+
+
 def analyze_belief_status() -> Optional[str]:
     """Report self-model belief status — especially falsified and confirmed beliefs."""
     try:
@@ -783,15 +801,12 @@ def analyze_belief_status() -> Optional[str]:
 
     lines = []
     for bid, b in beliefs.items():
-        total = b.supporting_count + b.contradicting_count
-        if total < 10:
-            continue
-
-        if b.contradicting_count > 2 * b.supporting_count:
+        verdict = belief_evidence_verdict(b)
+        if verdict == "refuted":
             lines.append(
                 f"My data refutes that {b.description.lower()} "
                 f"({b.supporting_count}+ vs {b.contradicting_count}-)")
-        elif b.supporting_count > 2 * b.contradicting_count:
+        elif verdict == "supported":
             lines.append(
                 f"My data supports that {b.description.lower()} "
                 f"({b.supporting_count}+ vs {b.contradicting_count}-)")

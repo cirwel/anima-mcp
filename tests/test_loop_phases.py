@@ -554,6 +554,139 @@ class TestGenerateLearnedQuestion:
         for r in results:
             assert "bright light feels warmer than dim light" in r.lower()
 
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_strips_observational_pattern_label(self, mock_refl, mock_recent):
+        """The preference-insight filing label never reaches Lumen's question."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(
+            confidence=0.8,
+            description="observational pattern: the quiet of late evening settles me",
+        )
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            results = {generate_learned_question() for _ in range(30)}
+
+        for r in results:
+            assert "observational pattern" not in r
+            assert "the quiet of late evening settles me" in r
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_non_first_person_tendency_keeps_its_verb(self, mock_refl, mock_recent):
+        """Observed live: 'what matters about reflection about ambient temp change what i know about myself?'"""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(
+            confidence=0.8,
+            description="Reflection about ambient temp tends to change what I know about myself",
+        )
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == (
+            "why does reflection about ambient temp tend to change what i know about myself?"
+        )
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_drawing_tendency_becomes_gerund(self, mock_refl, mock_recent):
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(confidence=0.8, description="i tend to draw at night")
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == "what matters about drawing at night?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_plural_tendency_uses_do(self, mock_refl, mock_recent):
+        from anima_mcp.loop_phases import generate_learned_question
+
+        insight = SimpleNamespace(confidence=0.8, description="Changes in light tend to settle me")
+        mock_refl.return_value.get_insights.return_value = [insight]
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {}
+            result = generate_learned_question()
+
+        assert result == "why do changes in light tend to settle me?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_skips_uncertain_belief_its_own_data_already_decided(self, mock_refl, mock_recent):
+        """Observed live: 'do I really tend to ask questions when surprised?' asked
+        daily while the self-answer reported it refuted (1+ vs 13-)."""
+        from anima_mcp.loop_phases import generate_learned_question
+
+        mock_refl.return_value.get_insights.return_value = []
+        refuted = SimpleNamespace(
+            confidence=0.4,
+            description="I tend to ask questions when surprised",
+            supporting_count=1,
+            contradicting_count=13,
+        )
+        supported = SimpleNamespace(
+            confidence=0.4,
+            description="Light affects my warmth",
+            supporting_count=13,
+            contradicting_count=1,
+        )
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {"b1": refuted, "b2": supported}
+            result = generate_learned_question()
+
+        assert result is None
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_still_asks_uncertain_belief_with_mixed_or_thin_evidence(self, mock_refl, mock_recent):
+        from anima_mcp.loop_phases import generate_learned_question
+
+        mock_refl.return_value.get_insights.return_value = []
+        mixed = SimpleNamespace(
+            confidence=0.4,
+            description="I am sensitive to temperature changes",
+            supporting_count=6,
+            contradicting_count=7,
+        )
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {"b1": mixed}
+            result = generate_learned_question()
+
+        assert result == "am I really sensitive to temperature changes?"
+
+    @patch("anima_mcp.messages.get_recent_questions", return_value=[])
+    @patch("anima_mcp.self_reflection.get_reflection_system")
+    def test_skips_established_belief_its_own_data_refutes(self, mock_refl, mock_recent):
+        from anima_mcp.loop_phases import generate_learned_question
+
+        mock_refl.return_value.get_insights.return_value = []
+        belief = SimpleNamespace(
+            confidence=0.8,
+            description="I recover stability quickly",
+            supporting_count=2,
+            contradicting_count=46,
+        )
+
+        with patch("anima_mcp.self_model.get_self_model") as mock_sm:
+            mock_sm.return_value.beliefs = {"b1": belief}
+            result = generate_learned_question()
+
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # generate_experiential_question
