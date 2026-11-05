@@ -136,6 +136,17 @@ class TestAttentionProjection:
         assert item["priority"] == "high"
         assert item["required_role"] == "caretaker"
 
+    def test_extracted_ledger_and_attention_modules_are_protected_surfaces(
+        self, system
+    ):
+        for target in (
+            "src/anima_mcp/self_iteration_attention.py",
+            "src/anima_mcp/self_iteration_ledger.py",
+        ):
+            boundary = system.classify_target(target)
+            assert boundary["boundary"] == "protected_core"
+            assert boundary["auto_implementation_eligible"] is False
+
     def test_terminal_outcome_is_notification_only(self, system):
         proposal = _proposal(system)
         system.record_outcome(
