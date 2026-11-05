@@ -307,3 +307,16 @@ async def test_attention_action_and_lumen_context_surface(system, monkeypatch):
 
     assert direct["schema"] == ATTENTION_SCHEMA
     assert context["self_iteration_attention"]["items"] == direct["items"]
+
+
+def test_extracted_pipeline_and_reflection_modules_are_protected_surfaces(system):
+    for rel_path in (
+        "src/anima_mcp/self_iteration_ledger.py",
+        "src/anima_mcp/self_iteration_attention.py",
+        "src/anima_mcp/self_iteration_pipeline.py",
+        "src/anima_mcp/self_reflection_analyzers.py",
+    ):
+        classified = system.classify_target(rel_path)
+        assert classified["boundary"] == "protected_core"
+        assert classified["auto_implementation_eligible"] is False
+
