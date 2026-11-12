@@ -860,6 +860,18 @@ independent gesture draws do.
 The gestural and pointillist changes are colour only and pinned as such:
 pixels, switches and coherence are identical with and without them.
 
+**Look before you tune.** `scripts/dev/render_eras.py` drives the real
+`DrawingEngine` offline (simulated clock, no disk, no device) and writes a
+contact sheet per era plus per-piece numbers — five eras in a few seconds:
+
+```bash
+python3 scripts/dev/render_eras.py . --out /tmp/eras --pieces 12
+```
+
+Its docstring lists exactly where it departs from the device. It over-fires
+earned completion paths for resonance relative to the live corpus, so trust its
+pictures and pixel statistics more than its completion-reason mix.
+
 **Known and deliberately not changed — each moves a corpus statistic, so each
 is an operator decision:** gestural pieces are still all-over (59 of 64 cells
 every piece; a per-piece territory fixes it but drops mean pixels 7–13%);
