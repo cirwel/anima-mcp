@@ -139,10 +139,17 @@ class IdentityRefusedError(Exception):
     """
 
 
+# Typed refusal statuses. `lineage_declaration_required` joined 2026-11-12: the
+# Elixir client's refusal_hint/1 has always classified it, this side did not,
+# so the same success-shaped, action-less payload was a refusal in one process
+# and a default "proceed" in the other.
+_IDENTITY_REFUSAL_STATUSES = ("identity_required", "lineage_declaration_required")
+
+
 def _is_identity_refusal(payload: Dict[str, Any]) -> bool:
     """True when a tool payload is UNITARES's typed identity refusal (#97)."""
     return (
-        payload.get("status") == "identity_required"
+        payload.get("status") in _IDENTITY_REFUSAL_STATUSES
         or payload.get("error_code") == "SESSION_ERROR"
         or payload.get("error_category") == "auth_error"
     )
@@ -659,7 +666,8 @@ class UnitaresBridge:
         Returns:
             Governance decision dict with:
             - action: "proceed" | "pause" | "halt"
-            - margin: "comfortable" | "tight" | "critical"
+            - margin: "comfortable" | "tight" | "critical", or None when
+              UNITARES returned a verdict without one
             - reason: Human-readable explanation
             - body_eisv_projection: Lumen's sensor-derived input projection
             - governance_eisv: UNITARES's inferred state, or None if omitted
@@ -956,7 +964,15 @@ class UnitaresBridge:
                                 try:
                                     governance_result = json.loads(content["text"])
                                 except json.JSONDecodeError:
-                                    pass  # Keep original if not JSON
+                                    pass  # Not JSON: no action below, so it fails there
+
+                        # Everything below reads a JSON object. A list or a
+                        # bare string is not a governance payload.
+                        if not isinstance(governance_result, dict):
+                            raise Exception(
+                                "UNITARES check-in returned a non-object payload "
+                                f"({type(governance_result).__name__}); not a verdict"
+                            )
 
                         # Typed identity refusal (STRICT_IDENTITY_REQUIRED). This
                         # payload carries NEITHER success:false NOR an action, so
@@ -983,9 +999,31 @@ class UnitaresBridge:
 
                         # Extract action and margin from UNITARES response
                         # UNITARES returns: {"action": "proceed", "margin": "comfortable", ...}
+                        #
+                        # No defaults (2026-11-12). This used to read
+                        # .get("action", "proceed") / .get("margin", "comfortable"),
+                        # so `{}`, an unrecognised refusal shape or a plain-text
+                        # body all came back as a healthy verdict with
+                        # source="unitares" — which reset the breaker, advanced
+                        # the server's last-UNITARES-success clock, marked
+                        # governance connected and heartbeat its health. A
+                        # payload without an action is not a verdict: fail the
+                        # check-in so the breaker and the local fallback handle
+                        # it, as the Elixir client does. A margin the server did
+                        # not send stays None — unknown, not "comfortable".
+                        action = governance_result.get("action")
+                        if not isinstance(action, str) or not action.strip():
+                            raise Exception(
+                                "UNITARES check-in returned no action "
+                                f"(keys: {sorted(str(k) for k in governance_result)}); "
+                                "not a verdict"
+                            )
+                        margin = governance_result.get("margin")
+                        if not isinstance(margin, str) or not margin.strip():
+                            margin = None
                         return {
-                            "action": governance_result.get("action", "proceed"),
-                            "margin": governance_result.get("margin", "comfortable"),
+                            "action": action,
+                            "margin": margin,
                             "reason": governance_result.get("reason", "Governance check completed"),
                             "source": "unitares",
                             "unitares_agent_id": bound_id,  # For display identification
@@ -996,6 +1034,13 @@ class UnitaresBridge:
                         }
                     elif "error" in result:
                         raise Exception(f"MCP error: {result['error']}")
+                    else:
+                        # Used to fall off the end and return None, which only
+                        # failed because check_in then crashed on None.get().
+                        raise Exception(
+                            "MCP response has neither result nor error "
+                            f"(keys: {sorted(str(k) for k in result)})"
+                        )
                 else:
                     # HTTP error - fallback to local
                     error_text = await response.text()

@@ -122,19 +122,102 @@ def test_shadow_without_sensor_capture_provenance_cannot_train_residual(shadow_f
     assert readings.light_observed_precision_seconds is None
 
 
-def test_stale_sensor_capture_provenance_cannot_train_fresh_envelope(shadow_file):
-    path = shadow_file(ENV)
+def _age_light_capture(path, seconds):
+    """Rewrite the envelope so its VEML capture is `seconds` old while the
+    envelope itself stays fresh — what the Elixir broker publishes when the
+    sensor stops answering and the flush loop keeps running."""
     envelope = json.loads(path.read_text())
     envelope["data"]["readings"]["light_observed_at"] = (
-        datetime.now() - timedelta(seconds=120.52)
+        datetime.now() - timedelta(seconds=seconds + 0.52)
     ).isoformat()
     path.write_text(json.dumps(envelope))
 
+
+def test_stale_sensor_capture_is_not_a_light_reading(shadow_file):
+    """Until 2026-11-12 this test asserted `light_lux == 60.0`: the stale
+    capture's provenance was withdrawn and the stale value was still returned
+    as the current reading, behind a fresh envelope timestamp. A value whose
+    own capture time is stale is unknown, exactly like a stale envelope."""
+    _age_light_capture(shadow_file(ENV), 120.0)
+
     readings = PiSensors().read()
 
-    assert readings.light_lux == 60.0
+    assert readings.light_lux is None
     assert readings.light_observed_at is None
     assert readings.light_observed_precision_seconds is None
+    # The staleness is the light sensor's own; the other channels carry no
+    # capture provenance and are still governed by the envelope.
+    assert readings.ambient_temp_c == pytest.approx(24.5)
+    assert readings.humidity_pct == pytest.approx(23.1)
+    assert readings.pressure_hpa == pytest.approx(819.9)
+
+
+def test_stale_light_capture_is_omitted_from_available_sensors(shadow_file):
+    _age_light_capture(shadow_file(ENV), 120.0)
+
+    avail = PiSensors().available_sensors()
+
+    assert "light_lux" not in avail
+    assert "ambient_temp_c" in avail
+
+
+def test_stale_light_capture_is_audible(shadow_file):
+    from anima_mcp.error_recovery import suppressed_counts
+
+    site = "sensors.pi.shadow_light_capture_stale"
+    before = suppressed_counts().get(site, 0)
+    _age_light_capture(shadow_file(ENV), 120.0)
+
+    PiSensors().read()
+
+    assert suppressed_counts().get(site, 0) == before + 1
+
+
+def test_light_reading_returns_when_the_capture_is_fresh_again(shadow_file):
+    """Dropping the stale value must not latch: the next real capture reads."""
+    s = PiSensors()
+    _age_light_capture(shadow_file(ENV), 120.0)
+    assert s.read().light_lux is None
+
+    shadow_file(ENV)
+    recovered = s.read()
+
+    assert recovered.light_lux == pytest.approx(60.0)
+    assert recovered.light_observed_at is not None
+
+
+def test_stale_light_capture_is_unknown_downstream(shadow_file):
+    """None must stay unknown in the readers on this path: clarity's coverage
+    count loses the channel, attribution reports unavailable, and the gated
+    residual the drawing light regime reads is None (regime "unknown")."""
+    from anima_mcp import anima as anima_module
+    from anima_mcp.light_attribution import (
+        LearnedLedLuxResidual,
+        gated_external_light_lux,
+    )
+
+    _age_light_capture(shadow_file(ENV), 120.0)
+    readings = PiSensors().read()
+
+    anima_module._reset_channel_liveness()
+    sensed = anima_module.sense_self(readings, external_light_lux=None)
+    coverage = sensed.clarity_attribution["components"]["sensor_coverage"]
+    # cpu_temp is absent off-Pi, so only the three other shadow channels count.
+    expected_present = sum(
+        value is not None
+        for value in (readings.cpu_temp_c, readings.ambient_temp_c,
+                      readings.humidity_pct, readings.pressure_hpa)
+    )
+    assert coverage["present_channels"] == expected_present
+
+    attribution = LearnedLedLuxResidual().attribute(
+        readings.light_lux,
+        {"source": "led_hardware_controller", "brightness": 0.1},
+    )
+    assert attribution["status"] == "unavailable"
+    assert attribution["raw_lux"] is None
+    assert attribution["external_lux_residual"] is None
+    assert gated_external_light_lux(attribution) is None
 
 
 def test_stale_shadow_degrades_to_none(shadow_file):

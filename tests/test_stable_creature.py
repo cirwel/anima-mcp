@@ -2150,3 +2150,87 @@ class TestDBPathResolution:
             home_dir = Path.home() / ".anima"
             db_path = str(home_dir / "anima.db")
         assert db_path == str(Path.home() / ".anima" / "anima.db")
+
+
+# =====================================================================
+# An interaction must reach the activity manager that decides wakefulness
+# =====================================================================
+
+class TestInteractionWakesTheBroker:
+    """Found 2026-11-12. The broker's ActivityManager publishes the level and
+    brightness the server renders, but a visitor's interaction was recorded
+    only on the server's own manager — consulted only when the broker is not
+    running. Nothing a visitor did reached the manager that matters."""
+
+    @pytest.fixture
+    def runtime(self, tmp_path, monkeypatch):
+        from anima_mcp import creature_runtime
+
+        monkeypatch.setattr(
+            creature_runtime, "SOCIAL_BOOST_PATH", tmp_path / "anima_social_boost")
+
+        class _Runtime(creature_runtime.CreatureRuntimeMixin):
+            pass
+
+        return _Runtime(), creature_runtime.SOCIAL_BOOST_PATH
+
+    def _resting_manager(self):
+        import time as _time
+        from anima_mcp.activity_state import ActivityLevel, ActivityManager
+
+        manager = ActivityManager()
+        manager._last_interaction_time = _time.time() - 3 * 3600
+        manager._transition_to(ActivityLevel.RESTING, "test")
+        return manager
+
+    def test_score_alone_cannot_reach_active(self):
+        """Why the wake path matters: with no recent interaction the best
+        possible score is below the ACTIVE cut, at any hour, in any light."""
+        from anima_mcp.activity_state import ActivityLevel
+
+        manager = self._resting_manager()
+        manager._circadian_schedule = {h: 1.0 for h in range(24)}
+        state = manager.get_state(presence=1.0, stability=1.0, light_level=5000.0)
+        assert state.level != ActivityLevel.ACTIVE
+
+    def test_a_message_wakes_lumen(self, runtime):
+        from anima_mcp.activity_state import ActivityLevel
+
+        rt, boost_path = runtime
+        manager = self._resting_manager()
+        boost_path.touch()
+
+        assert rt.consume_social_boost(InnerLife()) is True
+        assert not boost_path.exists()
+        assert rt.wake_on_interaction(manager) is True
+
+        assert manager._current_level == ActivityLevel.ACTIVE
+        # ...and stays awake on the next tick, at night, in the dark.
+        manager._circadian_schedule = {h: 0.1 for h in range(24)}
+        state = manager.get_state(presence=0.7, stability=0.8, light_level=0.2)
+        assert state.level == ActivityLevel.ACTIVE
+
+    def test_the_signal_is_spent_once(self, runtime):
+        rt, boost_path = runtime
+        boost_path.touch()
+        rt.consume_social_boost(InnerLife())
+        assert rt.wake_on_interaction(None) is True
+        assert rt.wake_on_interaction(None) is False
+
+    def test_no_signal_no_wake(self, runtime):
+        from anima_mcp.activity_state import ActivityLevel
+
+        rt, _boost_path = runtime
+        manager = self._resting_manager()
+        assert rt.consume_social_boost(InnerLife()) is False
+        assert rt.wake_on_interaction(manager) is False
+        assert manager._current_level == ActivityLevel.RESTING
+
+    def test_the_broker_loop_calls_it(self):
+        """The helper is worthless unwired; this is the wire."""
+        import inspect
+        from anima_mcp import stable_creature
+
+        source = inspect.getsource(stable_creature.run_creature)
+        wake = source.index("runtime.wake_on_interaction(activity_manager)")
+        assert wake < source.index("activity_manager.get_state(")

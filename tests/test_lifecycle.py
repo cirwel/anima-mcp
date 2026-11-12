@@ -28,37 +28,311 @@ from anima_mcp.server_context import ServerContext
 from anima_mcp import ctx_ref
 
 
-def test_sensor_health_probe_requires_a_valid_fresh_broker_heartbeat(monkeypatch):
+def _probe_ok(result):
+    """A probe verdict, whether it answered with a bare bool or a details dict."""
+    return bool(result.get("ok", False)) if isinstance(result, dict) else bool(result)
+
+
+_ENV_CHANNELS = ("ambient_temp_c", "humidity_pct", "light_lux", "pressure_hpa")
+_LIVE_ENV = {
+    "ambient_temp_c": 22.4,
+    "humidity_pct": 41.0,
+    "light_lux": 180.0,
+    "pressure_hpa": 1012.6,
+}
+
+
+def _fresh_envelope(**readings):
+    return {
+        "readings": {"cpu_temp_c": 51.0, **readings},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _register_real_probes(monkeypatch, *, store=None, shm=None):
+    """Run the real registration and hand back {name: (probe, options)}."""
     from anima_mcp import accessors, health, lifecycle
 
-    probes = {}
+    registrations = {}
     registry = MagicMock()
     registry.register.side_effect = (
-        lambda name, probe, **_kwargs: probes.__setitem__(name, probe)
+        lambda name, probe=None, **kwargs: registrations.__setitem__(
+            name, (probe, kwargs)
+        )
     )
-    state = {"shm": None}
+    state = {"shm": shm}
     monkeypatch.setattr(health, "get_health_registry", lambda: registry)
     monkeypatch.setattr(accessors, "_get_last_shm_data", lambda: state["shm"])
-
+    monkeypatch.setattr(ctx_ref, "_ctx", SimpleNamespace(store=store))
     lifecycle._register_health_probes()
-    sensor_probe = probes["sensors"]
+    return registrations, state
 
-    state["shm"] = {"readings": {}, "timestamp": datetime.now(timezone.utc).isoformat()}
-    assert sensor_probe() is True
+
+def test_sensor_health_probe_requires_a_valid_fresh_broker_heartbeat(monkeypatch):
+    registrations, state = _register_real_probes(monkeypatch)
+    sensor_probe = registrations["sensors"][0]
+
+    state["shm"] = {
+        "readings": dict(_LIVE_ENV),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    assert _probe_ok(sensor_probe()) is True
     for bad in (
-        {"readings": {}},
-        {"readings": {}, "timestamp": "bad"},
+        None,
+        {"timestamp": datetime.now(timezone.utc).isoformat()},
+        {"readings": dict(_LIVE_ENV)},
+        {"readings": dict(_LIVE_ENV), "timestamp": "bad"},
         {
-            "readings": {},
+            "readings": dict(_LIVE_ENV),
             "timestamp": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
         },
         {
-            "readings": {},
+            "readings": dict(_LIVE_ENV),
             "timestamp": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
         },
     ):
         state["shm"] = bad
-        assert sensor_probe() is False
+        assert _probe_ok(sensor_probe()) is False
+
+
+@pytest.mark.parametrize(
+    "readings",
+    [
+        {},  # channels not even present in the envelope
+        dict.fromkeys(_ENV_CHANNELS),  # present, every one None
+        dict.fromkeys(_ENV_CHANNELS, float("nan")),  # not a reading either
+    ],
+)
+def test_sensor_probe_fails_when_every_environment_channel_is_absent(
+    monkeypatch, readings
+):
+    """A fresh envelope with no environment in it is not a working sensor.
+
+    The probe used to check only that the envelope was fresh and had a
+    ``readings`` key, so it read ok with every environment channel None.
+    """
+    registrations, _ = _register_real_probes(
+        monkeypatch, shm=_fresh_envelope(**readings)
+    )
+
+    result = registrations["sensors"][0]()
+
+    assert _probe_ok(result) is False
+    assert result["state"] == "no_environment_channels"
+    assert result["channels"] == {"present": [], "missing": list(_ENV_CHANNELS)}
+
+
+@pytest.mark.parametrize("missing", _ENV_CHANNELS)
+def test_sensor_probe_reports_but_tolerates_one_missing_channel(monkeypatch, missing):
+    """Pressure (or any single channel) is legitimately absent at times."""
+    readings = {**_LIVE_ENV, missing: None}
+    registrations, _ = _register_real_probes(
+        monkeypatch, shm=_fresh_envelope(**readings)
+    )
+
+    result = registrations["sensors"][0]()
+
+    assert _probe_ok(result) is True
+    assert result["channels"]["missing"] == [missing]
+    assert result["channels"]["present"] == [c for c in _ENV_CHANNELS if c != missing]
+
+
+def test_sensor_probe_reports_all_channels_present(monkeypatch):
+    registrations, _ = _register_real_probes(
+        monkeypatch, shm=_fresh_envelope(**_LIVE_ENV)
+    )
+
+    result = registrations["sensors"][0]()
+
+    assert _probe_ok(result) is True
+    assert result["channels"] == {"present": list(_ENV_CHANNELS), "missing": []}
+
+
+class _MetricsStore:
+    """system_metrics reader stand-in: fixed rows, or a failure."""
+
+    def __init__(self, rows=None, error=None):
+        self.rows = rows or []
+        self.error = error
+
+    def get_system_metrics(self, hours=24.0, limit=2880):
+        if self.error is not None:
+            raise self.error
+        return list(self.rows)
+
+
+def _metric_rows(count, *, cpu_temp_c=55.0, memory_percent=41.0, spacing_seconds=30):
+    now = datetime.now()
+    return [
+        {
+            "timestamp": (
+                now - timedelta(seconds=spacing_seconds * (count - 1 - i))
+            ).isoformat(),
+            "cpu_temp_c": cpu_temp_c[i] if isinstance(cpu_temp_c, list) else cpu_temp_c,
+            "memory_percent": memory_percent,
+        }
+        for i in range(count)
+    ]
+
+
+_NO_EVIDENCE_STORES = {
+    "no_store": lambda: None,
+    "no_rows": lambda: _MetricsStore(rows=[]),
+    "null_values": lambda: _MetricsStore(
+        rows=_metric_rows(5, cpu_temp_c=None, memory_percent=None)
+    ),
+    "unreadable": lambda: _MetricsStore(
+        error=RuntimeError("database disk image is malformed")
+    ),
+}
+
+
+@pytest.mark.parametrize("probe_name", ["thermal_trend", "memory_pressure"])
+@pytest.mark.parametrize("case", sorted(_NO_EVIDENCE_STORES))
+def test_metric_probes_report_unknown_without_evidence(monkeypatch, probe_name, case):
+    """No store, no rows, NULL values and read errors are not "ok".
+
+    Both probes returned True for all of these ("Fail open"), so they could
+    only ever read ok or threshold-crossed -- never "I cannot tell".
+    """
+    registrations, _ = _register_real_probes(
+        monkeypatch, store=_NO_EVIDENCE_STORES[case]()
+    )
+
+    result = registrations[probe_name][0]()
+
+    assert _probe_ok(result) is False
+    assert result["state"] == "unknown"
+    assert result.get("evaluated") is not True
+    assert result["reason"]
+
+
+def test_thermal_probe_needs_three_rows_to_evaluate(monkeypatch):
+    registrations, _ = _register_real_probes(
+        monkeypatch, store=_MetricsStore(rows=_metric_rows(2))
+    )
+
+    result = registrations["thermal_trend"][0]()
+
+    assert _probe_ok(result) is False
+    assert result["state"] == "unknown"
+    assert result["rows"] == 2
+
+
+def test_metric_probe_read_failures_are_counted(monkeypatch):
+    from anima_mcp.error_recovery import reset_suppressed_counts, suppressed_counts
+
+    reset_suppressed_counts()
+    registrations, _ = _register_real_probes(
+        monkeypatch, store=_MetricsStore(error=RuntimeError("disk I/O error"))
+    )
+
+    registrations["thermal_trend"][0]()
+    registrations["memory_pressure"][0]()
+
+    counts = suppressed_counts()
+    assert counts.get("health.thermal_trend") == 1
+    assert counts.get("health.memory_pressure") == 1
+    reset_suppressed_counts()
+
+
+def test_metric_probes_mark_real_verdicts_as_evaluated(monkeypatch):
+    healthy, _ = _register_real_probes(
+        monkeypatch, store=_MetricsStore(rows=_metric_rows(5))
+    )
+    for name in ("thermal_trend", "memory_pressure"):
+        result = healthy[name][0]()
+        assert result["ok"] is True
+        assert result["evaluated"] is True
+
+    crossed, _ = _register_real_probes(
+        monkeypatch,
+        store=_MetricsStore(
+            rows=_metric_rows(
+                5, cpu_temp_c=[50.0, 55.0, 60.0, 65.0, 70.0], memory_percent=95.0
+            )
+        ),
+    )
+    for name in ("thermal_trend", "memory_pressure"):
+        result = crossed[name][0]()
+        assert result["ok"] is False
+        assert result["evaluated"] is True
+        assert result["state"] != "unknown"
+
+
+def _real_registry_with_metric_probes(monkeypatch, store):
+    """A real HealthRegistry holding only the two metric probes, as registered."""
+    from anima_mcp import health
+
+    registrations, _ = _register_real_probes(monkeypatch, store=store)
+    registry = health.HealthRegistry()
+    for name in ("thermal_trend", "memory_pressure"):
+        probe, options = registrations[name]
+        registry.register(name, probe=probe, **{**options, "debounce_seconds": 0.0})
+        registry.heartbeat(name)
+    return registry
+
+
+def _rerun_probes(registry):
+    for name in registry.subsystem_names():
+        registry.get_subsystem(name).last_probe_time = 0.0
+
+
+@pytest.mark.parametrize("case", sorted(_NO_EVIDENCE_STORES))
+def test_metric_probes_are_absent_until_they_have_had_data(monkeypatch, case):
+    """Fresh boot, degraded wake, dead store from the start: absent, not ok.
+
+    And never ``degraded`` -- a boot with fewer than three rows must not pin
+    ``overall()``, which is the saturation ``absent`` exists to prevent.
+    """
+    registry = _real_registry_with_metric_probes(
+        monkeypatch, _NO_EVIDENCE_STORES[case]()
+    )
+
+    status = registry.status()
+
+    assert status["thermal_trend"]["status"] == "absent"
+    assert status["memory_pressure"]["status"] == "absent"
+    assert registry.overall() == "ok"
+
+
+def test_metric_probes_degrade_when_evidence_is_lost_after_working(monkeypatch):
+    store = _MetricsStore(rows=_metric_rows(5))
+    registry = _real_registry_with_metric_probes(monkeypatch, store)
+    assert registry.status()["thermal_trend"]["status"] == "ok"
+    assert registry.status()["memory_pressure"]["status"] == "ok"
+    assert registry.overall() == "ok"
+
+    store.error = RuntimeError("database disk image is malformed")
+    _rerun_probes(registry)
+
+    status = registry.status()
+    assert status["thermal_trend"]["status"] == "degraded"
+    assert status["memory_pressure"]["status"] == "degraded"
+    assert status["thermal_trend"]["probe_details"]["state"] == "unknown"
+    assert registry.overall() == "degraded"
+
+    store.error = None
+    _rerun_probes(registry)
+    assert registry.overall() == "ok"
+
+
+def test_threshold_crossed_on_first_evaluation_is_degraded_not_absent(monkeypatch):
+    """`absent` means "cannot tell yet", never "told, and it was bad"."""
+    registry = _real_registry_with_metric_probes(
+        monkeypatch,
+        _MetricsStore(
+            rows=_metric_rows(
+                5, cpu_temp_c=[50.0, 55.0, 60.0, 65.0, 70.0], memory_percent=95.0
+            )
+        ),
+    )
+
+    status = registry.status()
+
+    assert status["thermal_trend"]["status"] == "degraded"
+    assert status["memory_pressure"]["status"] == "degraded"
+    assert registry.overall() == "degraded"
 
 
 def test_day_summary_writer_health_probe_registration(monkeypatch):

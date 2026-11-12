@@ -132,7 +132,7 @@ class SubsystemHealth:
     optional: bool = False  # capability may legitimately not exist on this host
     probe_only: bool = False  # no loop heartbeat; status is entirely the probe
     _first_bad_at: float = 0.0  # when status first went non-ok
-    _ever_ok: bool = False  # probe has succeeded at least once this process
+    _ever_ok: bool = False  # probe has succeeded (or reached a verdict) at least once this process
     last_probe_details: Optional[Dict[str, Any]] = None
 
     def heartbeat(self) -> None:
@@ -157,13 +157,21 @@ class SubsystemHealth:
         self.last_probe_time = now
         try:
             result = self.probe_fn()
+            evaluated = False
             if isinstance(result, dict):
                 self.last_probe_details = dict(result)
                 self.last_probe_ok = bool(result.get("ok", False))
+                evaluated = result.get("evaluated") is True
             else:
                 self.last_probe_details = None
                 self.last_probe_ok = bool(result)
-            if self.last_probe_ok:
+            # 2026-11-12: a probe that reached a real verdict has WORKED, even
+            # when the verdict is bad.  Arming the guard only on ok meant an
+            # optional threshold probe whose first evaluation crossed its
+            # threshold read "absent" -- a measured fault hidden as a missing
+            # capability.  Opt-in (`"evaluated": True` in the details dict), so
+            # bool probes and dict probes without the key behave as before.
+            if self.last_probe_ok or evaluated:
                 self._ever_ok = True
             self.last_probe_error = "" if self.last_probe_ok else "probe returned False"
         except Exception as e:
@@ -284,7 +292,12 @@ class HealthRegistry:
             name: Subsystem identifier (e.g., "growth", "sensors").
             probe: Optional callable returning True if subsystem is functional,
                    or a details dict containing an ``ok`` value. Called at most
-                   once per PROBE_INTERVAL_SECONDS.
+                   once per PROBE_INTERVAL_SECONDS. A details dict may add
+                   ``"evaluated": True`` to say it reached a real verdict from
+                   real evidence; for an ``optional`` subsystem that counts as
+                   having worked, so a bad first verdict is "degraded" while
+                   "cannot tell yet" (``ok`` False, no ``evaluated``) stays
+                   "absent".
             stale_threshold: Per-subsystem stale threshold in seconds.
                    0 = use global HEARTBEAT_STALE_SECONDS default (30s).
                    Subsystems with longer check-in intervals should set this

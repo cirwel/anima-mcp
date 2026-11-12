@@ -628,6 +628,15 @@ class DrawingEngine:
 
         # Detect gesture switch
         gesture_switch = len(state.gesture_history) >= 2 and state.gesture_history[-1] != state.gesture_history[-2]
+        # An era that stamps one whole form per gesture begins a new gesture on
+        # every mark, whether or not the template's NAME repeats. Detecting the
+        # switch by name alone made geometric's fatigue depend on how varied a
+        # piece's shapes were (a switch on ~90% of stamps while every piece
+        # sampled all 16 templates), so giving a piece a vocabulary of its own
+        # would have stretched pieces ~25% — the shapes repeat, the name stops
+        # changing, fatigue stops accruing. The cost of a stamp is the stamp.
+        if getattr(self.active_era, "each_mark_is_a_gesture", False):
+            gesture_switch = len(state.gesture_history) >= 2
 
         # --- EISV thermodynamic step (runs for reporting, not for decisions) ---
         dE_coupling, _C_ode, S_signal = self._eisv_step()

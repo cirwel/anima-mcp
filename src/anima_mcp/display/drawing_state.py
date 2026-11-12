@@ -349,9 +349,10 @@ class CanvasState:
         surviving a restart. Rebuilding is preferred to persisting because the
         grid then cannot drift from the pixels it describes.
 
-        Consumers: occupied_cells(), grid_entropy(), and sparsest_cell() — which
-        resonance uses to steer focus, so an empty grid did not merely mis-report
-        structure, it aimed every post-restart drift at cell (0,0).
+        Consumers: occupied_cells(), grid_entropy(), and the emptiest-cell
+        lookup resonance steers focus by (sparsest_cell() then,
+        coverage_bias_cell() since 2026-11-12), so an empty grid did not merely
+        mis-report structure, it aimed every post-restart drift at cell (0,0).
         """
         grid = [[0] * 8 for _ in range(8)]
         for (x, y) in self.pixels:
@@ -410,11 +411,15 @@ class CanvasState:
 
         Deliberately NOT sparsest_cell(): that scans in fixed order and resolves
         ties to the first minimum, so early in a piece — when most cells are
-        still empty and therefore tied — it always answers (0, 0). Good enough
-        for resonance, which only consults it occasionally; fatal for a bias
-        applied at every gesture boundary, which would quietly drag every
+        still empty and therefore tied — it always answers (0, 0). Fatal for a
+        bias applied at every gesture boundary, which would quietly drag every
         `sparse` piece into the top-left corner and call it an intention.
         Ties are broken uniformly instead.
+
+        This said sparsest_cell() was "good enough for resonance, which only
+        consults it occasionally". Measured 2026-11-12 it was not: resonance's
+        first jump went top-left in 39 of 40 pieces. Resonance asks this
+        method now, and sparsest_cell() has no caller left in src.
 
         Returns None when the grid carries no information yet (nothing drawn),
         so the opening marks are the era's alone.
