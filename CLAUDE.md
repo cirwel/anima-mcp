@@ -839,6 +839,36 @@ still unable to exceed 0.6, so no earned path newly fires. Geometric rows in
 `drawing_records` before and after 2026-11-12 are therefore not one
 population for pixel count or coherence.
 
+**The other four eras, looked at as pictures (2026-11-12).** All five eras were
+rendered through the real engine and judged by eye, which had not been done
+before; `gestural` and `pointillist` were sameness problems the September
+dispositions had not reached, for one shared reason: **colour was decided per
+mark.** Hundreds of independent colour draws converge exactly as hundreds of
+independent gesture draws do.
+
+- `gestural`: one 15–45 mark line came out as 15–45 colours, and a quarter of
+  every piece's marks came from a fixed 26-colour list. Colour is now decided
+  once per gesture run, and a piece uses two accents drawn once.
+- `pointillist`: the anchor/complement/split scheme was drawn per dot, which
+  tiles the hue wheel for any anchor, and the anchor random-walked ~75° over a
+  piece — so the era's only disposition was invisible (hue resultant 0.03). The
+  scheme is now taken once per density zone and the anchor is tethered.
+- `resonance`: a transposed index (`field[cx, cy]`) and a top-left jump bias
+  from `sparsest_cell()` tie-breaking are fixed. The tie-break moves the
+  simulated completion mix toward `earned_settled`; see the commit message.
+
+The gestural and pointillist changes are colour only and pinned as such:
+pixels, switches and coherence are identical with and without them.
+
+**Known and deliberately not changed — each moves a corpus statistic, so each
+is an operator decision:** gestural pieces are still all-over (59 of 64 cells
+every piece; a per-piece territory fixes it but drops mean pixels 7–13%);
+`field` places 52% of its marks with the focus pinned on the 15px edge clamp,
+which is largely what its `earned_settled` is measuring (respawning beside the
+line's origin fixes it but raises field pixels ~46% and shifts its completion
+mix); `resonance` hue is an absolute ramp of warmth that uses 27° of its 180°
+at lived warmth, so every piece is green/teal.
+
 `coverage_target` ("sparse"/"balanced"/"dense") steers marks via
 `_apply_coverage_bias()`, which leans a gesture boundary toward the sparsest or
 fullest cell of the piece's own density grid (`COVERAGE_BIAS_STRENGTH`, clamped
@@ -873,10 +903,11 @@ field as "read by nothing" until 2026-08-29, ~1 week after the consumer landed.)
 | `resonance` | sediment, flow, scratch | Memory-field: marks deposit into a 48×48 field that decays/diffuses; revisits accumulated regions for layered, resonant forms (pure NumPy) | ✅ |
 
 **Every era draws a per-piece disposition** (`EraState.disposition()`, see
-above) — gestural a palette offset/span plus a lead primitive, geometric a
+above) — gestural a palette offset/span, a lead primitive and an accent pair, geometric a
 2–4 template vocabulary, an accent share, an arrangement and a slice of its
 warm/cool band, resonance a colour
-key, field its long-standing seeds, pointillist its hue anchor. It is recorded
+key, field its long-standing seeds, pointillist its hue anchor and complement
+share. It is recorded
 per piece in `drawing_records.disposition`, so "did this actually vary the
 work?" is answerable from the corpus rather than argued.
 
