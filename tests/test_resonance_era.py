@@ -1,6 +1,7 @@
 """Tests for resonance era — memory field core."""
 import math
 import numpy as np
+import pytest
 from anima_mcp.display.eras.resonance import (
     _deposit, _decay, _diffuse, _gradient_at, _normalized_gradient,
     FIELD_SIZE, CELL_SIZE, DECAY_RATE,
@@ -182,7 +183,7 @@ class TestGenerateColor:
         state.hue_spread = 0.0
         color_cold, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
         h_cold = colorsys.rgb_to_hsv(color_cold[0]/255, color_cold[1]/255, color_cold[2]/255)[0] * 360
-        state.field[state._focus_cx, state._focus_cy] = 5.0
+        state.field[state._focus_cy, state._focus_cx] = 5.0  # rows are y
         color_hot, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
         h_hot = colorsys.rgb_to_hsv(color_hot[0]/255, color_hot[1]/255, color_hot[2]/255)[0] * 360
         assert h_cold != h_hot, "Field warmth bias should shift hue"
@@ -513,7 +514,7 @@ class TestRetunedGradientThresholds:
         class _FC:
             def draw_pixel(self, x, y, c):
                 pass
-            def sparsest_cell(self):
+            def coverage_bias_cell(self, prefer):
                 return (0, 0)
 
         canvas = _FC()
@@ -650,3 +651,74 @@ class TestRevisitTracking:
         for _ in range(REVISIT_WINDOW + 20):
             era.place_mark(state, _Canvas(), 120.0, 120.0, 0.0, 0.5, (100, 100, 100))
         assert len(state.revisit_window) == REVISIT_WINDOW
+
+
+class TestFieldBiasReadsTheFocusCell:
+    """The field is indexed [row = y, col = x] by `_deposit`, `_gradient_at`
+    and the revisit tracker. `generate_color` read `[cx, cy]` — the cell
+    mirrored across the diagonal — until 2026-11-12, so the amber bias warmed
+    ground with no memory and left the memory itself cold. The older test above
+    sat on the diagonal (focus 24, 24), where the two readings agree."""
+
+    def _hue_with_focus_at(self, px, py):
+        era = ResonanceEra()
+        state = ResonanceState()            # rotation 0, spread 0: deterministic hue
+        _deposit(state.field, 200, 20, 5.0)  # memory at a place off the diagonal
+        state._focus_cx = px // CELL_SIZE
+        state._focus_cy = py // CELL_SIZE
+        color, _ = era.generate_color(state, warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
+        return colorsys.rgb_to_hsv(color[0] / 255, color[1] / 255, color[2] / 255)[0] * 360
+
+    def _plain_hue(self):
+        color, _ = ResonanceEra().generate_color(
+            ResonanceState(), warmth=0.5, clarity=0.7, stability=0.7, presence=0.7)
+        return colorsys.rgb_to_hsv(color[0] / 255, color[1] / 255, color[2] / 255)[0] * 360
+
+    def test_focus_on_the_memory_is_warmed(self):
+        from anima_mcp.display.eras.resonance import WARMTH_BIAS_DEGREES
+        shift = self._plain_hue() - self._hue_with_focus_at(200, 20)
+        assert shift == pytest.approx(WARMTH_BIAS_DEGREES, abs=1.0)
+
+    def test_the_mirrored_cell_is_not(self):
+        assert self._hue_with_focus_at(20, 200) == pytest.approx(self._plain_hue(), abs=1.0)
+
+
+class TestJumpTieBreaking:
+    """The era's jump goes to the emptiest density cell. It asked
+    `sparsest_cell()`, which resolves ties to the first cell scanned — and
+    early in a piece most cells are tied at empty. Measured 2026-11-12: the
+    first jump went to the top-left cell in 39 of 40 pieces, and that corner
+    carried 4-6x the pixels of the right-hand corners."""
+
+    def _jump_targets(self, canvas, calls=20000):
+        """Density cells the focus lands in when a drift is a jump. A drift
+        step is at most 8px, so anything further is the jump."""
+        random.seed(11)
+        era = ResonanceEra()
+        state = era.create_state()
+        targets = []
+        for _ in range(calls):
+            fx, fy, _ = era.drift_focus(
+                state, 120.0, 120.0, 0.0, 0.7, 0.7, 0.0, 0.0, canvas=canvas)
+            if math.hypot(fx - 120.0, fy - 120.0) > 8.5:
+                targets.append((int(fx) // 30, int(fy) // 30))
+        return targets
+
+    def test_ties_do_not_collapse_to_the_top_left(self):
+        from anima_mcp.display.drawing_engine import CanvasState
+        canvas = CanvasState()
+        for i in range(50):  # one painted cell; 63 tied at empty
+            canvas.draw_pixel(4 * 30 + i % 30, 4 * 30 + i // 30, (1, 2, 3))
+        targets = self._jump_targets(canvas)
+        assert len(targets) > 200
+        assert len(set(targets)) > 20, f"jumps collapsed to {set(targets)}"
+        assert targets.count((0, 0)) / len(targets) < 0.2
+        assert (4, 4) not in targets, "a jump went to the one painted cell"
+
+    def test_an_empty_canvas_has_no_emptiest_cell(self):
+        """Nothing drawn means the grid carries no direction: the jump falls
+        back to anywhere, as it does with no canvas at all."""
+        from anima_mcp.display.drawing_engine import CanvasState
+        targets = self._jump_targets(CanvasState())
+        assert len(set(targets)) > 15
+        assert all(1 <= gx <= 6 and 1 <= gy <= 6 for gx, gy in targets)  # uniform(40, 200)
