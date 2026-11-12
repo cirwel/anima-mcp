@@ -18,12 +18,34 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from ..art_era import EraState, draw_distinct, set_distance
 
 
-# How many of the 16 templates a piece leans on, and how hard. These size a
-# per-piece vocabulary; they gate nothing and read no signal, so they are not
+# A piece's shape vocabulary. These size a per-piece character drawn once in
+# create_state(); they gate nothing and read no signal, so they are not
 # thresholds in the sense of design invariant 1.
-EMPHASIS_COUNT = 4
-EMPHASIS_WEIGHT_MIN = 2.0
-EMPHASIS_WEIGHT_MAX = 3.5
+#
+# 2026-11-12: the first version (2026-09-17) multiplied 4 of the 16 template
+# weights by 2.0-3.5 and left the other 12 at full weight. Measured through
+# the real engine, that moved almost nothing: a 72-stamp piece still used 15.0
+# of 16 templates (15.7 with no emphasis at all) and its four commonest shapes
+# carried 54% of the stamps. Every piece held the whole alphabet, which is what
+# the operator read as "kitchen sink". A lean cannot make a legible piece when
+# the alphabet is sixteen whole forms and the piece is seventy stamps long; the
+# vocabulary has to carry the piece, with the rest reduced to accents.
+VOCABULARY_MIN = 2
+VOCABULARY_MAX = 4
+# Share of a piece's stamps that come from OUTSIDE its vocabulary. Drawn once
+# per piece: some pieces are strict, some take a few strays.
+ACCENT_MIN = 0.0
+ACCENT_MAX = 0.12
+
+# Where a piece puts its shapes. Before 2026-11-12 every stamp either took a
+# short random step from the last one (clarity > 0.6, which is ~92% of Lumen's
+# lived clarity) or jumped to a point around the canvas centre. Both pile
+# opaque forms onto each other: a walk whose step is about one shape wide
+# buries its own trail, then runs into the margin clamp and heaps there. Each
+# piece now draws an arrangement once and every stamp lands on it.
+LAYOUTS = ("cluster", "constellation", "band", "ring")
+CANVAS = 240
+LAYOUT_MARGIN = 30
 
 
 @dataclass
@@ -38,13 +60,15 @@ class GeometricState(EraState):
     # Before 2026-09-17 create_state() was a bare `GeometricState()`. With 16
     # templates weighted identically on every piece, each drawing sampled the
     # same vocabulary — circles at ~25% and a spread of everything else — so
-    # 637 geometric pieces shared one shape census. A piece now leans on a few
-    # templates: this one is rings and spirals, that one rectangles and
+    # 637 geometric pieces shared one shape census. A piece now HAS a
+    # vocabulary: this one is rings and spirals, that one rectangles and
     # patterns.
-    emphasis: List[str] = field(default_factory=list)
-    emphasis_weight: float = 1.0
+    emphasis: List[str] = field(default_factory=list)  # this piece's vocabulary
+    accent: float = 0.0         # share of stamps drawn from outside it
     hue_pos: float = 0.5        # where in the warm/cool band this piece centres
     hue_span_frac: float = 1.0  # how much of the band it uses (1.0 = the old full band)
+    layout: str = ""            # arrangement name; "" = the pre-2026-11-12 drift
+    anchors: List[Tuple[float, float]] = field(default_factory=list)
 
     def intentionality(self) -> float:
         """Shapes are complete forms — high commitment per mark."""
@@ -63,10 +87,71 @@ class GeometricState(EraState):
     def disposition(self) -> Dict[str, Any]:
         return {
             "emphasis": list(self.emphasis),
-            "emphasis_weight": round(self.emphasis_weight, 2),
+            "accent": round(self.accent, 3),
             "hue_pos": round(self.hue_pos, 3),
             "hue_span_frac": round(self.hue_span_frac, 3),
+            "layout": self.layout,
+            "anchor_count": len(self.anchors),
         }
+
+
+def _spaced_points(count: int, lo: float, hi: float, tries: int = 12) -> List[Tuple[float, float]]:
+    """*count* points in [lo, hi]^2, each the best of *tries* candidates by
+    distance to the points already placed (Mitchell's best-candidate). Keeps a
+    constellation's groups apart without a minimum-distance constant."""
+    points: List[Tuple[float, float]] = []
+    for _ in range(count):
+        best, best_d = None, -1.0
+        for _ in range(tries if points else 1):
+            c = (random.uniform(lo, hi), random.uniform(lo, hi))
+            d = min((math.hypot(c[0] - p[0], c[1] - p[1]) for p in points), default=0.0)
+            if d > best_d:
+                best, best_d = c, d
+        points.append(best)
+    return points
+
+
+def make_layout(name: str) -> List[Tuple[float, float]]:
+    """Anchor points for one piece's arrangement, in canvas pixels.
+
+    Every arrangement is a list of anchors; a stamp lands on one of them plus a
+    clarity-scaled jitter (see ``GeometricEra.drift_focus``). The numbers here
+    are proportions of the 240px canvas — they place a composition, they do not
+    compare against anything Lumen senses.
+    """
+    lo, hi = LAYOUT_MARGIN, CANVAS - LAYOUT_MARGIN
+    mid = CANVAS / 2.0
+    if name == "cluster":
+        # One gathering place, anywhere but hard against an edge — so the
+        # negative space falls differently from piece to piece.
+        return [(random.uniform(lo + 25, hi - 25), random.uniform(lo + 25, hi - 25))]
+    if name == "constellation":
+        return _spaced_points(random.randint(3, 6), lo, hi)
+    if name == "band":
+        # A line through a point near the middle, at any angle.
+        theta = random.uniform(0.0, math.pi)
+        cx = mid + random.uniform(-30, 30)
+        cy = mid + random.uniform(-30, 30)
+        count = random.randint(5, 9)
+        half = (hi - lo) / 2.0
+        pts = []
+        for i in range(count):
+            t = (i / (count - 1) - 0.5) * 2.0 * half
+            pts.append((cx + t * math.cos(theta), cy + t * math.sin(theta)))
+        return [(max(lo, min(hi, x)), max(lo, min(hi, y))) for x, y in pts]
+    if name == "ring":
+        cx = mid + random.uniform(-20, 20)
+        cy = mid + random.uniform(-20, 20)
+        radius = random.uniform(45, 80)
+        count = random.randint(6, 12)
+        sweep = random.uniform(math.pi, 2.0 * math.pi)  # an arc or a full ring
+        start = random.uniform(0.0, 2.0 * math.pi)
+        steps = count if sweep > 1.9 * math.pi else count - 1
+        pts = [(cx + radius * math.cos(start + sweep * i / max(1, steps)),
+                cy + radius * math.sin(start + sweep * i / max(1, steps)))
+               for i in range(count)]
+        return [(max(lo, min(hi, x)), max(lo, min(hi, y))) for x, y in pts]
+    return []
 
 
 def _band_sample(low: float, high: float, pos: float, span_frac: float) -> float:
@@ -93,38 +178,47 @@ class GeometricEra:
 
     # Completion tuning: each stamp is a big commitment — tires faster, needs fewer marks
     fatigue_rate = 2.0  # 2x base fatigue (whole shapes are exhausting)
+    # Every stamp is a complete gesture (gesture_remaining is always 1), so the
+    # engine counts each one as a gesture switch for fatigue, not only the
+    # stamps whose template differs from the one before. See drawing_engine.
+    each_mark_is_a_gesture = True
     min_marks_for_completion = 3  # 3 shapes can be a complete drawing
 
     def create_state(self, recent: Sequence[Mapping] = ()) -> GeometricState:
-        """Draw this piece's shape vocabulary and palette slice.
+        """Draw this piece's shape vocabulary, palette slice and arrangement.
 
-        The emphasis is a sample of the 16 templates, so no template is
-        favoured across the corpus and the shape census stays what it was —
-        only the per-piece concentration changes.
+        The vocabulary is a uniform sample of the 16 templates and the layout a
+        uniform choice, so no template or arrangement is favoured across the
+        corpus — only what a single piece holds changes.
         """
         shapes = GeometricState().gestures()
 
         def make() -> dict:
             return {
-                "emphasis": random.sample(shapes, EMPHASIS_COUNT),
-                "emphasis_weight": random.uniform(
-                    EMPHASIS_WEIGHT_MIN, EMPHASIS_WEIGHT_MAX
-                ),
+                "emphasis": random.sample(
+                    shapes, random.randint(VOCABULARY_MIN, VOCABULARY_MAX)),
+                "accent": random.uniform(ACCENT_MIN, ACCENT_MAX),
                 "hue_pos": random.random(),
                 "hue_span_frac": random.uniform(0.25, 1.0),
+                "layout": random.choice(LAYOUTS),
             }
 
         def distance(candidate: dict, prior: Mapping) -> float:
             shape = set_distance(candidate["emphasis"], prior.get("emphasis", ()))
             hue = abs(candidate["hue_pos"] - float(prior.get("hue_pos", 0.5)))
-            return 0.7 * shape + 0.3 * hue
+            # A prior recorded before layouts existed has no "layout" key and
+            # so differs from every candidate equally — no bias, not a guess.
+            layout = 0.0 if candidate["layout"] == prior.get("layout") else 1.0
+            return 0.5 * shape + 0.2 * hue + 0.3 * layout
 
         d = draw_distinct(make, distance, recent)
         state = GeometricState()
         state.emphasis = list(d["emphasis"])
-        state.emphasis_weight = d["emphasis_weight"]
+        state.accent = d["accent"]
         state.hue_pos = d["hue_pos"]
         state.hue_span_frac = d["hue_span_frac"]
+        state.layout = d["layout"]
+        state.anchors = make_layout(state.layout)
         return state
 
     def choose_gesture(
@@ -162,17 +256,22 @@ class GeometricEra:
             weights[12] = 2.0  # organic
             weights[15] = 1.5  # drip
 
-        # This piece's vocabulary multiplies the embodied weighting above
-        # rather than replacing it — clarity and stability still steer toward
-        # complex/structured/organic shapes, within the templates this piece
-        # favours. Non-emphasised shapes keep their weight, so nothing is
-        # unreachable.
-        if state.emphasis and state.emphasis_weight != 1.0:
-            for i, name in enumerate(shapes):
-                if name in state.emphasis:
-                    weights[i] *= state.emphasis_weight
+        # This piece's vocabulary. The embodied weighting above is kept and
+        # applied WITHIN whichever pool the stamp is drawn from — clarity and
+        # stability still steer toward complex/structured/organic forms among
+        # the shapes this piece is made of. A stamp comes from outside the
+        # vocabulary with probability `accent`, so no template is unreachable
+        # in any piece; it is merely rare.
+        pool = list(range(len(shapes)))
+        if state.emphasis:
+            inside = [i for i, name in enumerate(shapes) if name in state.emphasis]
+            outside = [i for i, name in enumerate(shapes) if name not in state.emphasis]
+            if inside:
+                stray = bool(outside) and random.random() < state.accent
+                pool = outside if stray else inside
 
-        state.gesture = random.choices(shapes, weights=weights, k=1)[0]
+        state.gesture = shapes[random.choices(
+            pool, weights=[weights[i] for i in pool], k=1)[0]]
         # One shape per gesture run — each shape is a complete mark
         state.gesture_remaining = 1
         # Pre-compute size based on energy (set via energy param in place_mark)
@@ -496,17 +595,29 @@ class GeometricEra:
         clarity: float = 0.5,
         canvas=None,
     ) -> Tuple[float, float, float]:
-        """Jump to new position after each shape.
+        """Jump to a new position after each shape.
 
         Geometric shapes are standalone — focus jumps rather than drifts.
-        Clarity modulates spread: high clarity = tighter clustering near
-        current position, low clarity = scattered across canvas.
+        Clarity sets how tightly a stamp keeps to the piece's arrangement:
+        high clarity = crisp structure, low clarity = the structure dissolves
+        into scatter. That is the same reading clarity always had here
+        (tight vs scattered); only what it is tight AROUND changed.
         """
         # Spread inversely proportional to clarity
-        # clarity 1.0 → spread 15 (tight cluster), clarity 0.0 → spread 55 (scattered)
+        # clarity 1.0 → spread 15 (tight), clarity 0.0 → spread 55 (scattered)
         spread = 15 + (1.0 - clarity) * 40
 
-        if clarity > 0.6:
+        if state.anchors:
+            # Land on one of this piece's anchors. The jitter shrinks with the
+            # number of anchors so the footprint per anchor scales with the
+            # share of the piece it carries (area ~ 1/n), and a nine-point band
+            # stays a band instead of smearing into one blob.
+            ax, ay = random.choice(state.anchors)
+            jitter = spread / math.sqrt(len(state.anchors))
+            focus_x = random.gauss(ax, jitter)
+            focus_y = random.gauss(ay, jitter)
+        elif clarity > 0.6:
+            # No arrangement (a bare GeometricState): the pre-2026-11-12 drift.
             # Focused: small jumps from current position
             focus_x += random.gauss(0, spread)
             focus_y += random.gauss(0, spread)
