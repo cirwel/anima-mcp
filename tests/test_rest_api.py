@@ -467,6 +467,119 @@ class TestRestStateAndLayers:
             data = json.loads(response.body)
         assert data["physical"]["pressure_hpa"] is None, "offline BMP280 must surface as null, not 0 hPa"
 
+    # -- A missing reading is null, not 0 (2026-11-12) ----------------------
+    # `x or 0` reported a dead sensor as "0.0°C / 0%" and rewrote a real 0.0.
+    # Pressure was already passed through; these pin the other channels.
+
+    @staticmethod
+    async def _state_payload(readings, *, governance=None, shm_data=None):
+        anima = SimpleNamespace(warmth=0.4, clarity=0.5, stability=0.6, presence=0.7,
+                                feeling=lambda: {"mood": "calm"})
+        identity = SimpleNamespace(name="Lumen", total_awakenings=3, total_alive_seconds=3600,
+                                   alive_ratio=lambda: 0.5, age_seconds=lambda: 7200)
+        store = SimpleNamespace(get_identity=lambda: identity, get_session_alive_seconds=lambda: 600)
+        activity = SimpleNamespace(get_sleep_summary=lambda: {"sessions": 1})
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5, "I": 0.6, "S": 0.4, "V": -0.1})
+        if governance is None:
+            governance = {"action": "proceed", "source": "unitares"}
+        with patch("anima_mcp.rest_api._check_rest_auth", lambda _req: True), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_store", return_value=store), \
+             patch("anima_mcp.accessors._get_last_governance_decision", return_value=governance), \
+             patch("anima_mcp.accessors._get_activity", return_value=activity), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=shm_data), \
+             patch("anima_mcp.rest_api.extract_neural_bands", return_value={"beta": 0.2}), \
+             patch("anima_mcp.rest_api.anima_to_body_eisv_projection", return_value=eisv):
+            response = await rest_api.rest_state(_make_request(path="/state"))
+        assert response.status_code == 200
+        return json.loads(response.body)
+
+    @staticmethod
+    async def _layers_payload(readings, *, governance=None):
+        anima = SimpleNamespace(warmth=0.4, clarity=0.5, stability=0.6, presence=0.7,
+                                feeling=lambda: {"mood": "steady"})
+        identity = SimpleNamespace(name="Lumen", total_awakenings=2, total_alive_seconds=1800,
+                                   alive_ratio=lambda: 0.5, age_seconds=lambda: 3600)
+        store = SimpleNamespace(get_identity=lambda: identity, get_session_alive_seconds=lambda: 120)
+        hub = SimpleNamespace(schema_history=[], history_size=0, last_trajectory=None, last_gap_delta=None)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.4, "I": 0.5, "S": 0.3, "V": -0.1})
+        with patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_store", return_value=store), \
+             patch("anima_mcp.accessors._get_last_governance_decision", return_value=governance or {}), \
+             patch("anima_mcp.accessors._get_activity", return_value=None), \
+             patch("anima_mcp.accessors._get_schema_hub", return_value=hub), \
+             patch("anima_mcp.rest_api.extract_neural_bands", return_value={"alpha": 0.3}), \
+             patch("anima_mcp.rest_api.anima_to_body_eisv_projection", return_value=eisv):
+            response = await rest_api.rest_layers(_make_request(path="/layers"))
+        assert response.status_code == 200
+        return json.loads(response.body)
+
+    _DEAD = dict(cpu_temp_c=None, ambient_temp_c=None, light_lux=None, humidity_pct=None,
+                 pressure_hpa=None, cpu_percent=None, memory_percent=None, disk_percent=None,
+                 timestamp="now")
+    _ZERO = dict(cpu_temp_c=0.0, ambient_temp_c=0.0, light_lux=0.0, humidity_pct=0.0,
+                 pressure_hpa=None, cpu_percent=0.0, memory_percent=0.0, disk_percent=0.0,
+                 timestamp="now")
+
+    async def test_rest_state_missing_readings_are_null_not_zero(self):
+        data = await self._state_payload(SimpleNamespace(**self._DEAD))
+        for key in ("cpu_temp", "ambient_temp", "light", "raw_light_lux", "humidity",
+                    "cpu_percent", "memory_percent", "disk_percent"):
+            assert data[key] is None, f"{key}: a dead sensor must read null, not 0"
+
+    async def test_rest_state_real_zero_survives(self):
+        data = await self._state_payload(SimpleNamespace(**self._ZERO))
+        for key in ("cpu_temp", "ambient_temp", "light", "raw_light_lux", "humidity",
+                    "cpu_percent", "memory_percent", "disk_percent"):
+            assert data[key] == 0.0 and data[key] is not None, key
+
+    async def test_rest_layers_missing_readings_are_null_not_zero(self):
+        data = await self._layers_payload(SimpleNamespace(**self._DEAD))
+        for key in ("ambient_temp_c", "humidity_pct", "light_lux", "raw_light_lux"):
+            assert data["physical"][key] is None, f"physical.{key}"
+        for key in ("cpu_temp_c", "cpu_percent", "memory_percent", "disk_percent"):
+            assert data["system"][key] is None, f"system.{key}"
+
+    async def test_rest_layers_real_zero_survives(self):
+        data = await self._layers_payload(SimpleNamespace(**self._ZERO))
+        assert data["physical"]["ambient_temp_c"] == 0.0
+        assert data["physical"]["light_lux"] == 0.0
+        assert data["system"]["cpu_percent"] == 0.0
+
+    async def test_rest_state_surprise_comes_from_the_broker_or_is_null(self):
+        """`"surprise": 0` was a constant that read as a measurement."""
+        readings = SimpleNamespace(**self._ZERO)
+        measured = await self._state_payload(
+            readings, shm_data={"metacognition": {"surprise": 0.37}}
+        )
+        assert measured["surprise"] == 0.37
+
+        calm = await self._state_payload(
+            readings, shm_data={"metacognition": {"surprise": 0.0}}
+        )
+        assert calm["surprise"] == 0.0, "a measured zero is a measurement"
+
+        for shm_data in (None, {}, {"metacognition": None}, {"metacognition": {}},
+                         {"metacognition": {"surprise": None}},
+                         {"metacognition": {"surprise": "high"}},
+                         {"metacognition": {"surprise": True}},
+                         {"metacognition": {"surprise": float("nan")}}):
+            data = await self._state_payload(readings, shm_data=shm_data)
+            assert data["surprise"] is None, shm_data
+
+    async def test_governance_margin_unknown_is_not_rendered_as_healthy(self):
+        """The bridge now leaves an unsent margin as None (2026-11-12)."""
+        gov = {"action": "pause", "margin": None, "source": "unitares"}
+        readings = SimpleNamespace(**self._ZERO)
+
+        state = await self._state_payload(readings, governance=gov)
+        assert state["governance"]["decision"] == "PAUSE"
+        assert state["governance"]["margin"] is None
+
+        layers = await self._layers_payload(readings, governance=gov)
+        assert layers["governance"]["decision"] == "PAUSE"
+        assert layers["governance"]["margin"] is None
+
 
 @pytest.mark.asyncio
 class TestRestHandlerDelegates:
