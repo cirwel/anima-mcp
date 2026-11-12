@@ -357,6 +357,8 @@ def run_creature():
 
             # 2a-ii. Activity State: Determine wakefulness level
             activity_state = None
+            # A message to Lumen (consumed above as the social boost) wakes it.
+            runtime.wake_on_interaction(activity_manager)
             if activity_manager:
                 activity_state = activity_manager.get_state(
                     presence=anima.presence,
