@@ -77,7 +77,7 @@ anima-broker-ex.service     anima-broker.service        anima.service
 | Service | Runs | Role |
 |---------|------|------|
 | `anima-broker-ex.service` | Elixir release (`anima_broker/_build/prod/rel/`) | Owns the I2C env sensors (writes the shadow envelope the Python broker consumes) and is the **sole UNITARES caller** — `AnimaBroker.Governance.Client` checks in as Lumen every ~180s |
-| `anima-broker.service` | `anima-creature` | Hardware broker - learning, activity state; env sensors come FROM the Elixir shadow; governance comes FROM the shadow too (`ANIMA_GOVERNANCE_FROM_SHM`, Python's own check-in loop disabled). Does NOT own display/LEDs — `stable_creature.py:62`: server owns LED hardware |
+| `anima-broker.service` | `anima-creature` | Hardware broker - learning, activity state; env sensors come FROM the Elixir shadow; governance comes FROM the shadow too (`ANIMA_GOVERNANCE_FROM_SHM`, Python's own check-in loop disabled). Does NOT own display/LEDs — see the NOTE above the imports in `stable_creature.py`: server owns LED hardware |
 | `anima.service` | `anima --http` | MCP server - serves tools, reads shared memory, drives display + LEDs |
 
 **All three must run.** This file said "two services" from the Phase-1/2 Elixir
@@ -100,32 +100,39 @@ anima-broker-ex`).
 
 ### MCP Server Structure
 
-`server.py` is the main loop coordinator (~1,900 lines). Core subsystems are extracted into dedicated modules:
+`server.py` is the main loop coordinator (~970 lines since #273; this file said ~1,900 until 2026-11-12). Core subsystems are extracted into dedicated modules:
 
 | Module | Purpose |
 |--------|---------|
-| `server.py` | Main loop (`_update_display_loop`), transport layers, `main()` entry point |
+| `server.py` | Main loop skeleton (`_update_display_loop`: metacognition/self-prediction step, primitive language, metrics persistence; dispatches the phases below), transport layers, `main()` entry point |
+| `display_loop.py` | Main-loop phases called from `_update_display_loop`: startup, per-tick telemetry, SHM governance sync + fallback call + display/LED/voice render (`sync_governance_and_render_display`), periodic learning / reflection / growth / **goals** / self-derivation / meta-learning / schema (`run_periodic_growth_and_learning_phases`) |
+| `loop_phases.py` | Phase bodies: `server_governance_fallback`, unified reflection, learned/surprise questions, grounded self-answers, schema extraction, self-model phase, `self_reflect` |
+| `agency_runtime.py` | Server agency phase (`run_agency_phase`) — posts `context: "agency: <action>"` questions |
 | `ctx_ref.py` | Single source of truth for `_ctx` (ServerContext pointer) |
 | `accessors.py` | State accessors (`_get_store`, `_get_sensors`, etc.), lazy singletons |
-| `lifecycle.py` | `wake()`/`sleep()` lifecycle management |
+| `lifecycle.py` | `wake()`/`sleep()` lifecycle management; registers the health subsystems and their probes |
 | `input_handler.py` | Joystick/button polling at ~60fps, input event dispatch |
-| `loop_phases.py` | Main loop phase helpers (governance fallback, reflections, schema extraction) |
 | `server_context.py` | `ServerContext` dataclass — mutable state container |
 | `server_state.py` | Constants and pure helpers (intervals, thresholds) |
 | `rest_api.py` | REST endpoint functions (health, dashboard, state, QA, gallery, etc.) |
 | `tool_registry.py` | Tool definitions (TOOLS list), HANDLERS dict, FastMCP setup |
-| `handlers/system_ops.py` | git_pull, system_service, power, deploy, tailscale, ssh_port |
+| `handlers/system_ops.py` | git_pull, system_service, system_power, deploy_from_github, setup_tailscale, fix_ssh_port |
 | `handlers/state_queries.py` | get_state, get_identity, read_sensors, get_health, get_calibration |
-| `handlers/knowledge.py` | get_self_knowledge, get_growth, get_qa_insights, get_trajectory |
-| `handlers/display_ops.py` | capture_screen, show_face, diagnostics, manage_display |
+| `handlers/knowledge.py` | get_self_knowledge, get_growth, get_qa_insights, get_trajectory, get_eisv_trajectory_state, query |
+| `handlers/display_ops.py` | capture_screen, diagnostics, manage_display (`show_face` is an internal handler reached through manage_display, not a registered tool) |
 | `handlers/communication.py` | lumen_qa, post_message, say, configure_voice, primitive_feedback |
-| `handlers/workflows.py` | unified_workflow, next_steps, set_calibration, get_lumen_context |
+| `handlers/workflows.py` | unified_workflow, next_steps, set_calibration, get_lumen_context, learning_visualization |
+| `handlers/self_iteration.py` | self_iteration (backed by `self_iteration.py` plus the `self_iteration_{ledger,attention,pipeline,application,canary,execution,sandbox,verification}.py` modules split out in #270/#271) |
 
-Handler modules import state accessors from `accessors.py` (e.g., `from ..accessors import _get_store`). Extracted modules (`lifecycle.py`, `input_handler.py`, `loop_phases.py`) access `_ctx` via `ctx_ref.py`.
+Handler modules import state accessors from `accessors.py` (e.g., `from ..accessors import _get_store`). `lifecycle.py`, `input_handler.py` and `loop_phases.py` access `_ctx` via `ctx_ref.py`; `display_loop.py` and `agency_runtime.py` receive the context as an argument (`display_loop.py` reaches server-level helpers through `_srv()`).
+
+Broker side: `stable_creature.py` keeps `run_creature()`/`main()`; the phase methods live in `creature_runtime.py` (`CreatureRuntimeMixin`).
+
+⚠️ **When this file names a module, check it.** Four refactors (#270–#273) moved code between 2026-10 and 2026-11 and 17 statements here went stale without anyone noticing (audited 2026-11-12). The cost of a wrong pointer here is an agent editing a file that no longer drives the behavior — it has happened (#141/#166).
 
 ### Health Monitoring
 
-`health.py` tracks 12 subsystems with heartbeats + functional probes. Rendered on LCD health screen.
+`health.py` tracks 13 subsystems with heartbeats + functional probes (registered in `lifecycle.py`; the thirteenth is the probe-only `outbound_heartbeat`). Rendered on LCD health screen.
 
 | Status | Color | Meaning |
 |--------|-------|---------|
@@ -229,11 +236,14 @@ API so Federation client registrations survive recovery; token-bearing OAuth
 state is intentionally excluded from the unencrypted off-site archive.
 
 **Persistence rule:** no `get_*` singleton may lean on the bare
-`db_path="anima.db"` default. All 20 now resolve through
+`db_path="anima.db"` default. Every store resolves through
 `db_paths.resolve_db_path()` — **explicit > `$ANIMA_DB` > `~/.anima/anima.db`**,
 never the working directory. `ActionSelector.__init__` logs the resolved
 absolute path and the caller that pinned it, because `get_action_selector()`
-is first-call-wins and that race used to be silent.
+is first-call-wins and that race used to be silent. (An earlier version of
+this file said "all 20"; the number was not reproducible and one store was
+outside the rule — `SelfReflectionSystem` ignored `$ANIMA_DB` and bound a bare
+`"anima.db"` to the working directory until 2026-11-12.)
 
 Server-side only:
 
@@ -283,7 +293,7 @@ actually stands:
 
 | Channel | Consumers |
 |---------|-----------|
-| **gated residual** (`gated_external_light_lux`) | clarity (`anima.py` `external_light` component), drawing `light_regime`, activity state (`server.py` passes it as `light_level`), growth environment preferences, `self_schema`, UNITARES bridge, `get_state` |
+| **gated residual** (`gated_external_light_lux`) | clarity (`anima.py` `external_light` component), drawing `light_regime`, activity state (`display_loop.py` passes it as `light_level`), growth environment preferences, `self_schema`, UNITARES bridge, `get_state` |
 | **raw lux** (`readings.light_lux`) | the info screens (labelled "raw lux (room+LED)"), identity/history recording, clarity's *sensor-coverage* count, and `light_attribution.py`'s own instrument |
 
 Raw lux is now the **display-and-record** channel; the residual is the
@@ -299,8 +309,13 @@ reachable, which would pin `light_factor` in its interpolation band and bias
 question about the residual's distribution, not something to answer by moving
 the constant: `diagnostics(channel_distributions=true)` reports p05/p50/p95 per
 channel from `drawing_records` so it can be checked rather than guessed. Read
-p95 against the cut. **Unmeasured as of 2026-08-29** — the derivation has never
-run on Lumen. The gap is not cosmetic — measured live, raw 696 lux against
+p95 against the cut. **Measured 2026-11-12** (90 days, one row per piece):
+residual n=221, p05 0.06, p50 27.8, **p95 520**, max 1386 — against raw p50
+82, p95 688. So `>500` is still reachable, barely (about one piece in twenty),
+and `<10` is common; the cut is not dead. Two things to carry forward: 112 of
+333 pieces (34%) recorded a NULL residual, so a third of the time activity
+state gets no light at all and scores the neutral `light_factor = 0.5`; and
+the population is piece completions, not uniform time. The gap is not cosmetic — measured live, raw 696 lux against
 a 226 lux residual with a 469 lux self-glow estimate, so any reasoning that
 treats clarity as a function of raw lux is working from a number ~3x too high.
 When the residual is unavailable the consumers fail toward *unknown* rather than
@@ -317,7 +332,7 @@ when the residual is unavailable):
 
 ### Goal System
 
-Goals live in `growth/goals.py` and are wired into `server.py`'s main loop:
+Goals live in `growth/goals.py` and are wired into the main loop's periodic phase (`display_loop.py`, `run_periodic_growth_and_learning_phases`):
 
 | Interval | Action |
 |----------|--------|
@@ -403,12 +418,12 @@ Goals are **data-grounded** — they emerge from Lumen's actual experience:
 
 ### Self-Reflection & Self-Knowledge
 
-`self_reflection.py` runs during the `reflect()` cycle (`UNIFIED_REFLECTION_INTERVAL = 900` iter, ~30min). It discovers insights from multiple sources:
+`SelfReflectionSystem.reflect()` (`self_reflection.py`) is called from `loop_phases.self_reflect`, gated by `EXPRESSION_INTERVAL` (900 iter, ~30min) and then by its own one-hour interval — not by `UNIFIED_REFLECTION_INTERVAL`, which gates `lumen_unified_reflect`. The analyzers below live in `self_reflection_analyzers.py` (`SelfReflectionAnalyzersMixin`, split out in #271); `self_reflection.py` keeps the schema, migrations and `reflect()`. It discovers insights from multiple sources:
 
 | Analyzer | Source | Example Insight |
 |----------|--------|----------------|
 | `analyze_patterns()` | State history (24h) | "My warmth tends to be best at night" |
-| `_analyze_preference_insights()` | Growth preferences (confidence > 0.8) | "i know this about myself: I feel calmer when it's dim" |
+| `_analyze_preference_insights()` | Growth preferences (confidence >= 0.8, 10+ evidence) | "i know this about myself: I feel calmer when it's dim" |
 | `_analyze_belief_insights()` | Self-model beliefs (confidence > 0.7, 10+ evidence) | "i am fairly confident that light affects my warmth" |
 | `_analyze_drawing_insights()` | Drawing preferences (5+ drawings) | "i tend to draw at night", "drawing seems to help me feel better" |
 
@@ -464,11 +479,11 @@ The `ActivityManager` (in broker) controls Lumen's wakefulness:
 
 Lumen draws autonomously on the 240x240 notepad screen. The system has two layers:
 
-**Engine** (in `display/drawing_engine.py` — universal, stays fixed):
-- `CanvasState` — pixel buffer, persistence, attention/narrative state
-- `DrawingState` — EISV core + attention signals + coherence tracking + narrative arc
-- `DrawingIntent` — focus position, mark count, state (energy is attention-derived)
-- `_lumen_draw()` — orchestration loop, delegates to active era
+**Engine** (universal, stays fixed). State structures live in `display/drawing_state.py` since #272; `display/drawing_engine.py` re-imports them and keeps `DrawingEngine`:
+- `CanvasState` (`drawing_state.py`) — pixel buffer, persistence, attention/narrative state
+- `DrawingState` (`drawing_state.py`) — EISV core + attention signals + coherence tracking + narrative arc; also `narrative_complete()`, `coherence_settled()`, `curiosity_drain()`, `_curiosity_pivot()` and the `SETTLED_*` / `FROZEN_*` / `COVERAGE_BIAS_*` constants
+- `DrawingIntent` (`drawing_state.py`) — focus position, mark count, state (energy is attention-derived)
+- `DrawingEngine.draw()` (`drawing_engine.py`) — orchestration loop, delegates to active era (`_lumen_draw()` in `screens.py` is a one-line wrapper around it)
 - `_update_attention()` — curiosity depletes exploring, regenerates with patterns
 - `_update_coherence_tracking()` — tracks C history and velocity for settling detection
 - `_update_narrative_arc()` — state-driven phase transitions (opening→developing→resolving→closing)
@@ -763,7 +778,49 @@ against a balanced spread of 0.062 (under a tenth of a standard deviation) and
 called it a pass. The directional tests are paired now (`_paired_gap`), the
 seed count is 32, and geometric joins gestural and field in the documented
 no-op set. Geometric still answers strongly to `dense` (−0.143, 0 of 64) — the
-era responds to one direction, not neither.
+era responds to one direction, not neither. (That held until 2026-11-12: once
+geometric stamps land on a per-piece arrangement instead of random-walking from
+the biased position, `sparse` is real — +0.042 paired over 256 seeds, 225 wins —
+and `dense` weakens to −0.062. The no-op set is gestural/`sparse` and
+field/`dense`. See the next section.)
+
+**Why geometric read as "kitchen sink" (fixed 2026-11-12).** The operator's
+read, and again it was exact. Measured through the real `DrawingEngine` over
+120 pieces: a ~70-stamp geometric piece used **15.1 of the 16 templates**, its
+four commonest shapes carried 52% of the stamps, and every stamp either took a
+shape-wide random step from the last one (`clarity > 0.6`, ~92% of lived
+clarity) or jumped to the canvas centre — sixteen kinds of form burying each
+other in one heap. The 2026-09-17 emphasis had not touched this: it multiplied
+4 of 16 weights by 2.0–3.5 and left the other 12 at full weight, which moved
+15.7 templates per piece to 15.3. ⛔ `weighted_choice`'s rule — "a piece has a
+leaning, not a restricted alphabet" — is right for an era with 3–5 gestures
+and is exactly what produces a kitchen sink in an era with sixteen whole forms
+and seventy stamps. Do not apply it back to geometric.
+
+A geometric piece now draws once: a **vocabulary** of 2–4 templates that
+carries it (~94% of stamps; a per-piece `accent` share of 0–12% for strays, so
+nothing is unreachable inside a piece) and an **arrangement** — `cluster`,
+`constellation`, `band` or `ring` — whose anchors every stamp lands on, with a
+clarity-scaled jitter so clarity still means tight vs scattered. Both are
+uniform draws, so nothing is favoured or retired across the corpus. After:
+6.7 templates per piece, top-four share 0.95. `tests/test_geometric_composition.py`
+pins it.
+
+⚠️ **This one did move an input to a gate, deliberately, and the size is
+measured.** Fatigue accrues per gesture switch, and the engine detects a switch
+by the gesture's NAME changing. For geometric that was a switch on ~91% of
+stamps — but only because every piece sampled the whole alphabet. Give a piece
+a vocabulary and the name repeats (70%), fatigue slows, and pieces ran 25%
+longer (68 → 85 stamps) purely because their shapes agreed. `GeometricEra`
+now declares `each_mark_is_a_gesture` and the engine counts every stamp as the
+gesture it is. Median piece length: 71 stamps before, 67 after.
+`bailout_fatigue` itself (`fatigue > 0.90`) is untouched. Side effects, all
+measured: pixels per piece fall ~25% (mean 12.8k → 9.6k; stamps on an anchor
+overlap), pieces reaching the 15,000px ceiling go 27/120 → 12/120, and
+geometric's behavioural coherence rises 0.37 → 0.47 (lower gesture entropy) —
+still unable to exceed 0.6, so no earned path newly fires. Geometric rows in
+`drawing_records` before and after 2026-11-12 are therefore not one
+population for pixel count or coherence.
 
 `coverage_target` ("sparse"/"balanced"/"dense") steers marks via
 `_apply_coverage_bias()`, which leans a gesture boundary toward the sparsest or
@@ -785,7 +842,7 @@ field as "read by nothing" until 2026-08-29, ~1 week after the consumer landed.)
 | Phase | Entry Condition |
 |-------|-----------------|
 | opening | Fresh canvas or regression (low I momentum) |
-| developing | I momentum > 0.4, explored (10+ marks) |
+| developing | I momentum > 0.15, explored (10+ marks) |
 | resolving | C > 0.6, coherence velocity stable |
 | closing | narrative_complete() |
 
@@ -795,21 +852,24 @@ field as "read by nothing" until 2026-08-29, ~1 week after the consumer landed.)
 | `gestural` | dot, stroke, curve, cluster, drag | Direction locks, orbital curves, full palette | ✅ |
 | `pointillist` | single, pair, trio | Density zones, optical color mixing, complementary hues | ✅ |
 | `field` | flow_dot, flow_dash, flow_strand | Vector-field flow lines, near-monochromatic | ✅ |
-| `geometric` | 16 shape templates (circle, spiral, starburst, etc.) | Complete forms, stamps whole shapes per mark | ✅ |
+| `geometric` | 16 shape templates (circle, spiral, starburst, etc.) | Complete forms, stamps whole shapes per mark; each piece keeps to a 2–4 template vocabulary on one arrangement (cluster / constellation / band / ring) | ✅ |
 | `resonance` | sediment, flow, scratch | Memory-field: marks deposit into a 48×48 field that decays/diffuses; revisits accumulated regions for layered, resonant forms (pure NumPy) | ✅ |
 
 **Every era draws a per-piece disposition** (`EraState.disposition()`, see
 above) — gestural a palette offset/span plus a lead primitive, geometric a
-4-of-16 shape emphasis plus a slice of its warm/cool band, resonance a colour
+2–4 template vocabulary, an accent share, an arrangement and a slice of its
+warm/cool band, resonance a colour
 key, field its long-standing seeds, pointillist its hue anchor. It is recorded
 per piece in `drawing_records.disposition`, so "did this actually vary the
 work?" is answerable from the corpus rather than argued.
 
-**All eras are equal peers.** Select via the art eras screen (joystick up/down + button) or MCP. Auto-rotate is a separate toggle (off by default) — when on, `choose_next_era()` rotates through all registered eras on canvas clear. Era name persists in `canvas.json`.
+**All eras are equal peers.** Select via the art eras screen (joystick up/down + button) or MCP. Auto-rotate is a separate toggle (off by default) — when on, `choose_next_era()` picks the next era (a weighted random choice among registered eras, not a fixed cycle) on canvas clear. Era name persists in `canvas.json`.
 
 **Key files:**
 | File | Purpose |
 |------|---------|
+| `display/drawing_engine.py` | `DrawingEngine` — the mark loop, attention/coherence/arc updates, completion |
+| `display/drawing_state.py` | `CanvasState`, `DrawingState`, `DrawingIntent`, completion gates and their constants |
 | `display/art_era.py` | `EraState` base class + `ArtEra` protocol |
 | `display/eras/__init__.py` | Era registry, `auto_rotate` toggle, rotation logic |
 | `display/eras/gestural.py` | Gestural era (5 micro-primitives) |
@@ -826,7 +886,7 @@ work?" is answerable from the corpus rather than argued.
 
 **Adding a new era:**
 1. Create `display/eras/myera.py` with `MyEraState(EraState)` + `MyEra` class
-2. Implement: `create_state()`, `choose_gesture()`, `place_mark()`, `drift_focus()`, `generate_color()`
+2. Implement: `create_state(recent=())`, `choose_gesture()`, `place_mark()`, `drift_focus()`, `generate_color()`
 3. Register in `display/eras/__init__.py`: `from .myera import MyEra; register_era(MyEra())`
 4. The `EraState.intentionality()` method bridges to EISV — report commitment level [0,1]
 
@@ -886,7 +946,7 @@ from the live envelope, checks in as Lumen's own UUID every ~180s, and writes th
 decision to the SHADOW envelope with a `governance_at` timestamp. The Python
 broker (`stable_creature.py`) runs in passthrough (`ANIMA_GOVERNANCE_FROM_SHM`);
 its own check-in loop is disabled and it republishes the shadow's governance
-slice into the live envelope. The **server** (`server.py`) reads governance from SHM and has a fallback: if no "via unitares" decision arrives for 240s (`SERVER_GOVERNANCE_FALLBACK_SECONDS`), the server calls UNITARES directly using its native async event loop. This fallback exists because the broker's sync+ThreadPoolExecutor+new-event-loop pattern has reliability issues with aiohttp sessions.
+slice into the live envelope. The **server** reads governance from SHM (`display_loop.py`, `sync_governance_and_render_display`) and has a fallback (`loop_phases.server_governance_fallback`): if no "via unitares" decision arrives for 240s (`SERVER_GOVERNANCE_FALLBACK_SECONDS`), the server calls UNITARES directly using its native async event loop. This fallback exists because the broker's sync+ThreadPoolExecutor+new-event-loop pattern has reliability issues with aiohttp sessions.
 
 ```
 UNITARES_URL=http://<tailscale-ip>:8767/mcp/  # verify Mac IP with `tailscale status`
@@ -899,14 +959,14 @@ Projects anima into body EISV telemetry: Warmth→Energy proxy, Clarity→Integr
 **Circuit breaker** (in `unitares_bridge.py`): 2 consecutive failures trigger exponential backoff (15s→30s→60s→120s). Any success resets to 15s.
 
 **Three EISV contexts:**
-- **DrawingEISV** (screens.py) — proprioceptive, drives drawing behavior (closed loop)
+- **DrawingEISV** (`display/drawing_state.py`, an alias of `DrawingState`, driven by `DrawingEngine`) — proprioceptive, drives drawing behavior (closed loop)
 - **Body EISV projection** (eisv_mapper.py) — lossy anima→EISV telemetry used by trajectory awareness and submitted as governance sensor evidence
 - **Governance EISV** (UNITARES) — behavioral primary estimate plus separately exposed ODE fallback/diagnostics; never substitute the body projection
 
 Runtime payloads use `body_anima`, `body_eisv_projection`, `drawing_eisv`, and `governance_eisv`. Bare `anima` and `eisv` are compatibility aliases and must carry provenance.
 
 Local fallback (`_local_governance()`) runs simple threshold checks when Mac unreachable — more trigger-happy.
-Server syncs `_last_governance_decision` from SHM when `governance_at` is within `SHM_GOVERNANCE_STALE_SECONDS` (210s).
+Server syncs `_ctx.last_governance_decision` from SHM when `governance_at` is within `SHM_GOVERNANCE_STALE_SECONDS` (210s).
 
 ### Reading Lumen's own ranges
 
@@ -925,7 +985,20 @@ is never persisted — `state_history` holds the raw anima it is smoothed from,
 and an EMA shares its source's mean with a *narrower* spread. So a percentile
 already clear of a temperament cut is clear there too (conclusive); one that
 crosses it here may not cross there (inconclusive). The payload carries this
-caveat with the numbers. Both questions are **unmeasured as of 2026-08-29**.
+caveat with the numbers. **Measured 2026-11-12** (90 days, n=17,405):
+
+| Dimension | min | p05 | p25 | p50 | p75 | p95 | max |
+|-----------|-----|-----|-----|-----|-----|-----|-----|
+| warmth | 0.306 | 0.366 | 0.422 | 0.495 | 0.582 | 0.701 | 0.805 |
+| clarity | 0.488 | 0.572 | 0.724 | 0.813 | 0.865 | 0.942 | 1.000 |
+| stability | 0.519 | 0.738 | 0.784 | 0.809 | 0.835 | 0.865 | 0.992 |
+| presence | 0.568 | 0.703 | 0.709 | 0.714 | 0.719 | 0.733 | 0.880 |
+
+`presence_baseline_low` (<0.35) is a **constant-verdict belief, conclusively**:
+the raw minimum over 90 days is 0.568, and temperament is narrower still.
+`warmth_baseline_low` (<0.40) is **inconclusive**: raw warmth crosses the cut
+(between p05 and p25), so temperament may or may not. The light question is
+answered in the Light Sensor section above.
 
 ## Identity, Continuity, and Control
 
@@ -1009,7 +1082,7 @@ Things agents keep re-discovering. Read this so you don't waste time.
     "readings": { "cpu_temp_c": ..., "eeg_delta_power": ... },
     "anima": { "warmth": 0.36, "clarity": 0.73, ... },
     "led_proprioception": { "source": "led_hardware_controller", "brightness": 0.04, "optical_drive": 0.02 },
-    "light_attribution": { "mode": "shadow", "status": "warming", "raw_lux": 12.8, "external_lux_residual": null, "used_by_clarity": false },
+    "light_attribution": { "mode": "raw_preserving_gated", "status": "warming", "raw_lux": 12.8, "external_lux_residual": null, "used_by_clarity": false },
     "wifi_connected": true,
     "activity": { "level": "active", "reason": "engaged" },
     "learning": {

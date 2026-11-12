@@ -129,3 +129,37 @@ class TestActionSelectorBinding:
         err = capsys.readouterr().err
         assert "[Agency] action store:" in err
         assert str(pinned) in err
+
+
+class TestReflectionStoreFollowsTheRule:
+    """`SelfReflectionSystem` was the one store outside the persistence rule
+    (found 2026-11-12): an empty path hard-coded ~/.anima/anima.db and ignored
+    $ANIMA_DB, and a bare "anima.db" — which `loop_phases` passes when no
+    identity store is up yet — bound to the working directory. The singleton
+    is first-call-wins, so whichever caller came first decided where Lumen's
+    insights lived."""
+
+    def test_env_used_when_caller_says_nothing(self, monkeypatch, tmp_path):
+        from anima_mcp.self_reflection import SelfReflectionSystem
+
+        target = tmp_path / "from_env.db"
+        monkeypatch.setenv("ANIMA_DB", str(target))
+        assert SelfReflectionSystem().db_path == target
+        assert SelfReflectionSystem("").db_path == target
+
+    def test_bare_default_does_not_bind_to_cwd(self, monkeypatch, tmp_path):
+        from anima_mcp.self_reflection import SelfReflectionSystem
+
+        monkeypatch.delenv("ANIMA_DB", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        resolved = SelfReflectionSystem("anima.db").db_path
+        assert resolved.is_absolute()
+        assert resolved == tmp_path / "home" / ".anima" / "anima.db"
+
+    def test_explicit_path_wins(self, monkeypatch, tmp_path):
+        from anima_mcp.self_reflection import SelfReflectionSystem
+
+        monkeypatch.setenv("ANIMA_DB", str(tmp_path / "from_env.db"))
+        explicit = tmp_path / "explicit.db"
+        assert SelfReflectionSystem(str(explicit)).db_path == explicit

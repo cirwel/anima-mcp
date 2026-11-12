@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
+from .db_paths import resolve_db_path
 from .self_reflection_analyzers import (  # noqa: F401
     InsightCategory,
     REFLECTION_EPSILON,
@@ -52,9 +53,12 @@ class SelfReflectionSystem(SelfReflectionAnalyzersMixin):
     """
 
     def __init__(self, db_path: str = ""):
-        if not db_path:
-            db_path = str(Path.home() / ".anima" / "anima.db")
-        self.db_path = Path(db_path)
+        # explicit > $ANIMA_DB > ~/.anima/anima.db, like every other store.
+        # Until 2026-11-12 an empty path hard-coded ~/.anima/anima.db (ignoring
+        # $ANIMA_DB) and a bare "anima.db" — which one caller passes when no
+        # store is up yet — bound to the working directory. The singleton is
+        # first-call-wins, so either could pin the insights to the wrong file.
+        self.db_path = Path(resolve_db_path(db_path or None))
         self._conn: Optional[sqlite3.Connection] = None
         self._insights: Dict[str, SelfInsight] = {}
         # Once-per-process audible suppression of constant sensor channels.
