@@ -433,3 +433,63 @@ class TestOutboundHeartbeatHealth:
         reg.register("voice", probe=lambda: False, debounce_seconds=6.0, optional=True)
         reg.heartbeat("voice")
         assert reg.get_subsystem("voice").get_status() == "absent"
+
+
+class TestOptionalEvaluatedVerdict:
+    """`absent` means "cannot tell yet" -- never "told, and it was bad".
+
+    2026-11-12: thermal_trend and memory_pressure became optional so a fresh
+    boot with no metrics reads absent instead of pinning overall(). But the
+    `_ever_ok` guard was armed only by an ok result, so a threshold crossed on
+    the very first evaluation would have read "absent" too. A details dict can
+    now say it reached a real verdict (`"evaluated": True`).
+    """
+
+    def test_bad_first_verdict_is_degraded_not_absent(self):
+        reg = HealthRegistry()
+        reg.register(
+            "thermal_trend",
+            probe=lambda: {"ok": False, "evaluated": True, "state": "rising_fast"},
+            optional=True,
+        )
+        reg.heartbeat("thermal_trend")
+        assert reg.get_subsystem("thermal_trend").get_status() == "degraded"
+        assert reg.overall() == "degraded"
+
+    def test_unknown_without_a_verdict_stays_absent(self):
+        reg = HealthRegistry()
+        reg.register(
+            "thermal_trend",
+            probe=lambda: {"ok": False, "state": "unknown"},
+            optional=True,
+        )
+        reg.heartbeat("thermal_trend")
+        assert reg.get_subsystem("thermal_trend").get_status() == "absent"
+        assert reg.overall() == "ok"
+
+    def test_unknown_after_a_verdict_is_degraded(self):
+        verdict = {"v": {"ok": False, "evaluated": True}}
+        reg = HealthRegistry()
+        reg.register("thermal_trend", probe=lambda: verdict["v"], optional=True)
+        reg.heartbeat("thermal_trend")
+        sub = reg.get_subsystem("thermal_trend")
+        assert sub.get_status() == "degraded"
+
+        verdict["v"] = {"ok": False, "state": "unknown"}
+        sub.last_probe_time = 0.0
+        assert sub.get_status() == "degraded"
+
+    def test_evaluated_never_makes_a_failing_probe_ok(self):
+        reg = HealthRegistry()
+        reg.register("x", probe=lambda: {"ok": False, "evaluated": True})
+        reg.heartbeat("x")
+        assert reg.get_subsystem("x").get_status() == "degraded"
+        assert reg.get_subsystem("x").last_probe_ok is False
+
+    def test_only_a_literal_true_counts(self):
+        reg = HealthRegistry()
+        reg.register(
+            "x", probe=lambda: {"ok": False, "evaluated": "yes"}, optional=True
+        )
+        reg.heartbeat("x")
+        assert reg.get_subsystem("x").get_status() == "absent"
