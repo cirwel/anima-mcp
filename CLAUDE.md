@@ -150,6 +150,23 @@ anywhere else could not change `overall` at all. The signal was saturated.
 worked even once, a later failure is a genuine `degraded`, not `absent`.
 Do not "fix" a failing probe by making it return True.
 
+**A probe that cannot tell says so (2026-11-12).** `thermal_trend` and
+`memory_pressure` used to return True for no store, too few rows, NULL values
+and any exception, so they could only read ok or threshold-crossed — a dead
+metrics writer looked like a cool, roomy Pi. They now return a details dict:
+no evidence is `ok: False, state: "unknown"`, and a real verdict (good or bad)
+carries `evaluated: True`. Both are `optional`, and `_ever_ok` arms on
+`evaluated` as well as on ok, so a fresh boot reads `absent`, a probe that had
+data and lost it reads `degraded`, and a first verdict over threshold reads
+`degraded` rather than hiding as `absent`. Their heartbeat fires only when a
+`system_metrics` row was actually written. The `sensors` probe fails when ALL
+environment channels are absent (it used to pass on a fresh envelope with every
+channel None) and names present/missing channels in its detail. `leds` fails
+after 3 consecutive DotStar frame-write failures and recovers on the first good
+frame; until then `get_proprioceptive_state()["brightness"]` is None, not the
+last value. ⛔ When adding a probe, return the dict form and decide what "I
+cannot tell" looks like before deciding what ok looks like.
+
 Per-subsystem stale thresholds: fast subsystems (sensors, anima) use 30s default; slow subsystems (growth) use 90s. Governance uses dedicated SHM freshness thresholds (currently 210s).
 
 **Day-summary health** checks both writer liveness (`written_at`) and the newest
