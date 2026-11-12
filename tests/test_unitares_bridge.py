@@ -748,3 +748,132 @@ def test_server_bridge_uses_get_identity():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# A response without a verdict is a failed check-in (2026-11-12).
+#
+# Before: any payload that parsed — `{}`, a refusal shape the bridge did not
+# recognise, a plain-text body — was returned as action="proceed",
+# margin="comfortable", source="unitares". That reset the circuit breaker,
+# advanced the server's last-UNITARES-success clock, marked governance
+# connected and heartbeat governance health: a fabricated healthy verdict
+# (invariant 2). The Elixir client already treats it as a failure.
+# ---------------------------------------------------------------------------
+
+async def _check_in_with_payload(payload_text):
+    """Run check_in against a UNITARES that answers 200 with `payload_text`."""
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    bridge.set_session_id("sess-1")
+    mock_session = AsyncMock()
+    mock_session.post = MagicMock(
+        return_value=_mock_http_response(body=_tool_result(text=payload_text))
+    )
+    harvest = AsyncMock()
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()), \
+         patch.object(bridge, "_try_reanchor", AsyncMock(return_value=False)), \
+         patch.object(bridge, "_harvest_anchor", harvest):
+        decision = await bridge.check_in(create_test_anima(), create_test_readings())
+    return bridge, decision, harvest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload_text",
+    [
+        json.dumps({}),
+        json.dumps({"status": "lineage_declaration_required", "hint": "declare lineage"}),
+        json.dumps({"status": "some_future_refusal"}),
+        json.dumps({"action": None, "margin": "comfortable"}),
+        json.dumps({"action": ""}),
+        json.dumps(["proceed"]),
+        "upstream temporarily unavailable",
+    ],
+    ids=["empty", "lineage_refusal", "unknown_status", "null_action",
+         "blank_action", "non_object", "plain_text"],
+)
+async def test_check_in_without_an_action_is_a_failure_not_a_proceed(payload_text):
+    bridge, decision, harvest = await _check_in_with_payload(payload_text)
+
+    # Not a UNITARES verdict: the local fallback answers and says why.
+    assert decision["source"] == "local"
+    assert "UNITARES unavailable" in decision["reason"]
+    # ...and it counts against the breaker instead of resetting it.
+    assert bridge._circuit_failures == 1
+    harvest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repeated_actionless_responses_open_the_circuit():
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    mock_session = AsyncMock()
+    mock_session.post = MagicMock(
+        side_effect=lambda *a, **k: _mock_http_response(body=_tool_result({}))
+    )
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()), \
+         patch.object(bridge, "_harvest_anchor", AsyncMock()):
+        for _ in range(bridge._circuit_threshold):
+            await bridge.check_in(create_test_anima(), create_test_readings())
+
+    assert bridge._circuit_open_until > 0
+
+
+@pytest.mark.asyncio
+async def test_verdict_without_margin_keeps_margin_unknown():
+    """A real verdict stays a verdict; the margin the server did not send
+    stays None rather than becoming "comfortable"."""
+    bridge, decision, harvest = await _check_in_with_payload(
+        json.dumps({"action": "pause", "reason": "risk"})
+    )
+
+    assert decision["source"] == "unitares"
+    assert decision["action"] == "pause"
+    assert decision["margin"] is None
+    assert bridge._circuit_failures == 0
+    harvest.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_string_margin_is_not_a_margin():
+    _, decision, _ = await _check_in_with_payload(
+        json.dumps({"action": "proceed", "margin": {"risk": 0.1}})
+    )
+    assert decision["source"] == "unitares"
+    assert decision["margin"] is None
+
+
+@pytest.mark.asyncio
+async def test_lineage_declaration_required_is_an_identity_refusal():
+    """Same classification as the Elixir client's refusal_hint/1."""
+    from anima_mcp.unitares_bridge import IdentityRefusedError, _is_identity_refusal
+
+    payload = {"status": "lineage_declaration_required", "hint": "declare lineage"}
+    assert _is_identity_refusal(payload)
+    assert mcp_tool_refusal(json.loads(_tool_result(payload))) == "declare lineage"
+
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    mock_session = AsyncMock()
+    mock_session.post = MagicMock(
+        return_value=_mock_http_response(body=_tool_result(payload))
+    )
+    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, valence=0.2)
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        with pytest.raises(IdentityRefusedError, match="declare lineage"):
+            await bridge._call_unitares(create_test_anima(), create_test_readings(), eisv)
+
+
+@pytest.mark.asyncio
+async def test_response_with_neither_result_nor_error_is_a_failure():
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    mock_session = AsyncMock()
+    mock_session.post = MagicMock(
+        return_value=_mock_http_response(body=json.dumps({"jsonrpc": "2.0", "id": 1}))
+    )
+    eisv = EISVMetrics(energy=0.4, integrity=0.5, entropy=0.3, valence=0.2)
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        with pytest.raises(Exception, match="neither result nor error"):
+            await bridge._call_unitares(create_test_anima(), create_test_readings(), eisv)
