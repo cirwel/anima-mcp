@@ -463,3 +463,61 @@ class TestFrameWriteFailuresAreAudible:
         registry.heartbeat("leds")  # the display loop heartbeats regardless
 
         assert leds.get_status() == "degraded"
+
+
+class TestDisplayLoopRecordsUnknownBrightness:
+    """The display loop's efference copy must not outlive the hardware
+    (2026-11-12). Its LED block is skipped once LEDs are unavailable, which
+    used to leave the last good copy in place — and a missing copy was written
+    to readings as brightness 0.0, a measured-looking "off"."""
+
+    class _Readings:
+        led_brightness = 0.04
+
+    class _Ctx:
+        def __init__(self, leds):
+            self.leds = leds
+            self.led_proprioception = {"brightness": 0.04}
+
+    class _Leds:
+        def __init__(self, available, brightness=0.031):
+            self._available = available
+            self._brightness = brightness
+
+        def is_available(self):
+            return self._available
+
+        def get_proprioceptive_state(self):
+            return {"brightness": self._brightness}
+
+    def test_available_leds_report_what_they_applied(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert ctx.led_proprioception == {"brightness": 0.031}
+        assert readings.led_brightness == 0.031
+
+    def test_unavailable_leds_withdraw_the_stale_copy(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(False)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert ctx.led_proprioception is None
+        assert readings.led_brightness is None
+
+    def test_unknown_applied_brightness_stays_unknown(self):
+        """Before the first frame lands the controller reports None; that must
+        reach readings as None, not be defaulted."""
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True, brightness=None)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert readings.led_brightness is None
+
+    def test_a_real_zero_is_kept(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True, brightness=0.0)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert readings.led_brightness == 0.0
