@@ -514,36 +514,14 @@ ssh $SSH_OPTS "$PI_USER@$PI_HOST" "sudo usermod -aG adm $PI_USER && \
     sudo systemctl enable lumen-journal-archive.timer && \
     sudo systemctl start lumen-journal-archive.timer" || log "  journal archive install failed (non-fatal)"
 
-# 6. Install cron jobs (wifi watchdog, db maintenance, backup)
-log "Installing cron jobs..."
+# 6. Install scheduled maintenance (wifi watchdog, db maintenance, db + state
+# backups) as systemd timers, and retire any crontab lines left by an older
+# restore. This used to write a crontab that also scheduled the WiFi watchdog
+# already enabled as wifi-watchdog.timer in step 5b, so two copies ran.
+log "Installing scheduled jobs (systemd timers)..."
 PI_SCRIPTS="/home/${PI_USER}/anima-mcp/scripts"
-PI_LOGS="/home/${PI_USER}/.anima"
-
-# Make scripts executable first
-ssh $SSH_OPTS "$PI_USER@$PI_HOST" "chmod +x ${PI_SCRIPTS}/wifi_watchdog.sh ${PI_SCRIPTS}/db_maintenance.sh ${PI_SCRIPTS}/backup_db.sh ${PI_SCRIPTS}/backup_state.sh ${PI_SCRIPTS}/storage_maintenance.py 2>/dev/null; true"
-
-# Build and install crontab: strip old entries, add current ones
-# Uses heredoc on remote side to handle multi-line reliably
-ssh $SSH_OPTS "$PI_USER@$PI_HOST" bash -s <<'CRON_EOF'
-SCRIPTS="/home/unitares-anima/anima-mcp/scripts"
-LOGS="/home/unitares-anima/.anima"
-
-# Start with existing crontab minus our managed entries
-EXISTING=$(crontab -l 2>/dev/null | grep -v 'wifi_watchdog\|db_maintenance\|backup_db\|backup_state' || true)
-
-# Build new crontab
-{
-    [ -n "$EXISTING" ] && echo "$EXISTING"
-    echo "*/2 * * * * ${SCRIPTS}/wifi_watchdog.sh >> ${LOGS}/wifi_watchdog.log 2>&1"
-    [ -f "${SCRIPTS}/db_maintenance.sh" ] && \
-        echo "0 * * * * ${SCRIPTS}/db_maintenance.sh >> ${LOGS}/db_maintenance.log 2>&1"
-    [ -f "${SCRIPTS}/backup_db.sh" ] && \
-        echo "15 * * * * ${SCRIPTS}/backup_db.sh >> ${LOGS}/backup_db.log 2>&1"
-    [ -f "${SCRIPTS}/backup_state.sh" ] && \
-        echo "30 * * * * ${SCRIPTS}/backup_state.sh >> ${LOGS}/backup_state.log 2>&1"
-} | crontab -
-CRON_EOF
-[ $? -eq 0 ] && log "  cron jobs installed" || log "  cron install failed (non-fatal)"
+ssh $SSH_OPTS "$PI_USER@$PI_HOST" "chmod +x ${PI_SCRIPTS}/storage_maintenance.py 2>/dev/null; bash ${PI_SCRIPTS}/install_scheduled_jobs.sh" \
+    && log "  scheduled jobs installed" || log "  scheduled job install failed (non-fatal)"
 
 # 7. Verify the embodied boundary, not merely that systemd accepted Start=.
 log "Verifying..."
@@ -571,7 +549,9 @@ ssh $SSH_OPTS "$PI_USER@$PI_HOST" \
 log "  configured sensor owner + broker + mind active; fresh shared state verified"
 ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active anima-watchdog.timer" 2>/dev/null && log "  watchdog timer active" || log "  watchdog timer not running"
 ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active anima-storage-maintenance.timer" 2>/dev/null && log "  storage maintenance timer active" || log "  storage maintenance timer not running"
-ssh $SSH_OPTS "$PI_USER@$PI_HOST" "crontab -l 2>/dev/null | grep -c 'anima-mcp/scripts'" | xargs -I{} log "  {} cron jobs installed"
+for t in wifi-watchdog anima-db-maintenance anima-db-backup anima-state-backup; do
+    ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active $t.timer" >/dev/null 2>&1 && log "  $t timer active" || log "  $t timer not running"
+done
 
 # 8. Tailscale (always installed — required for remote access)
 log "Installing Tailscale..."

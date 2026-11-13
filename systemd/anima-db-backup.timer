@@ -1,0 +1,16 @@
+[Unit]
+Description=Anima hourly anima.db snapshot (sqlite backup API, RAM-staged)
+
+# Hourly jobs are staggered across the hour on purpose: :00 DB maintenance,
+# :15 DB snapshot, :30 learned-state snapshot, :45 storage maintenance (which
+# expects both snapshots to have run). No RandomizedDelaySec, so the order
+# holds. No Persistent=, matching cron: a missed hour is not replayed at boot,
+# when anima-restore may still be deciding which database is real.
+
+[Timer]
+OnCalendar=*-*-* *:15:00
+AccuracySec=1min
+Unit=anima-db-backup.service
+
+[Install]
+WantedBy=timers.target
