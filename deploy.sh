@@ -259,6 +259,18 @@ else
     exit 1
 fi
 
+# Scheduled maintenance (wifi watchdog, db maintenance, db + state backups)
+# runs on systemd timers. The installer is idempotent and also retires the
+# crontab lines older restores wrote, so an existing Pi migrates on its next
+# deploy. Non-fatal: on failure the cron lines are left in place, so nothing
+# goes unscheduled.
+if ssh -p $PI_PORT $SSH_EXTRA -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$PI_USER@$PI_HOST" \
+    "bash $PI_PATH/scripts/install_scheduled_jobs.sh"; then
+    echo -e "${GREEN}✓ Scheduled jobs synchronized${NC}"
+else
+    echo -e "${YELLOW}⚠ Could not synchronize scheduled jobs (cron entries left in place)${NC}"
+fi
+
 # The Elixir process is the deployed environmental-sensor owner. Its source is
 # rsynced with the Python tree, but a running OTP release does not consume that
 # source directly. Build and restart it only when its hashed release inputs or

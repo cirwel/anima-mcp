@@ -1,6 +1,8 @@
 #!/bin/bash
 # WiFi Watchdog - Auto-reconnect if WiFi drops
-# Run via cron every 2 minutes: */2 * * * * /home/unitares-anima/anima-mcp/scripts/wifi_watchdog.sh
+# Scheduled by systemd/wifi-watchdog.timer every 2 minutes, as root. Do not
+# also add a crontab line: until 2026-11-13 restore_lumen.sh did, and two
+# copies ran (root + user) sharing the /tmp fail counter.
 #
 # Escalation levels:
 #   1. nmcli reconnect (soft)

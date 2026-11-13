@@ -1,6 +1,6 @@
 #!/bin/bash
 # DB maintenance — WAL checkpoint + integrity check.
-# Run hourly via cron: 0 * * * * /home/unitares-anima/anima-mcp/scripts/db_maintenance.sh
+# Scheduled by systemd/anima-db-maintenance.timer at :00 (was a crontab line until 2026-11-13).
 #
 # Uses Python's sqlite3 module instead of the sqlite3 CLI. The CLI isn't
 # installed on the Pi; the prior shell version silently failed both ops and
