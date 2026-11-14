@@ -6,6 +6,7 @@ defmodule AnimaBroker.Sensors.IntegrationTest do
   """
   use ExUnit.Case, async: false
 
+  alias AnimaBroker.Sensors.AHT20
   alias AnimaBroker.Sensors.VEML7700
   alias AnimaBroker.State.Store
   alias AnimaBroker.Test.FakeI2C
@@ -41,6 +42,45 @@ defmodule AnimaBroker.Sensors.IntegrationTest do
     assert readings["light_observed_precision_seconds"] == 0.52
   end
 
+  # A dead sensor must publish absence, not keep its last good value. The bus
+  # below has no canned read, so every read fails.
+  test "VEML7700 read failure replaces the last good light reading with nil" do
+    Store.merge(%{
+      "readings" => %{
+        "light_lux" => 123.4,
+        "light_observed_at" => "2026-11-12T09:00:00",
+        "light_observed_precision_seconds" => 0.52
+      }
+    })
+
+    start_supervised!({VEML7700, bus_impl: FakeI2C, bus: %{responses: %{}}, interval_ms: 50})
+
+    readings =
+      wait_for_readings(fn r ->
+        Map.fetch(r, "light_lux") == {:ok, nil}
+      end)
+
+    assert Map.fetch!(readings, "light_lux") == nil
+    assert Map.fetch!(readings, "light_observed_at") == nil
+    assert Map.fetch!(readings, "light_observed_precision_seconds") == nil
+  end
+
+  test "AHT20 read failure replaces the last good temp and humidity with nil" do
+    Store.merge(%{"readings" => %{"ambient_temp_c" => 21.5, "humidity_pct" => 40.0}})
+
+    start_supervised!(
+      {AHT20, bus_impl: FakeI2C, bus: %{responses: %{}}, interval_ms: 50, delay_ms: 0}
+    )
+
+    readings =
+      wait_for_readings(fn r ->
+        Map.fetch(r, "ambient_temp_c") == {:ok, nil}
+      end)
+
+    assert Map.fetch!(readings, "ambient_temp_c") == nil
+    assert Map.fetch!(readings, "humidity_pct") == nil
+  end
+
   test "capture provenance bounds continuous-read phase and integration tolerance" do
     completed_at = ~N[2026-08-23 12:00:00.500000]
 
@@ -48,5 +88,18 @@ defmodule AnimaBroker.Sensors.IntegrationTest do
              "light_observed_at" => "2026-08-23T11:59:59.980000",
              "light_observed_precision_seconds" => 0.52
            }
+  end
+
+  defp wait_for_readings(pred) do
+    Enum.reduce_while(1..50, nil, fn _, _ ->
+      readings = Store.snapshot()["readings"]
+
+      if pred.(readings) do
+        {:halt, readings}
+      else
+        Process.sleep(10)
+        {:cont, readings}
+      end
+    end)
   end
 end
