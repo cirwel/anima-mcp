@@ -17,6 +17,21 @@ defmodule AnimaBroker.Sensors.IntegrationTest do
       _ -> :ok
     end
 
+    # Store is the application's shared singleton, so other modules leave
+    # readings in it (store_test merges light_lux 123.0). Clear the keys these
+    # tests poll, or a test can pick up another module's value instead of its
+    # sensor's. Snapshot is a call, so it serializes after this cast.
+    Store.merge(%{
+      "readings" => %{
+        "light_lux" => nil,
+        "light_observed_at" => nil,
+        "light_observed_precision_seconds" => nil,
+        "ambient_temp_c" => nil,
+        "humidity_pct" => nil
+      }
+    })
+
+    _ = Store.snapshot()
     :ok
   end
 
