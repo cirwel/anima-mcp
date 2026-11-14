@@ -101,7 +101,12 @@ defmodule AnimaBroker.Sensors.AHT20 do
         state.store.merge(%{"readings" => %{"ambient_temp_c" => t, "humidity_pct" => h}})
 
       {:error, reason} ->
-        Logger.warning("[AHT20] read failed: #{inspect(reason)}")
+        # Publish absence, not the last good value (as BMP280 does). Leaving
+        # the previous reading in the store while Tick re-stamps the envelope
+        # makes a dead sensor read as a calm one: downstream cannot tell
+        # "unchanged" from "unmeasured" unless this says so.
+        state.store.merge(%{"readings" => %{"ambient_temp_c" => nil, "humidity_pct" => nil}})
+        Logger.warning("[AHT20] read failed: #{inspect(reason)} — publishing absent")
     end
 
     Process.send_after(self(), :read, state.interval_ms)
