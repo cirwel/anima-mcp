@@ -24,6 +24,7 @@ Starting with 15 primitives across 4 layers:
 
 import json
 import sqlite3
+import sys
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -159,6 +160,22 @@ class Utterance:
         return "-".join(cats)
 
 
+# When someone last spoke to Lumen (a message or an answer to its question),
+# noted by the communication handlers in this same server process. It replaces
+# the old `presence > 0.6` early-speech branch: presence is Lumen's own system
+# headroom, not a sign that anyone is there, and it sat above 0.6 all the time,
+# so Lumen spoke at the 10-minute floor (~10.5 min apart, measured 2026-11-13)
+# and the feedback-learned interval had no effect. Read-only tool calls do not
+# count, so a monitor polling Lumen cannot make it chatty.
+_last_social_contact: Optional[datetime] = None
+
+
+def note_social_contact(when: Optional[datetime] = None) -> None:
+    """Record that someone just spoke to Lumen."""
+    global _last_social_contact
+    _last_social_contact = when or datetime.now()
+
+
 class PrimitiveLanguageSystem:
     """
     Manages primitive language generation and learning.
@@ -258,6 +275,13 @@ class PrimitiveLanguageSystem:
                 ON primitive_history(timestamp);
             CREATE INDEX IF NOT EXISTS idx_primitive_history_pattern
                 ON primitive_history(category_pattern);
+
+            -- Small learned scalars that must survive a restart
+            CREATE TABLE IF NOT EXISTS primitive_state (
+                key TEXT PRIMARY KEY,
+                value REAL NOT NULL,
+                last_updated TEXT
+            );
         """)
         conn.commit()
 
@@ -296,6 +320,40 @@ class PrimitiveLanguageSystem:
         for name, token in PRIMITIVES.items():
             if name not in self._token_weights:
                 self._token_weights[name] = token.base_weight
+
+        # Restore the learned speaking interval. It used to live only in memory
+        # and reset to the 25-minute base on every restart (617 awakenings by
+        # 2026-11-13), so what feedback taught was thrown away each boot.
+        row = conn.execute(
+            "SELECT value FROM primitive_state WHERE key = 'current_interval_minutes'"
+        ).fetchone()
+        if row is not None and row["value"] is not None:
+            try:
+                minutes = float(row["value"])
+            except (TypeError, ValueError):
+                minutes = None
+            if minutes is not None and minutes == minutes:  # not NaN
+                self._current_interval = self._clamp_interval(timedelta(minutes=minutes))
+
+    def _clamp_interval(self, interval: timedelta) -> timedelta:
+        return max(self._min_interval, min(self._max_interval, interval))
+
+    def _set_interval(self, interval: timedelta) -> None:
+        """Change the learned speaking interval and persist it."""
+        self._current_interval = self._clamp_interval(interval)
+        try:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO primitive_state (key, value, last_updated) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "last_updated = excluded.last_updated",
+                ("current_interval_minutes",
+                 self._current_interval.total_seconds() / 60,
+                 datetime.now().isoformat()),
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"[PrimitiveLang] Could not persist interval: {e}", file=sys.stderr, flush=True)
 
     def _save_token_weight(self, token: str, weight: float, success: bool = None):
         """Save updated token weight to database."""
@@ -593,6 +651,7 @@ class PrimitiveLanguageSystem:
         Returns (should_generate, reason).
         """
         now = datetime.now()
+        self._connect()  # loads the persisted interval on first use
 
         # Never generated before - go ahead
         if self._last_utterance is None:
@@ -606,12 +665,11 @@ class PrimitiveLanguageSystem:
         if elapsed >= self._current_interval:
             return True, "interval_reached"
 
-        # State-triggered generation
-        # High presence (someone's there) - more likely to speak
-        presence = state.get("presence", 0.0)
-        if presence > 0.6 and elapsed > timedelta(minutes=5):
-            if random.random() < 0.3:
-                return True, "high_presence"
+        # Someone spoke to Lumen since it last spoke: answer now rather than
+        # waiting out the learned interval (the 10-minute floor still holds).
+        contact = _last_social_contact
+        if contact is not None and contact > self._last_utterance:
+            return True, "spoken_to"
 
         # Significant state change - might speak
         if self._recent:
@@ -732,15 +790,9 @@ class PrimitiveLanguageSystem:
 
         if success:
             self._successful_utterances += 1
-            self._current_interval = max(
-                self._min_interval,
-                self._current_interval - timedelta(minutes=1),
-            )
+            self._set_interval(self._current_interval - timedelta(minutes=1))
         else:
-            self._current_interval = min(
-                self._max_interval,
-                self._current_interval + timedelta(minutes=2),
-            )
+            self._set_interval(self._current_interval + timedelta(minutes=2))
 
         return {
             "score": score,
@@ -806,15 +858,9 @@ class PrimitiveLanguageSystem:
         # Override interval adjustment for human feedback (stronger effect)
         success = result["success"]
         if success:
-            self._current_interval = max(
-                self._min_interval,
-                self._current_interval - timedelta(minutes=2),
-            )
+            self._set_interval(self._current_interval - timedelta(minutes=2))
         else:
-            self._current_interval = min(
-                self._max_interval,
-                self._current_interval + timedelta(minutes=5),
-            )
+            self._set_interval(self._current_interval + timedelta(minutes=5))
         result["new_interval_minutes"] = self._current_interval.total_seconds() / 60
         return result
 

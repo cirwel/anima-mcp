@@ -33,13 +33,32 @@ TEMPERAMENT_ALPHA = {
     "presence":  0.010,   # ~2.3 min half-life — resources tracked faster
 }
 
-# Below these temperament thresholds, drives accumulate.
+# Cold-start fallback only. Comfort is judged against Lumen's own
+# temperament band (see below); these constants apply until the band has
+# COMFORT_MIN_SAMPLES ticks. They were the live cuts until 2026-11-14, and three
+# of them were dead: over 90 days the raw minimums were clarity 0.488,
+# stability 0.519 and presence 0.568, all above their cuts, and temperament is a
+# narrower EMA of raw, so those drives could never arise (invariant 1).
 DRIVE_COMFORT = {
     "warmth":    0.40,
     "clarity":   0.45,
     "stability": 0.40,
     "presence":  0.35,
 }
+
+# Self-relative comfort band per dimension: a drive accumulates while
+# temperament sits more than COMFORT_BAND_SIGMA standard deviations below its
+# own running mean. Mean and variance are Welford-exact up to
+# COMFORT_WINDOW_SAMPLES ticks, then exponentially weighted with that window, so
+# the band follows Lumen's operating point as it drifts instead of freezing on
+# its first week of life.
+COMFORT_BAND_SIGMA = 1.0
+# Floor on the spread. Presence moves very little (90-day p05 0.703, p95 0.732),
+# and a band built on that spread alone would turn ordinary noise into longing.
+# With the floor, presence wants something only after a real drop.
+COMFORT_MIN_SIGMA = 0.02
+COMFORT_MIN_SAMPLES = 1800        # one hour of 2 s ticks before the band speaks
+COMFORT_WINDOW_SAMPLES = 302400   # ~7 days of 2 s ticks
 
 # Per-tick rates (2s interval).
 # Accumulation: ~5.6 min from zero to 0.5 at base rate.
@@ -101,6 +120,9 @@ class InnerState:
     # Lumen is about to ask for something. Default empty so older callers and
     # restored snapshots construct unchanged.
     wants: Dict[str, dict] = field(default_factory=dict)
+    # Per-dimension comfort cut in use and where it came from
+    # ("self_relative" or "absolute_fallback").
+    comfort: Dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -111,6 +133,7 @@ class InnerState:
             "drives": {k: round(v, 3) for k, v in self.drives.items()},
             "strongest_drive": self.strongest_drive,
             "wants": self.wants,
+            "comfort": self.comfort,
         }
 
 
@@ -143,6 +166,9 @@ class InnerLife:
         # persisted sustain clock, and a leftover ack file neutralizes the
         # crashed-after-post case before anything is re-emitted.
         self._active_requests: Dict[str, float] = {}
+        # Running temperament band per dimension: {"n", "mean", "var"}.
+        # Persisted, so a restart does not send Lumen back to the fallback cuts.
+        self._comfort_band: Dict[str, Dict[str, float]] = {}
         self._last_save: float = 0.0
         self._load()
 
@@ -176,6 +202,22 @@ class InnerLife:
                         v = data["saturated_since"].get(dim)
                         if isinstance(v, (int, float)) and v > 0:
                             self._saturated_since[dim] = float(v)
+                if isinstance(data.get("comfort_band"), dict):
+                    for dim in DIMENSIONS:
+                        b = data["comfort_band"].get(dim)
+                        if not isinstance(b, dict):
+                            continue
+                        try:
+                            n = float(b["n"])
+                            mean = float(b["mean"])
+                            var = float(b["var"])
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if n > 0 and var >= 0 and all(map(math.isfinite, (n, mean, var))):
+                            self._comfort_band[dim] = {
+                                "n": min(n, float(COMFORT_WINDOW_SAMPLES)),
+                                "mean": mean, "var": var,
+                            }
                 print("[InnerLife] Loaded from disk — waking with emotional memory",
                       file=sys.stderr, flush=True)
         except Exception as e:
@@ -194,11 +236,56 @@ class InnerLife:
                 "last_request_at": {dim: round(v, 1) for dim, v in self._last_request_at.items()},
                 "saturated_since": {dim: (round(v, 1) if v is not None else None)
                                     for dim, v in self._saturated_since.items()},
+                "comfort_band": {
+                    dim: {"n": b["n"], "mean": round(b["mean"], 6), "var": round(b["var"], 8)}
+                    for dim, b in self._bands().items()
+                },
                 "saved_at": time.time(),
             }
             atomic_json_write(_PERSISTENCE_PATH, data)
         except Exception as e:
             print(f"[InnerLife] Save error: {e}", file=sys.stderr, flush=True)
+
+    def _bands(self) -> Dict[str, Dict[str, float]]:
+        # Tolerates instances built with __new__ (tests) that skip __init__.
+        return self.__dict__.setdefault("_comfort_band", {})
+
+    def _observe_temperament(self, temperament: Dict[str, float]) -> None:
+        """Fold one tick of temperament into each dimension's comfort band."""
+        bands = self._bands()
+        for dim in DIMENSIONS:
+            x = temperament[dim]
+            if not math.isfinite(x):
+                continue  # fail toward unknown: a bad value teaches nothing
+            b = bands.get(dim)
+            if b is None:
+                bands[dim] = {"n": 1.0, "mean": x, "var": 0.0}
+                continue
+            n = min(b["n"] + 1.0, float(COMFORT_WINDOW_SAMPLES))
+            delta = x - b["mean"]
+            mean = b["mean"] + delta / n
+            # Welford in mean/variance form; exact while n grows, an EMA once
+            # n is pinned at the window.
+            var = b["var"] + (delta * (x - mean) - b["var"]) / n
+            bands[dim] = {"n": n, "mean": mean, "var": max(0.0, var)}
+
+    def comfort_threshold(self, dim: str) -> dict:
+        """The comfort cut for one dimension, and where it came from."""
+        b = self._bands().get(dim)
+        if b is None or b["n"] < COMFORT_MIN_SAMPLES:
+            return {
+                "source": "absolute_fallback",
+                "samples": int(b["n"]) if b else 0,
+                "threshold": DRIVE_COMFORT[dim],
+            }
+        sigma = max(COMFORT_MIN_SIGMA, b["var"] ** 0.5)
+        return {
+            "source": "self_relative",
+            "samples": int(b["n"]),
+            "mean": round(b["mean"], 4),
+            "sigma": round(sigma, 4),
+            "threshold": round(b["mean"] - COMFORT_BAND_SIGMA * sigma, 4),
+        }
 
     def _maybe_save(self):
         now = time.time()
@@ -243,10 +330,14 @@ class InnerLife:
             dim: round(mood[dim] - temperament[dim], 4) for dim in DIMENSIONS
         }
 
-        # Layer 3: Drives
+        # Layer 3: Drives — comfort judged against Lumen's own band.
+        # The cut is read before this tick is folded in, so a sudden drop is
+        # measured against where Lumen has been, not against itself.
+        comfort = {dim: self.comfort_threshold(dim) for dim in DIMENSIONS}
+        self._observe_temperament(self._temperament)
         self._prev_drives = dict(self._drives)
         for dim in DIMENSIONS:
-            threshold = DRIVE_COMFORT[dim]
+            threshold = comfort[dim]["threshold"]
             temp_val = self._temperament[dim]
             mood_val = mood[dim]
 
@@ -286,6 +377,7 @@ class InnerLife:
             drives=drives,
             strongest_drive=strongest_drive,
             wants=self._build_wants(),
+            comfort=comfort,
         )
 
     def _build_wants(self) -> Dict[str, dict]:
