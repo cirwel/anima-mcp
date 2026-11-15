@@ -106,8 +106,9 @@ class TestRecorder:
         rec2 = _recorder_for(canvas, tmp_path)  # same piece_uid -> resume
         records = list(iter_records(rec2.path()))
         kinds = [r["type"] for r in records]
-        assert kinds == ["header", "mark", "base", "resume"]
-        base = records[2]
+        # resume before the reconcile: a renderer drops the downtime first
+        assert kinds == ["header", "mark", "resume", "base"]
+        base = records[3]
         assert base["why"] == "reconcile"
         assert base["px"][:2] == [9, 9]
         assert base["erase"] == [1, 1]
@@ -161,6 +162,72 @@ class TestRecorder:
         p = tmp_path / "x.replay.jsonl"
         p.write_text('{"type":"header","v":1}\n{"type":"mark","t":1,"px":[1,1,9,9,9]}\n{"type":"ma')
         assert [r["type"] for r in iter_records(p)] == ["header", "mark"]
+
+    def test_records_after_a_torn_line_survive(self, tmp_path):
+        """Appending onto a torn fragment would merge the next record into it."""
+        canvas = CanvasState()
+        rec = _recorder_for(canvas, tmp_path)
+        _mark(canvas, rec, [(1, 1)])
+        rec.flush()
+        with open(rec.path(), "a") as fh:
+            fh.write('{"type":"mark","t":1,"px":[9,9')  # killed mid-write
+        canvas.draw_pixel(9, 9, (4, 4, 4))
+        rec.pending.clear()
+
+        rec2 = _recorder_for(canvas, tmp_path)  # resume appends after the fragment
+        kinds = [r["type"] for r in iter_records(rec2.path())]
+        assert kinds == ["header", "mark", "resume", "base"]
+        out = rec2.finalize(tmp_path / "p.png", canvas)
+        records = list(iter_records(out))
+        assert records[-1]["type"] == "end"
+        assert final_pixels(records) == canvas.pixels
+
+    def test_finalize_repairs_a_torn_tail_before_copying(self, tmp_path):
+        canvas = CanvasState()
+        rec = _recorder_for(canvas, tmp_path)
+        _mark(canvas, rec, [(1, 1)])
+        rec.flush()
+        with open(rec.path(), "a") as fh:
+            fh.write('{"type":"ma')
+        out = rec.finalize(tmp_path / "p.png", canvas)
+        assert [r["type"] for r in iter_records(out)][-1] == "end"
+
+    def test_switched_off_stays_off_across_a_restart(self, tmp_path, monkeypatch):
+        import anima_mcp.display.drawing_replay as dr
+        canvas = CanvasState()
+        rec = _recorder_for(canvas, tmp_path)
+        _mark(canvas, rec, [(1, 1)])
+        rec.flush()
+        monkeypatch.setattr(dr, "MAX_IN_PROGRESS_BYTES", 10)
+        _mark(canvas, rec, [(2, 2)])
+        rec.flush()  # crosses the cap: the log becomes header + off
+        kinds = [r["type"] for r in iter_records(rec.path())]
+        assert kinds == ["header", "off"]
+        monkeypatch.setattr(dr, "MAX_IN_PROGRESS_BYTES", 32 * 1024 * 1024)
+
+        rec2 = _recorder_for(canvas, tmp_path)  # same piece after a restart
+        _mark(canvas, rec2, [(3, 3)])
+        rec2.flush()
+        assert [r["type"] for r in iter_records(rec2.path())] == ["header", "off"]
+        assert rec2.finalize(tmp_path / "p.png", canvas) is None
+
+        canvas.clear()
+        canvas.last_clear_time += 1
+        rec2.start_piece(canvas, "field")  # the next piece records again
+        _mark(canvas, rec2, [(4, 4)])
+        rec2.flush()
+        assert [r["type"] for r in iter_records(rec2.path())] == ["header", "mark"]
+
+    def test_a_failing_tap_never_stops_a_mark(self):
+        class _Boom(list):
+            def append(self, item):
+                raise MemoryError
+        canvas = CanvasState()
+        canvas._replay_tap = _Boom()
+        canvas.draw_pixel(1, 1, (1, 1, 1))
+        canvas.draw_pixel(2, 2, (2, 2, 2))
+        assert set(canvas.pixels) == {(1, 1), (2, 2)}
+        assert canvas._replay_tap is None
 
 
 class TestEngineWiring:
@@ -251,6 +318,29 @@ class TestRenderer:
         assert ticks == [130.0]
         events, _, _ = r.build_timeline(recs, "marks", max_gap=120.0)
         assert [p for p, _ in events] == [0.0, 1.0, 2.0, 3.0]
+
+    def test_resume_drops_downtime_even_with_a_reconcile(self):
+        r = _load_renderer()
+        recs = [
+            {"type": "header", "w": 240, "h": 240},
+            {"type": "mark", "t": 0.0, "px": [0, 0, 1, 1, 1]},
+            {"type": "resume", "t": 50000.0},
+            {"type": "base", "t": 50000.0, "px": [5, 5, 1, 1, 1], "why": "reconcile"},
+            {"type": "mark", "t": 50010.0, "px": [1, 0, 1, 1, 1]},
+        ]
+        events, _, _ = r.build_timeline(recs, "wall", max_gap=120.0)
+        assert [p for p, _ in events] == [0.0, 0.0, 10.0]
+
+    def test_last_frame_reaches_the_last_mark_despite_float_rounding(self):
+        r = _load_renderer()
+        recs = [{"type": "header", "w": 4, "h": 4},
+                {"type": "mark", "t": 0.0, "px": [0, 0, 9, 9, 9]},
+                {"type": "mark", "t": 30438.74, "px": [1, 1, 7, 7, 7]}]
+        assert 30438.74 * 299 / 299 < 30438.74  # the rounding this guards against
+        frames = list(r.render_frames(recs, seconds=20, fps=15, clock="wall",
+                                      max_gap=1e6, scale=1, strip=False, hold=0))
+        assert len(frames) == 300
+        assert frames[-1].load()[1, 1] == (7, 7, 7)
 
     def test_era_switch_takes_no_time_on_the_marks_clock(self):
         r = _load_renderer()

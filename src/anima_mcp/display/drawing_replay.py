@@ -18,6 +18,7 @@ Format (v1): JSON Lines, one record per line.
     {"type": "base", "t": <t>, "px": [...], "erase": [x, y, ...], "why": "..."}
     {"type": "resume", "t": <t>}
     {"type": "era", "t": <t>, "era": "field"}
+    {"type": "off", "t": <t>, "why": "..."}
     {"type": "end", "t": <t>, "png": "<file name>", "reason": ..., "manual": bool}
 
 "px" is flattened (x, y, r, g, b) quintuples applied in order; later writes to
@@ -30,6 +31,9 @@ the persisted canvas disagreeing (a crash between their writes); the record
 brings the log back to the canvas, so the replay always ends on the real piece.
 "resume" marks a process restart: the gap before it is downtime, not a pause.
 "era" marks a forced mid-piece era switch; the header names the starting era.
+"off" replaces the whole log when recording stops partway (size cap, a disk
+that will not take writes): that piece then gets no replay rather than one
+with a hole in it, and a restart reads the marker and stays off.
 
 Times are wall-clock seconds (time.time()), rounded to 10 ms.
 """
@@ -117,6 +121,21 @@ def final_pixels(records: Iterable[dict]) -> PixelMap:
     return pixels
 
 
+def _repair_tail(path: Path) -> None:
+    """End the file on a newline. A process killed mid-write leaves a torn
+    last line; appending straight onto it would merge the next record into
+    that fragment and the reader would drop both."""
+    try:
+        if path.stat().st_size == 0:
+            return
+    except FileNotFoundError:
+        return
+    with open(path, "rb+") as fh:
+        fh.seek(-1, 2)
+        if fh.read(1) != b"\n":
+            fh.write(b"\n")
+
+
 # ---------------------------------------------------------------------------
 # Recording
 # ---------------------------------------------------------------------------
@@ -135,6 +154,7 @@ class ReplayRecorder:
         self.pending: List[Tuple[int, int, Pixel]] = []
         self._buf: List[str] = []
         self._piece: Optional[str] = None
+        self._header: Optional[dict] = None
         self._off = False  # recording stopped for the rest of this piece
 
     # -- paths ---------------------------------------------------------------
@@ -149,18 +169,27 @@ class ReplayRecorder:
         try:
             piece = canvas.piece_uid()
             path = self.path()
-            header = self._read_header(path) if path.exists() else None
+            records = list(iter_records(path)) if path.exists() else []
+            header = records[0] if records and records[0].get("type") == "header" else None
             if canvas.pixels and header and header.get("piece") == piece:
                 self._piece = piece
-                self._reconcile(path, canvas)
+                self._header = header
+                if any(r.get("type") == "off" for r in records):
+                    # Recording stopped earlier in this piece; a restart must
+                    # not quietly resume it into a replay with a hole in it.
+                    self._off = True
+                    return
+                # Resume first, so a renderer drops the downtime before it
+                # meets the reconcile record stamped after it.
                 self._emit({"type": "resume", "t": self._now()})
+                for rec in self._reconcile_record(records, canvas):
+                    self._emit(rec)
             else:
                 self._begin(canvas, era_name, pre_existing=bool(canvas.pixels))
             self.flush()
         except Exception as e:
             _log(f"open failed, recording off for this piece: {e}")
-            self._buf.clear()
-            self._off = True
+            self._go_off("open failed")
 
     def start_piece(self, canvas, era_name: str) -> None:
         """A fresh canvas: discard the previous log and begin a new one."""
@@ -172,8 +201,7 @@ class ReplayRecorder:
             self.flush()
         except Exception as e:
             _log(f"start_piece failed, recording off for this piece: {e}")
-            self._buf.clear()
-            self._off = True
+            self._go_off("start failed")
 
     # -- recording -----------------------------------------------------------
 
@@ -214,24 +242,22 @@ class ReplayRecorder:
             return
         try:
             path = self.path()
-            if path.exists() and path.stat().st_size > MAX_IN_PROGRESS_BYTES:
-                _log(f"in-progress log over {MAX_IN_PROGRESS_BYTES} bytes; "
-                     f"recording off for piece {self._piece}")
-                self._off = True
-                self._buf.clear()
-                return
             path.parent.mkdir(parents=True, exist_ok=True)
+            _repair_tail(path)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write("".join(self._buf))
             self._buf.clear()
+            if path.stat().st_size > MAX_IN_PROGRESS_BYTES:
+                _log(f"in-progress log over {MAX_IN_PROGRESS_BYTES} bytes; "
+                     f"recording off for piece {self._piece}")
+                self._go_off("size cap")
         except Exception as e:
             _log(f"flush failed: {e}")
             # Keep the buffer for the next attempt, but not without bound: a
             # disk that stays unwritable must not grow memory all day.
             if len(self._buf) > MAX_BUFFERED_RECORDS:
                 _log("flush keeps failing; recording off for this piece")
-                self._buf.clear()
-                self._off = True
+                self._go_off("flush failing")
 
     def finalize(self, png_path: Path, canvas, *, reason: Optional[str] = None,
                  manual: bool = False) -> Optional[Path]:
@@ -249,8 +275,9 @@ class ReplayRecorder:
             src = self.path()
             if self._off or not src.exists():
                 return None
+            _repair_tail(src)
             dest = replay_path_for(png_path)
-            tail = self._reconcile_record(src, canvas)
+            tail = self._reconcile_record(iter_records(src), canvas)
             tail.append({
                 "type": "end",
                 "t": self._now(),
@@ -284,7 +311,7 @@ class ReplayRecorder:
         if truncate and path.exists():
             path.unlink()
         self._piece = canvas.piece_uid()
-        self._emit({
+        self._header = {
             "type": "header",
             "v": FORMAT_VERSION,
             "piece": self._piece,
@@ -293,7 +320,8 @@ class ReplayRecorder:
             "era": era_name,
             "started": round(float(canvas.last_clear_time), 2),
             "opened": self._now(),
-        })
+        }
+        self._emit(self._header)
         if pre_existing:
             self._emit({
                 "type": "base",
@@ -302,19 +330,34 @@ class ReplayRecorder:
                 "why": "pre-existing",
             })
 
-    @staticmethod
-    def _read_header(path: Path) -> Optional[dict]:
-        try:
-            for rec in iter_records(path):
-                return rec if rec.get("type") == "header" else None
-        except Exception:
-            return None
-        return None
+    def _go_off(self, why: str) -> None:
+        """Stop recording for the rest of this piece, durably.
 
-    def _reconcile_record(self, path: Path, canvas) -> List[dict]:
+        The log is replaced by its header plus an "off" record: that frees
+        the disk at once, and a restart reads the marker and stays off
+        instead of resuming into a replay with a hole in it.
+        """
+        self._off = True
+        self._buf.clear()
+        self.pending.clear()
+        try:
+            path = self.path()
+            if self._header is None:
+                if path.exists():
+                    path.unlink()
+                return
+            tmp = path.with_name(path.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for rec in (self._header, {"type": "off", "t": self._now(), "why": why}):
+                    fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            tmp.replace(path)
+        except Exception as e:
+            _log(f"could not mark recording off on disk: {e}")
+
+    def _reconcile_record(self, records: Iterable[dict], canvas) -> List[dict]:
         """[] when the log already ends on the canvas, else one base record
         that brings it there (pixels added or recoloured, pixels erased)."""
-        logged = final_pixels(iter_records(path))
+        logged = final_pixels(records)
         add = []
         for (x, y), c in canvas.pixels.items():
             c = tuple(int(v) for v in c)
@@ -333,7 +376,3 @@ class ReplayRecorder:
             "erase": erase,
             "why": "reconcile",
         }]
-
-    def _reconcile(self, path: Path, canvas) -> None:
-        for rec in self._reconcile_record(path, canvas):
-            self._emit(rec)

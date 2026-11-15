@@ -135,7 +135,9 @@ def render_frames(records: List[dict], *, seconds: float, fps: int, clock: str,
         return (p / total) * (W - 1) if total > 0 else 0.0
 
     for k in range(n):
-        playhead = total * k / (n - 1)
+        # The last frame is pinned to the end: total*k/(n-1) can round one
+        # ULP short of total and skip the final mark.
+        playhead = total if k == n - 1 else total * k / (n - 1)
         while applied < len(events) and events[applied][0] <= playhead:
             pos, rec = events[applied]
             apply_record(pixels, rec)
@@ -209,7 +211,9 @@ def write_output(frames, out: Path, fps: int) -> int:
             [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
              "-s", f"{first.width}x{first.height}", "-r", str(fps), "-i", "-", *codec, str(out)],
             stdin=subprocess.PIPE)
-        for f in (first, *it):
+        proc.stdin.write(first.tobytes())
+        count = 1
+        for f in it:  # streamed: frames are never all held in memory
             proc.stdin.write(f.tobytes())
             count += 1
         proc.stdin.close()

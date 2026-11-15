@@ -238,7 +238,10 @@ class CanvasState:
             self.pixels[(x, y)] = color
             self._new_pixels.append((x, y, color))  # Track for incremental render
             if self._replay_tap is not None:
-                self._replay_tap.append((x, y, color))
+                try:
+                    self._replay_tap.append((x, y, color))
+                except Exception:
+                    self._replay_tap = None  # observation must never stop a mark
             self._dirty = True
             # Update density grid (only for new pixels, not overwrites)
             if is_new:
