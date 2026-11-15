@@ -94,6 +94,9 @@ class TestRecorder:
         assert records[1]["type"] == "base"
         assert records[1]["why"] == "pre-existing"
         assert final_pixels(records) == canvas.pixels
+        # Watchable while open, but never written as a finished replay.
+        _mark(canvas, rec, [(6, 6)])
+        assert rec.finalize(tmp_path / "p.png", canvas) is None
 
     def test_restart_resumes_same_piece_and_reconciles(self, tmp_path):
         canvas = CanvasState()
@@ -238,6 +241,17 @@ class TestRecorder:
         records = list(iter_records(rec2.path()))
         assert [r["type"] for r in records] == ["header", "base"]
         assert records[1]["why"] == "pre-existing"
+        assert rec2.finalize(tmp_path / "p.png", canvas) is None  # gap: no replay
+
+    def test_a_dropped_mark_record_switches_recording_off(self, tmp_path):
+        canvas = CanvasState()
+        rec = _recorder_for(canvas, tmp_path)
+        _mark(canvas, rec, [(1, 1)])
+        canvas.draw_pixel(2, 2, (1, 1, 1))
+        rec.record_mark(gesture="dot", eisv=("not-a-number",), arc_phase="x")
+        _mark(canvas, rec, [(3, 3)])
+        assert [r["type"] for r in iter_records(rec.path())] == ["header", "off"]
+        assert rec.finalize(tmp_path / "p.png", canvas) is None
 
     def test_a_failing_tap_never_stops_a_mark(self):
         class _Boom(list):

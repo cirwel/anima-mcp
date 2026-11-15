@@ -26,9 +26,13 @@ the same pixel replace earlier ones, exactly as CanvasState.draw_pixel does.
 
 "base" records explain pixels the log did not see being drawn. why="pre-existing"
 means the piece was already on the canvas when recording started (a piece begun
-before this recorder existed). why="reconcile" means a restart found the log and
-the persisted canvas disagreeing (a crash between their writes); the record
-brings the log back to the canvas, so the replay always ends on the real piece.
+before this recorder existed, or one whose log was lost); the in-progress log
+keeps it so the open piece can still be watched, but such a piece gets no
+finished replay, because a replay is only written for a piece recorded from its
+first mark. why="reconcile" means a restart found the log and the persisted
+canvas disagreeing (a crash between their writes, at most one persist interval
+of marks); the record brings the log back to the canvas, so the replay always
+ends on the real piece.
 "resume" marks a process restart: the gap before it is downtime, not a pause.
 "era" marks a forced mid-piece era switch; the header names the starting era.
 "off" replaces the whole log when recording stops partway (size cap, a disk
@@ -225,8 +229,8 @@ class ReplayRecorder:
             }
             self._emit(rec)
         except Exception as e:
-            self.pending.clear()
             _log(f"record_mark failed: {e}")
+            self._go_off("record failed")  # a dropped mark is a hole
 
     def note_era(self, era_name: str) -> None:
         """The era changed without a new piece (a forced switch)."""
@@ -276,8 +280,11 @@ class ReplayRecorder:
             if self._off or not src.exists():
                 return None
             _repair_tail(src)
+            records = list(iter_records(src))
+            if any(r.get("type") == "base" and r.get("why") == "pre-existing" for r in records):
+                return None  # recording never saw this piece's opening
             dest = replay_path_for(png_path)
-            tail = self._reconcile_record(iter_records(src), canvas)
+            tail = self._reconcile_record(records, canvas)
             tail.append({
                 "type": "end",
                 "t": self._now(),
