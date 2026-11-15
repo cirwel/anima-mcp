@@ -13,6 +13,7 @@ from . import patterns as _patterns
 from .colors import blend_colors
 from .dances import Dance, DanceType, render_dance
 from .types import LEDState
+from ...error_recovery import note_suppressed
 
 try:
     import board
@@ -39,6 +40,20 @@ class LEDDisplay:
     """Controls BrainCraft HAT's 3 DotStar LEDs."""
 
     NUM_LEDS = 3
+
+    # 2026-11-12 -- how many CONSECUTIVE failed frame writes it takes before
+    # the hardware is reported unavailable.  This is an evidence-quantity
+    # floor, not a behavioural threshold: it counts proof that the bus is dead
+    # (one EIO is a glitch, a run is a fault) and is compared against nothing
+    # in Lumen's own drifting signals.  Kept small on purpose -- at the
+    # animation loop's 4 Hz it is under a second.  Any successful write resets
+    # the run and restores availability.
+    WRITE_FAILURES_BEFORE_UNAVAILABLE = 3
+
+    # Class-level defaults so instances built without __init__ (tests use
+    # ``LEDDisplay.__new__``) still answer is_available().
+    _consecutive_write_failures = 0
+    _write_failed = False
 
     def __init__(
         self,
@@ -107,7 +122,13 @@ class LEDDisplay:
         self._pulse_amount = 0.05
         self._flash_until = 0.0
         self._flash_color = (100, 100, 100)
-        self._last_applied_brightness = self._base_brightness  # Actual brightness sent to hardware
+        # Actual brightness sent to hardware.  None until a frame has really
+        # been written: it used to start at the configured base, so a
+        # controller that never landed one write still reported a brightness
+        # "sent to hardware" (2026-11-12).
+        self._last_applied_brightness: Optional[float] = None
+        self._consecutive_write_failures = 0
+        self._write_failed = False
         self._last_proprioception_publish = 0.0
         self._spi_lock = threading.Lock()
         self._animation_running = False
@@ -128,16 +149,25 @@ class LEDDisplay:
                 # _write_frame instead.
                 brightness=1.0, auto_write=False
             )
+            # 2026-11-12: this first write used to sit in `except Exception:
+            # pass` directly above an unconditional "initialized successfully",
+            # so a bus that rejected its very first frame announced success.
+            # It now goes through _write_frame (same bytes: int(10 * base)),
+            # which counts the failure; one failure is not yet a verdict, so
+            # the animation loop still starts and decides availability.
             try:
-                for i in range(3):
-                    self._dots[i] = tuple(
-                        int(channel * self._base_brightness)
-                        for channel in (10, 10, 10)
-                    )
-                self._dots.show()
-            except Exception:
-                pass
-            print("[LEDs] DotStar LEDs initialized successfully", file=sys.stderr, flush=True)
+                self._write_frame(
+                    [(10, 10, 10)] * self.NUM_LEDS, self._base_brightness
+                )
+            except Exception as e:
+                print(
+                    "[LEDs] DotStar object created but the first frame write "
+                    f"failed ({type(e).__name__}: {e}); not claiming success",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                self._last_applied_brightness = self._base_brightness
+                print("[LEDs] DotStar LEDs initialized successfully", file=sys.stderr, flush=True)
             self._start_animation()
         except Exception as e:
             print(f"[LEDs] Failed to initialize: {e}", file=sys.stderr, flush=True)
@@ -156,53 +186,73 @@ class LEDDisplay:
         """Fast LED update loop for smooth per-LED wave + pulse."""
         while self._animation_running:
             try:
-                state = self._last_state
-                if self._dots and state and self._cached_pipeline_brightness is not None:
-                    t = time.time()
-                    # Flash override
-                    if t < self._flash_until:
-                        colors = [self._flash_color] * 3
-                    else:
-                        colors = [state.led2, state.led1, state.led0]
-                    brightness = max(self._hardware_brightness_floor, self._current_brightness)
-                    pulse = _brightness.get_pulse(self._pulse_cycle) * self._pulse_amount * min(1.0, max(0.15, brightness / 0.04))
-                    pulse = min(pulse, max(0.005, brightness * 0.08))
-                    perceptual = max(self._hardware_brightness_floor, min(0.5, brightness + pulse))
-                    # RGB scaling: dim below base via RGB values (hardware brightness has a floor)
-                    rgb_scale = min(1.0, brightness / self._base_brightness) if self._base_brightness > 0 else 1.0
-                    with self._spi_lock:
-                        applied_colors = []
-                        for i, color in enumerate(colors):
-                            phase = t * 2 * math.pi / self._pulse_cycle + i * math.pi * 2 / 3
-                            mod = (0.92 + 0.08 * math.sin(phase)) * rgb_scale
-                            applied_color = tuple(
-                                max(0, min(255, int(c * mod))) for c in color
-                            )
-                            applied_colors.append(applied_color)
-                        final_brightness = max(self._hardware_brightness_floor, perceptual)
-                        self._last_wire_colors = self._write_frame(
-                            applied_colors, final_brightness, lock_held=True
-                        )
-                    self._last_applied_colors = applied_colors
-                    self._last_applied_brightness = final_brightness
-                    # Publish close to the 200ms VEML integration window. The
-                    # slower server display loop cannot timestamp the breathing
-                    # phase precisely enough for causal system identification.
-                    if t - self._last_proprioception_publish >= 0.5:
-                        try:
-                            from ...light_attribution import publish_led_proprioception
-
-                            publish_led_proprioception(
-                                self.get_proprioceptive_state(), captured_at=t
-                            )
-                            self._last_proprioception_publish = t
-                        except Exception:
-                            # Server-loop diagnostics retain the hardware state;
-                            # a missing/stale action copy fails closed in broker.
-                            pass
-            except Exception:
-                pass
+                self._animation_tick()
+            except Exception as e:
+                # 2026-11-12: was `except Exception: pass`.  This thread is
+                # the only DotStar writer, so a silent failure here meant the
+                # LEDs could be dark with nothing logged and nothing degraded.
+                # Write failures are counted in _write_frame; this catches
+                # everything else in the tick.
+                note_suppressed("leds.animation_loop", e)
             time.sleep(0.25)
+
+    def _animation_tick(self) -> None:
+        """Render and write one frame; publish it only if it reached the wire."""
+        state = self._last_state
+        if not (self._dots and state and self._cached_pipeline_brightness is not None):
+            return
+        t = time.time()
+        # Flash override
+        if t < self._flash_until:
+            colors = [self._flash_color] * 3
+        else:
+            colors = [state.led2, state.led1, state.led0]
+        brightness = max(self._hardware_brightness_floor, self._current_brightness)
+        pulse = _brightness.get_pulse(self._pulse_cycle) * self._pulse_amount * min(1.0, max(0.15, brightness / 0.04))
+        pulse = min(pulse, max(0.005, brightness * 0.08))
+        perceptual = max(self._hardware_brightness_floor, min(0.5, brightness + pulse))
+        # RGB scaling: dim below base via RGB values (hardware brightness has a floor)
+        rgb_scale = min(1.0, brightness / self._base_brightness) if self._base_brightness > 0 else 1.0
+        with self._spi_lock:
+            applied_colors = []
+            for i, color in enumerate(colors):
+                phase = t * 2 * math.pi / self._pulse_cycle + i * math.pi * 2 / 3
+                mod = (0.92 + 0.08 * math.sin(phase)) * rgb_scale
+                applied_color = tuple(
+                    max(0, min(255, int(c * mod))) for c in color
+                )
+                applied_colors.append(applied_color)
+            final_brightness = max(self._hardware_brightness_floor, perceptual)
+            try:
+                wire_colors = self._write_frame(
+                    applied_colors, final_brightness, lock_held=True
+                )
+            except Exception:
+                # Counted and made audible inside _write_frame.  Nothing
+                # reached the wire, so nothing below may be recorded or
+                # published as applied: the action copy goes stale and the
+                # broker reads it as unknown.
+                return
+            self._last_wire_colors = wire_colors
+        self._last_applied_colors = applied_colors
+        self._last_applied_brightness = final_brightness
+        # Publish close to the 200ms VEML integration window. The
+        # slower server display loop cannot timestamp the breathing
+        # phase precisely enough for causal system identification.
+        if t - self._last_proprioception_publish >= 0.5:
+            try:
+                from ...light_attribution import publish_led_proprioception
+
+                publish_led_proprioception(
+                    self.get_proprioceptive_state(), captured_at=t
+                )
+                self._last_proprioception_publish = t
+            except Exception as e:
+                # Server-loop diagnostics retain the hardware state;
+                # a missing/stale action copy fails closed in broker.
+                # Counted (2026-11-12) so a broken efference copy is an
+                # audible gap rather than a silent one.
+                note_suppressed("leds.proprioception_publish", e)
 
     def _write_frame(
         self,
@@ -219,6 +269,9 @@ class LEDDisplay:
         dimmer.  The controller instead keeps the header at full/valid and
         scales the actual channel bytes here.  The returned colors are exactly
         the bytes sent on the wire.
+
+        A failed write is counted here and re-raised; see
+        ``_note_write_failure``.
         """
         level = max(0.0, min(1.0, float(brightness)))
         wire_colors = [
@@ -227,9 +280,16 @@ class LEDDisplay:
         ]
 
         def write() -> None:
-            for index, color in enumerate(wire_colors):
-                self._dots[index] = color
-            self._dots.show()
+            # Runs with _spi_lock held on both paths below, which is what
+            # guards the failure-run bookkeeping.
+            try:
+                for index, color in enumerate(wire_colors):
+                    self._dots[index] = color
+                self._dots.show()
+            except Exception as exc:
+                self._note_write_failure(exc)
+                raise
+            self._note_write_success()
 
         if lock_held:
             write()
@@ -237,6 +297,42 @@ class LEDDisplay:
             with self._spi_lock:
                 write()
         return wire_colors
+
+    def _note_write_failure(self, exc: BaseException) -> None:
+        """Count one failed frame write.  Caller holds ``_spi_lock``.
+
+        2026-11-12: every failure is counted through ``note_suppressed``
+        (logged at most once per throttle window), and a run of
+        ``WRITE_FAILURES_BEFORE_UNAVAILABLE`` in a row marks the hardware
+        unavailable so the ``leds`` health probe fails and proprioception
+        stops reporting a brightness.  ``_dots`` is deliberately kept: the
+        animation loop keeps trying, and the first good frame recovers.
+        """
+        self._consecutive_write_failures += 1
+        note_suppressed("leds.write_frame", exc)
+        if (
+            not self._write_failed
+            and self._consecutive_write_failures >= self.WRITE_FAILURES_BEFORE_UNAVAILABLE
+        ):
+            self._write_failed = True
+            print(
+                f"[LEDs] {self._consecutive_write_failures} consecutive frame "
+                f"writes failed ({type(exc).__name__}); reporting LEDs "
+                "unavailable and still retrying",
+                file=sys.stderr, flush=True,
+            )
+
+    def _note_write_success(self) -> None:
+        """Reset the failure run.  Caller holds ``_spi_lock``."""
+        if self._write_failed:
+            print(
+                f"[LEDs] Frame write succeeded after "
+                f"{self._consecutive_write_failures} consecutive failures; "
+                "LEDs available again",
+                file=sys.stderr, flush=True,
+            )
+        self._consecutive_write_failures = 0
+        self._write_failed = False
 
     def _advance_current_brightness(self, *, immediate: bool = False) -> None:
         """Move the applied brightness toward the durable requested target."""
@@ -261,7 +357,9 @@ class LEDDisplay:
         self._known_brightness = self._current_brightness
 
     def is_available(self) -> bool:
-        return self._dots is not None
+        # 2026-11-12: a DotStar object is not evidence of working LEDs.  This
+        # was `_dots is not None`, which stayed True while every write raised.
+        return self._dots is not None and not self._write_failed
 
     def set_brightness(self, brightness: float):
         self._base_brightness = max(0, min(0.12, brightness))
@@ -392,7 +490,10 @@ class LEDDisplay:
 
     def get_proprioceptive_state(self) -> dict:
         return {
-            "brightness": self._last_applied_brightness,
+            # None = unknown: no frame has reached the wire yet, or writes
+            # are currently failing.  A value here is a claim about hardware,
+            # and it is persisted as one (system_metrics.led_brightness).
+            "brightness": None if self._write_failed else self._last_applied_brightness,
             "target_brightness": self._target_brightness,
             "expression_mode": self._expression_mode,
             "is_dancing": self._current_dance is not None and not self._current_dance.is_complete,
@@ -422,6 +523,8 @@ class LEDDisplay:
         return {
             "available": self.is_available(),
             "has_dotstar": HAS_DOTSTAR,
+            "write_failed": self._write_failed,
+            "consecutive_write_failures": self._consecutive_write_failures,
             "update_count": self._update_count,
             "base_brightness": self._base_brightness,
             "current_brightness": self._current_brightness,

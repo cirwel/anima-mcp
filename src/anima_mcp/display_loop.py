@@ -426,6 +426,24 @@ def run_quiet_world_contemplation(metacog: Any) -> None:
         logger.debug("[Metacog] Contemplative wondering: %s", contemplative)
 
 
+def capture_led_proprioception(ctx, readings) -> None:
+    """Record what the LEDs are actually doing, or that it is unknown.
+
+    The efference copy feeds the next metacognitive prediction and
+    ``readings.led_brightness`` is persisted to ``system_metrics``, so both
+    must be honest: with LEDs unavailable (never initialised, or frame writes
+    failing) the copy is None and the brightness is None. Until 2026-11-12 a
+    missing copy was written as brightness 0.0 — a measured-looking "off".
+    """
+    leds = ctx.leds
+    prop = None
+    if leds is not None and leds.is_available():
+        prop = leds.get_proprioceptive_state()
+    ctx.led_proprioception = prop
+    if readings is not None:
+        readings.led_brightness = prop.get("brightness") if prop else None
+
+
 async def sync_governance_and_render_display(
     _ctx: Any, anima: Any, readings: Any, identity: Any, _health: Any, loop_count: int
 ) -> None:
@@ -658,17 +676,17 @@ async def sync_governance_and_render_display(
         # Lumen now knows its own brightness — the light sensor becomes
         # genuinely proprioceptive rather than confusingly self-referential.
         try:
-            _ctx.led_proprioception = _ctx.leds.get_proprioceptive_state()
-            # Also populate readings.led_brightness with ACTUAL computed brightness
-            # (not just activity multiplier like stable_creature.py does)
-            if readings is not None:
-                readings.led_brightness = _ctx.led_proprioception.get("brightness", 0.0) if _ctx.led_proprioception else 0.0
+            capture_led_proprioception(_ctx, readings)
         except Exception as e:
             if loop_count % ERROR_LOG_THROTTLE == 1:
                 print(f"[LEDProprioception] Error: {e}", file=sys.stderr, flush=True)
     elif _ctx.leds:
         if loop_count == 1:
             print("[Loop] LEDs not available (hardware issue?)", file=sys.stderr, flush=True)
+        # Unavailable LEDs have no brightness to report. Skipping this block
+        # used to leave the last good efference copy in place, so a dead bus
+        # kept predicting and persisting the brightness of its last frame.
+        capture_led_proprioception(_ctx, readings)
     # Heartbeat regardless of LED update success — probe detects hardware failure independently
     if _ctx.leds and _health:
         _health.heartbeat("leds")

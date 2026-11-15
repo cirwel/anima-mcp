@@ -131,17 +131,18 @@ class TestFailureDirection:
         but the append fails — the real cursor must NOT advance, so the window
         is retried next run instead of permanently skipped."""
         rig.archive.mkdir(parents=True)
-        rig.archive.chmod(0o555)  # append into the dir will fail
+        # Make the append fail in a way no uid can bypass: `>>` onto a
+        # directory is EISDIR for everyone. This used to chmod the archive dir
+        # to 0555, which root ignores — so the test failed in any container
+        # that runs as root while passing on CI (2026-11-12).
+        rig.day_file.mkdir()
         cursor = rig.tmp / "cursor"
         cursor.write_text("s=old\n")
         rig.lines_file.write_text("entries that must not be skipped\n")
-        try:
-            result = rig.run({"JOURNAL_ARCHIVE_CURSOR": str(cursor)})
-            assert result.returncode != 0
-            assert "append" in result.stderr
-            assert cursor.read_text() == "s=old\n"
-        finally:
-            rig.archive.chmod(0o755)
+        result = rig.run({"JOURNAL_ARCHIVE_CURSOR": str(cursor)})
+        assert result.returncode != 0
+        assert "append" in result.stderr
+        assert cursor.read_text() == "s=old\n"
 
     def test_failure_writes_marker_and_success_clears_it(self, rig):
         rig.lines_file.write_text("x\n")
@@ -198,18 +199,15 @@ class TestRetention:
     def test_stuck_delete_exits_loud_instead_of_spinning(self, rig):
         rig.archive.mkdir(parents=True)
         victim = rig.archive / "journal-2026-08-01.log.gz"
-        victim.write_bytes(os.urandom(600 * 1024))
-        rig.archive.chmod(0o555)  # rm cannot unlink
+        # `rm -f` refuses a non-empty directory for every uid, root included;
+        # a 0555 archive dir (the old simulation) does not stop root.
+        victim.mkdir()
+        (victim / "payload").write_bytes(os.urandom(600 * 1024))
         rig.lines_file.write_text("")
-        try:
-            # Cursor outside the read-only dir so the run reaches the cap loop
-            # instead of dying at cursor promotion.
-            result = rig.run({
-                "JOURNAL_ARCHIVE_MAX_MB": "0",
-                "JOURNAL_ARCHIVE_CURSOR": str(rig.tmp / "cursor"),
-            })
-            assert result.returncode != 0
-            assert "could not delete" in result.stderr
-            assert victim.exists()
-        finally:
-            rig.archive.chmod(0o755)
+        result = rig.run({
+            "JOURNAL_ARCHIVE_MAX_MB": "0",
+            "JOURNAL_ARCHIVE_CURSOR": str(rig.tmp / "cursor"),
+        })
+        assert result.returncode != 0
+        assert "could not delete" in result.stderr
+        assert victim.exists()

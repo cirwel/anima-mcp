@@ -213,3 +213,311 @@ class TestAgencyBrightnessFactor:
         display = self._display(0.06)
         display.adjust_agency_brightness("decrease")
         assert display._base_brightness == 0.04
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-12 -- frame-write failures must be audible, and a dead bus must read
+# as unavailable (invariant 2: fail toward unknown, never toward healthy).
+# ---------------------------------------------------------------------------
+
+
+class _FlakyDots:
+    """DotStar stand-in whose ``show()`` can be made to fail like a dead SPI bus."""
+
+    def __init__(self, fail=True):
+        self.fail = fail
+        self.attempts = 0
+        self.colors = {}
+
+    def __setitem__(self, index, color):
+        self.colors[index] = color
+
+    def fill(self, color):
+        pass
+
+    def show(self):
+        self.attempts += 1
+        if self.fail:
+            raise OSError(5, "Input/output error")
+
+
+class TestFrameWriteFailuresAreAudible:
+    """The animation thread is the only DotStar writer.
+
+    It used to wrap the write in ``except Exception: pass``: with every write
+    raising OSError there were zero log lines, ``is_available()`` stayed True,
+    health read ``leds: ok`` and proprioception kept reporting a brightness
+    "sent to hardware" that no frame had carried.
+    """
+
+    @staticmethod
+    def _display(monkeypatch, tmp_path, dots):
+        import pytest
+
+        from anima_mcp import error_recovery, light_attribution
+
+        error_recovery.reset_suppressed_counts()
+        action_path = tmp_path / "led_proprioception.json"
+        monkeypatch.setenv(light_attribution.LED_PROPRIOCEPTION_ENV, str(action_path))
+        display = LEDDisplay(brightness=0.04)  # off-Pi: no DotStar, no thread
+        if display._dots is not None:  # pragma: no cover - only on a real Pi
+            pytest.skip("real DotStar hardware present")
+        display._dots = dots
+        display.update_from_anima(0.5, 0.6, 0.7, 0.8)
+        return display, action_path
+
+    @staticmethod
+    def _run_ticks(monkeypatch, display, count):
+        """Drive the real animation loop for ``count`` iterations, no thread."""
+        import time as time_module
+
+        seen = {"n": 0}
+
+        def stop_after(_seconds):
+            seen["n"] += 1
+            if seen["n"] >= count:
+                display._animation_running = False
+
+        monkeypatch.setattr(time_module, "sleep", stop_after)
+        display._animation_running = True
+        display._animation_loop()
+
+    @staticmethod
+    def _floor():
+        return LEDDisplay.WRITE_FAILURES_BEFORE_UNAVAILABLE
+
+    def test_every_failed_write_is_counted(self, monkeypatch, tmp_path):
+        from anima_mcp.error_recovery import suppressed_counts
+
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        self._run_ticks(monkeypatch, display, 5)
+
+        assert dots.attempts == 5
+        assert suppressed_counts().get("leds.write_frame") == 5
+
+    def test_first_failure_is_logged(self, monkeypatch, tmp_path, capsys):
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        capsys.readouterr()
+        self._run_ticks(monkeypatch, display, 1)
+
+        err = capsys.readouterr().err
+        assert "[suppressed] leds.write_frame" in err
+        assert "Input/output error" in err
+
+    def test_consecutive_failures_mark_hardware_unavailable(self, monkeypatch, tmp_path):
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        assert display.is_available() is True
+
+        self._run_ticks(monkeypatch, display, self._floor())
+
+        assert display.is_available() is False
+        assert display.get_diagnostics()["available"] is False
+        assert display.get_diagnostics()["consecutive_write_failures"] == self._floor()
+
+    def test_one_transient_error_does_not_flip_availability(self, monkeypatch, tmp_path):
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+
+        # Failures separated by a good frame never form a run.
+        for _ in range(3):
+            dots.fail = True
+            self._run_ticks(monkeypatch, display, self._floor() - 1)
+            assert display.is_available() is True
+            dots.fail = False
+            self._run_ticks(monkeypatch, display, 1)
+            assert display.is_available() is True
+            assert display.get_diagnostics()["consecutive_write_failures"] == 0
+
+    def test_proprioception_claims_no_brightness_it_did_not_apply(self, monkeypatch, tmp_path):
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+
+        # No frame has ever reached the wire: nothing was applied.
+        assert display.get_proprioceptive_state()["brightness"] is None
+        self._run_ticks(monkeypatch, display, self._floor() + 2)
+        assert display.get_proprioceptive_state()["brightness"] is None
+
+    def test_dead_bus_after_good_frames_withdraws_brightness(self, monkeypatch, tmp_path):
+        dots = _FlakyDots(fail=False)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        self._run_ticks(monkeypatch, display, 2)
+        applied = display.get_proprioceptive_state()["brightness"]
+        assert isinstance(applied, float) and applied > 0
+
+        dots.fail = True
+        self._run_ticks(monkeypatch, display, self._floor())
+        assert display.is_available() is False
+        assert display.get_proprioceptive_state()["brightness"] is None
+
+    def test_successful_write_recovers(self, monkeypatch, tmp_path, capsys):
+        from anima_mcp.light_attribution import read_led_proprioception
+
+        dots = _FlakyDots(fail=True)
+        display, action_path = self._display(monkeypatch, tmp_path, dots)
+        self._run_ticks(monkeypatch, display, self._floor() + 4)
+        assert display.is_available() is False
+        # The light-attribution action copy is never written for a frame that
+        # did not land, so the broker reads it as unknown.
+        assert read_led_proprioception(path=action_path, max_age_seconds=2.0) is None
+
+        dots.fail = False
+        capsys.readouterr()
+        self._run_ticks(monkeypatch, display, 1)
+
+        assert display.is_available() is True
+        assert display.get_diagnostics()["consecutive_write_failures"] == 0
+        assert isinstance(display.get_proprioceptive_state()["brightness"], float)
+        published = read_led_proprioception(path=action_path, max_age_seconds=2.0)
+        assert published is not None
+        assert published["brightness"] == display.get_proprioceptive_state()["brightness"]
+        assert "available again" in capsys.readouterr().err
+
+    def test_loop_errors_outside_the_write_are_counted_too(self, monkeypatch, tmp_path):
+        from anima_mcp.error_recovery import suppressed_counts
+
+        dots = _FlakyDots(fail=False)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        display._pulse_cycle = 0.0  # ZeroDivisionError before any write
+
+        self._run_ticks(monkeypatch, display, 2)
+
+        assert dots.attempts == 0
+        assert suppressed_counts().get("leds.animation_loop") == 2
+        # Not a hardware verdict: no write was attempted, so none failed.
+        assert display.is_available() is True
+
+    def test_failed_first_write_is_not_announced_as_success(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        from anima_mcp import error_recovery
+        from anima_mcp.display.leds import display as display_module
+
+        error_recovery.reset_suppressed_counts()
+        dots = _FlakyDots(fail=True)
+        monkeypatch.setattr(display_module, "HAS_DOTSTAR", True)
+        monkeypatch.setattr(display_module, "board", SimpleNamespace(D6=6, D5=5))
+        monkeypatch.setattr(
+            display_module,
+            "adafruit_dotstar",
+            SimpleNamespace(DotStar=lambda *args, **kwargs: dots),
+        )
+        monkeypatch.setattr(LEDDisplay, "_start_animation", lambda self: None)
+
+        display = LEDDisplay(brightness=0.04)
+
+        err = capsys.readouterr().err
+        assert dots.attempts == 1
+        assert "initialized successfully" not in err
+        assert "first frame write failed" in err
+        assert error_recovery.suppressed_counts().get("leds.write_frame") == 1
+        # One failure is evidence, not a verdict; the animation loop decides.
+        assert display.is_available() is True
+        assert display.get_proprioceptive_state()["brightness"] is None
+
+    def test_good_first_write_still_announces_success(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        from anima_mcp.display.leds import display as display_module
+
+        dots = _FlakyDots(fail=False)
+        monkeypatch.setattr(display_module, "HAS_DOTSTAR", True)
+        monkeypatch.setattr(display_module, "board", SimpleNamespace(D6=6, D5=5))
+        monkeypatch.setattr(
+            display_module,
+            "adafruit_dotstar",
+            SimpleNamespace(DotStar=lambda *args, **kwargs: dots),
+        )
+        monkeypatch.setattr(LEDDisplay, "_start_animation", lambda self: None)
+
+        display = LEDDisplay(brightness=0.04)
+
+        assert "initialized successfully" in capsys.readouterr().err
+        assert dots.colors == {0: (0, 0, 0), 1: (0, 0, 0), 2: (0, 0, 0)}  # int(10 * 0.04)
+        assert display.get_proprioceptive_state()["brightness"] == 0.04
+
+    def test_health_probe_reports_dead_leds(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        from anima_mcp import ctx_ref, health, lifecycle
+
+        dots = _FlakyDots(fail=True)
+        display, _ = self._display(monkeypatch, tmp_path, dots)
+        self._run_ticks(monkeypatch, display, self._floor())
+
+        registry = health.HealthRegistry()
+        monkeypatch.setattr(health, "_registry", registry)
+        monkeypatch.setattr(
+            ctx_ref,
+            "_ctx",
+            SimpleNamespace(
+                store=None, leds=display, display=None, growth=None,
+                screen_renderer=None, voice_instance=None, last_shm_data=None,
+            ),
+        )
+        lifecycle._register_health_probes()
+        leds = registry.get_subsystem("leds")
+        leds.debounce_seconds = 0.0
+        registry.heartbeat("leds")  # the display loop heartbeats regardless
+
+        assert leds.get_status() == "degraded"
+
+
+class TestDisplayLoopRecordsUnknownBrightness:
+    """The display loop's efference copy must not outlive the hardware
+    (2026-11-12). Its LED block is skipped once LEDs are unavailable, which
+    used to leave the last good copy in place — and a missing copy was written
+    to readings as brightness 0.0, a measured-looking "off"."""
+
+    class _Readings:
+        led_brightness = 0.04
+
+    class _Ctx:
+        def __init__(self, leds):
+            self.leds = leds
+            self.led_proprioception = {"brightness": 0.04}
+
+    class _Leds:
+        def __init__(self, available, brightness=0.031):
+            self._available = available
+            self._brightness = brightness
+
+        def is_available(self):
+            return self._available
+
+        def get_proprioceptive_state(self):
+            return {"brightness": self._brightness}
+
+    def test_available_leds_report_what_they_applied(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert ctx.led_proprioception == {"brightness": 0.031}
+        assert readings.led_brightness == 0.031
+
+    def test_unavailable_leds_withdraw_the_stale_copy(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(False)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert ctx.led_proprioception is None
+        assert readings.led_brightness is None
+
+    def test_unknown_applied_brightness_stays_unknown(self):
+        """Before the first frame lands the controller reports None; that must
+        reach readings as None, not be defaulted."""
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True, brightness=None)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert readings.led_brightness is None
+
+    def test_a_real_zero_is_kept(self):
+        from anima_mcp.display_loop import capture_led_proprioception
+
+        ctx, readings = self._Ctx(self._Leds(True, brightness=0.0)), self._Readings()
+        capture_led_proprioception(ctx, readings)
+        assert readings.led_brightness == 0.0

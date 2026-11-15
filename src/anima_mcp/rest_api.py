@@ -96,6 +96,20 @@ def _body_state_fields(anima, body_projection) -> dict:
     }
 
 
+def _shm_surprise(shm_data) -> float | None:
+    """The broker's last prediction-error surprise, or None when unpublished.
+
+    Same slice the LCD mind screen reads (`metacognition.surprise` in the
+    broker's SHM snapshot). Anything that is not a finite number is unknown,
+    never 0.0 — a measured zero and an absent one must stay distinguishable.
+    """
+    meta = shm_data.get("metacognition") if isinstance(shm_data, dict) else None
+    value = meta.get("surprise") if isinstance(meta, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
 def _governance_state_fields(governance: dict) -> dict:
     """Expose check-in input and UNITARES output as different state spaces."""
     body_projection = _validated_eisv_vector(
@@ -491,22 +505,28 @@ async def rest_state(request):
             "stability": anima.stability,
             "presence": anima.presence,
             "feeling": feeling,
-            "surprise": 0,
-            "cpu_temp": readings.cpu_temp_c or 0,
-            "ambient_temp": readings.ambient_temp_c or 0,
+            # Was a hard-coded 0 — a constant that read as "nothing
+            # surprising" whatever the broker measured (2026-11-12). Now the
+            # broker's published prediction-error surprise, or null.
+            "surprise": _shm_surprise(shm_data),
+            # Readings pass through as-is (2026-11-12). `x or 0` reported a
+            # dead sensor as 0.0°C / 0 lux / 0%, indistinguishable from a
+            # measurement; a missing reading is null, as pressure already was.
+            "cpu_temp": readings.cpu_temp_c,
+            "ambient_temp": readings.ambient_temp_c,
             # Compatibility name retained for the Control Center; the explicit
             # fields prevent clients from mistaking the mixed physical channel
             # for an environmental measurement.
-            "light": readings.light_lux or 0,
-            "raw_light_lux": readings.light_lux or 0,
+            "light": readings.light_lux,
+            "raw_light_lux": readings.light_lux,
             "light_composition": "room_light_plus_dotstar_glow",
             "light_attribution": light_attribution,
             "clarity_attribution": clarity_attribution,
-            "humidity": readings.humidity_pct or 0,
+            "humidity": readings.humidity_pct,
             "pressure": readings.pressure_hpa,
-            "cpu_percent": readings.cpu_percent or 0,
-            "memory_percent": readings.memory_percent or 0,
-            "disk_percent": readings.disk_percent or 0,
+            "cpu_percent": readings.cpu_percent,
+            "memory_percent": readings.memory_percent,
+            "disk_percent": readings.disk_percent,
             "neural": neural,
             "neural_provenance": computational_neural_provenance(),
             "governance": {
@@ -990,11 +1010,12 @@ async def rest_layers(request):
         identity = store.get_identity() if store else None
 
         # Physical sensors
+        # No `or 0` (2026-11-12): a dead sensor is null here, not 0.0°C / 0%.
         physical = {
-            "ambient_temp_c": readings.ambient_temp_c or 0,
-            "humidity_pct": readings.humidity_pct or 0,
-            "light_lux": readings.light_lux or 0,
-            "raw_light_lux": readings.light_lux or 0,
+            "ambient_temp_c": readings.ambient_temp_c,
+            "humidity_pct": readings.humidity_pct,
+            "light_lux": readings.light_lux,
+            "raw_light_lux": readings.light_lux,
             "light_lux_composition": "room_light_plus_dotstar_glow",
             "pressure_hpa": readings.pressure_hpa,
         }
@@ -1028,10 +1049,10 @@ async def rest_layers(request):
 
         # System
         system = {
-            "cpu_temp_c": readings.cpu_temp_c or 0,
-            "cpu_percent": readings.cpu_percent or 0,
-            "memory_percent": readings.memory_percent or 0,
-            "disk_percent": readings.disk_percent or 0,
+            "cpu_temp_c": readings.cpu_temp_c,
+            "cpu_percent": readings.cpu_percent,
+            "memory_percent": readings.memory_percent,
+            "disk_percent": readings.disk_percent,
         }
 
         # Identity

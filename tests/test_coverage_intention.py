@@ -243,7 +243,10 @@ class TestIntentionChangesTheComposition:
         pointillist  0.750 +- .020    0.734 +- .020    0.635 +- .029
         field        0.711 +- .061    0.616 +- .087    0.612 +- .097
         resonance    0.901 +- .018    0.872 +- .051    0.850 +- .028
-        geometric    0.816 +- .029    0.811 +- .062    0.697 +- .030
+        geometric    0.794 +- .052    0.748 +- .059    0.685 +- .070
+
+    (geometric re-measured over 64 seeds 2026-11-12, when pieces gained an
+    arrangement; its earlier row was 0.816 / 0.811 / 0.697.)
     """
 
     @pytest.mark.parametrize("era_name", list(PIECE_MARKS))
@@ -256,27 +259,31 @@ class TestIntentionChangesTheComposition:
 
     @pytest.mark.parametrize("era_name", list(PIECE_MARKS))
     def test_sparse_spreads(self, era_name):
-        if era_name in ("gestural", "geometric"):
-            pytest.skip(f"{era_name} does not respond to sparse; see test_the_no_ops")
+        if era_name == "gestural":
+            pytest.skip("gestural does not respond to sparse; see test_the_no_ops")
         assert _paired_gap(era_name, "sparse") > 0
 
     def test_the_no_ops_are_real_and_must_not_be_tuned_away(self):
-        """Three era/direction pairs do not respond, and all three are correct.
+        """Two era/direction pairs do not respond, and both are correct.
 
         Gestural sweeps the whole canvas by construction (~60 of 64 cells),
         so there is nothing left for `sparse` to open up. Field already works
         in a tight region, so `dense` has nothing left to concentrate.
-        Geometric stamps ~70 whole shapes over a whole piece, so a bias that
-        leans each successive gesture boundary has very few boundaries to lean
-        — `dense` still lands (the stamps pile up), `sparse` does not.
 
-        ⚠️ Geometric's `sparse` was asserted as a real effect from 2026-08-22
-        until 2026-09-17 and never was one. Measured paired over 64 seeds on
-        the pre-disposition code: -0.006, winning 27 of 64 — no effect, and
-        slightly the wrong way. The original 16-seed unpaired sample read
-        +0.005 against a balanced spread of 0.062 and called it a pass. It is
-        recorded here rather than quietly deleted: a test that passed by luck
-        for a month is a fact about this suite worth keeping.
+        Geometric's `sparse` was the third until 2026-11-12, and its history is
+        kept because it is a fact about this suite. It was asserted as a real
+        effect from 2026-08-22 until 2026-09-17 and never was one: measured
+        paired over 64 seeds on the pre-disposition code it was -0.006, winning
+        27 of 64, while the original 16-seed unpaired sample read +0.005
+        against a balanced spread of 0.062 and called it a pass. It was then
+        pinned here as a no-op. The reason given was that ~70 stamps leave few
+        gesture boundaries to lean; the real reason was the drift — at high
+        clarity every stamp took a random step FROM THE BIASED POSITION, so the
+        lean was carried along and averaged away. Once a stamp lands on the
+        piece's own arrangement the lean is applied fresh each time and
+        `sparse` is real: +0.042 paired over 256 seeds, winning 225 (se 0.002).
+        `dense` weakened from -0.143 to -0.062 (245 of 256) because the
+        arrangement, not the pile, now decides where most of the work goes.
 
         Each era still responds to at least one direction; none responds to
         neither.
@@ -290,11 +297,11 @@ class TestIntentionChangesTheComposition:
         """
         assert abs(_paired_gap("gestural", "sparse")) < 0.03
         assert abs(_paired_gap("field", "dense")) < 0.03
-        assert abs(_paired_gap("geometric", "sparse")) < 0.03
 
         # ...and each era must still answer to SOMETHING, or the intention is
-        # decorative for it.
-        assert _paired_gap("geometric", "dense") < -0.05
+        # decorative for it. Geometric now answers in both directions.
+        assert _paired_gap("geometric", "sparse") > 0.02
+        assert _paired_gap("geometric", "dense") < -0.03
         assert _paired_gap("gestural", "dense") < 0
         assert _paired_gap("field", "sparse") > 0
 

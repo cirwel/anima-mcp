@@ -481,8 +481,13 @@ class ResonanceEra:
         # 5. Sparse jump (low probability)
         jump_prob = 0.02 * (1 - 0.4 * coherence) * (1 - 0.4 * clarity)
         if random.random() < jump_prob:
-            if canvas is not None:
-                gx, gy = canvas.sparsest_cell()
+            # coverage_bias_cell breaks ties uniformly. sparsest_cell() resolves
+            # them to the first cell scanned, and early in a piece most cells
+            # are tied at empty: measured 2026-11-12, the first jump went to the
+            # top-left cell in 39 of 40 pieces. None = nothing drawn yet.
+            cell = canvas.coverage_bias_cell("sparse") if canvas is not None else None
+            if cell is not None:
+                gx, gy = cell
                 focus_x = max(float(margin), min(float(240 - margin), gx * 30 + random.uniform(5, 25)))
                 focus_y = max(float(margin), min(float(240 - margin), gy * 30 + random.uniform(5, 25)))
             else:
@@ -525,7 +530,11 @@ class ResonanceEra:
         # Field-driven warmth bias: marks in high-field zones shift toward amber
         field_max = state.field.max()
         if field_max > 1e-6:
-            field_val = state.field[state._focus_cx, state._focus_cy]
+            # Rows are y, columns are x, as in _deposit and _gradient_at. This
+            # read [cx, cy] until 2026-11-12 — the cell mirrored across the
+            # diagonal — so the bias warmed ground with no memory and left the
+            # memory itself cold.
+            field_val = state.field[state._focus_cy, state._focus_cx]
             norm_field = field_val / field_max
             if norm_field > FIELD_HIGH_THRESHOLD:
                 hue_deg -= (

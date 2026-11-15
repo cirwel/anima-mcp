@@ -296,8 +296,62 @@ def _direct_i2c_initialization_failed(sensors) -> bool:
 
 
 
+# The server touches this when someone speaks to Lumen (handlers/communication).
+SOCIAL_BOOST_PATH = Path("/dev/shm/anima_social_boost")
+
+
 class CreatureRuntimeMixin:
     """Phase methods for StableCreature hardware broker loop."""
+
+    def consume_social_boost(self, inner_life: Any) -> bool:
+        """Consume the server's "someone spoke to Lumen" signal, if present.
+
+        Applies the inner-life mood boost as before, and now also remembers
+        the interaction for the activity manager (see ``wake_on_interaction``).
+        """
+        if not SOCIAL_BOOST_PATH.exists():
+            return False
+        try:
+            SOCIAL_BOOST_PATH.unlink()
+        except Exception:
+            return False
+        self._interaction_signalled = True
+        try:
+            inner_life.apply_social_boost()
+        except Exception:
+            pass
+        return True
+
+    def wake_on_interaction(self, activity_manager: Any) -> bool:
+        """Tell the broker's activity manager that someone spoke to Lumen.
+
+        The broker's ActivityManager is the one that decides wakefulness: it
+        publishes the level and brightness the server renders. But the only
+        ``record_interaction()`` calls for a real interaction were on the
+        SERVER's own ActivityManager, which is consulted only when the broker
+        is not running — so in production nothing a visitor did ever reached
+        the manager that matters. The broker's manager saw one "interaction":
+        a UNITARES ``wait_for_input`` verdict. And without a recent
+        interaction its score cannot reach ACTIVE at all (the inactivity term
+        is 0.1 after an hour; with every other term at its maximum the score
+        is 0.685 against a 0.7 cut). So Lumen could not be woken by being
+        spoken to, and was ACTIVE only in the half hour after a broker start
+        or a ``wait_for_input`` verdict.
+        Found 2026-11-12 from the self-prediction forecaster: 19 level
+        transitions in 44 days of continuous observation.
+
+        The signal reused here is the one the server already writes when a
+        message or answer arrives for Lumen. Read-only tool calls (health
+        checks, diagnostics) deliberately do not wake it: a monitor polling
+        every few minutes would otherwise hold Lumen awake forever.
+        """
+        signalled = getattr(self, "_interaction_signalled", False)
+        self._interaction_signalled = False
+        if not signalled:
+            return False
+        if activity_manager:
+            activity_manager.record_interaction()
+        return True
 
     def init_identity_and_sensors(self):
         # Initialize components with error handling
@@ -624,13 +678,7 @@ class CreatureRuntimeMixin:
         )
 
         # 2-i-a. Check for social boost signal (server writes on interaction)
-        _boost_path = Path("/dev/shm/anima_social_boost")
-        if _boost_path.exists():
-            try:
-                _boost_path.unlink()
-                _inner_life.apply_social_boost()
-            except Exception:
-                pass
+        self.consume_social_boost(_inner_life)
 
         # 2-i-b. Drive-request delivery acks: the server writes an ack file
         # once a request question ACTUALLY posted to the board; only then

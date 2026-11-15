@@ -189,33 +189,37 @@ class TestPruneSystemMetrics:
         assert deleted == 0
 
 
+def _real_probe(name, store, monkeypatch):
+    """The probe lifecycle actually registers, pointed at ``store``.
+
+    These classes used to test hand-copied replicas of the probe bodies, so
+    they kept passing whatever the real probes did.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from anima_mcp import ctx_ref, health, lifecycle
+
+    probes = {}
+    registry = MagicMock()
+    registry.register.side_effect = (
+        lambda probe_name, probe=None, **_kwargs: probes.__setitem__(probe_name, probe)
+    )
+    monkeypatch.setattr(health, "get_health_registry", lambda: registry)
+    monkeypatch.setattr(ctx_ref, "_ctx", SimpleNamespace(store=store))
+    lifecycle._register_health_probes()
+    return probes[name]
+
+
 class TestThermalRateProbe:
     """Test the thermal_trend probe logic (metrics → health bridge)."""
 
-    def _make_probe(self, store):
-        """Build the thermal rate probe with a mock ctx pointing to store."""
-        from anima_mcp.server_state import THERMAL_RATE_THRESHOLD
+    @pytest.fixture(autouse=True)
+    def _bind(self, monkeypatch):
+        self._monkeypatch = monkeypatch
 
-        def probe():
-            try:
-                rows = store.get_system_metrics(hours=1.0/12, limit=20)
-                if len(rows) < 3:
-                    return True
-                first, last = rows[0], rows[-1]
-                t0 = datetime.fromisoformat(first["timestamp"])
-                t1 = datetime.fromisoformat(last["timestamp"])
-                minutes = (t1 - t0).total_seconds() / 60.0
-                if minutes < 0.5:
-                    return True
-                temp0 = first.get("cpu_temp_c")
-                temp1 = last.get("cpu_temp_c")
-                if temp0 is None or temp1 is None:
-                    return True
-                rate = (temp1 - temp0) / minutes
-                return rate <= THERMAL_RATE_THRESHOLD
-            except Exception:
-                return True
-        return probe
+    def _make_probe(self, store):
+        return _real_probe("thermal_trend", store, self._monkeypatch)
 
     def _insert_with_timestamps(self, store, temps, interval_seconds=30):
         """Insert metrics rows with controlled timestamps."""
@@ -229,75 +233,192 @@ class TestThermalRateProbe:
             )
         conn.commit()
 
-    def test_healthy_when_no_data(self, store):
-        probe = self._make_probe(store)
-        assert probe() is True
+    def test_unknown_when_no_data(self, store):
+        # 2026-11-12: was "healthy when no data". No rows is not evidence of
+        # a cool CPU; the probe says it cannot tell.
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["state"] == "unknown"
+        assert "evaluated" not in result
 
-    def test_healthy_when_insufficient_rows(self, store):
+    def test_unknown_when_insufficient_rows(self, store):
         store.record_system_metrics(FakeReadings(cpu_temp_c=50.0))
         store.record_system_metrics(FakeReadings(cpu_temp_c=55.0))
-        probe = self._make_probe(store)
-        assert probe() is True  # Only 2 rows, need 3
+        result = self._make_probe(store)()
+        assert result["ok"] is False  # Only 2 rows, need 3
+        assert result["state"] == "unknown"
+        assert result["rows"] == 2
+
+    def test_unknown_when_cpu_temp_is_null(self, store):
+        self._insert_with_timestamps(store, [None, None, None, None, None])
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["state"] == "unknown"
 
     def test_healthy_with_stable_temp(self, store):
         # 5 rows over 2 minutes, stable at 55°C
         self._insert_with_timestamps(store, [55.0, 55.1, 54.9, 55.0, 55.1])
-        probe = self._make_probe(store)
-        assert probe() is True
+        result = self._make_probe(store)()
+        assert result["ok"] is True
+        assert result["evaluated"] is True
 
     def test_degraded_with_rapid_rise(self, store):
         # 5 rows over 2 minutes, rising 10°C/min (50 → 70 in 2 min)
         self._insert_with_timestamps(store, [50.0, 55.0, 60.0, 65.0, 70.0])
-        probe = self._make_probe(store)
-        assert probe() is False
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["evaluated"] is True
+        assert result["state"] == "rising_fast"
+        assert result["rate_c_per_min"] == pytest.approx(10.0, abs=0.1)
 
     def test_healthy_with_gradual_rise(self, store):
         # 5 rows over 2 minutes, rising 2.5°C/min (50 → 55 in 2 min) — below threshold
         self._insert_with_timestamps(store, [50.0, 51.25, 52.5, 53.75, 55.0])
-        probe = self._make_probe(store)
-        assert probe() is True
+        assert self._make_probe(store)()["ok"] is True
 
     def test_healthy_with_cooling(self, store):
         # Temperature falling — always ok
         self._insert_with_timestamps(store, [70.0, 65.0, 60.0, 55.0, 50.0])
-        probe = self._make_probe(store)
-        assert probe() is True
+        assert self._make_probe(store)()["ok"] is True
 
 
 class TestMemoryPressureProbe:
     """Test the memory_pressure probe logic."""
 
+    @pytest.fixture(autouse=True)
+    def _bind(self, monkeypatch):
+        self._monkeypatch = monkeypatch
+
     def _make_probe(self, store):
-        from anima_mcp.server_state import MEMORY_PRESSURE_THRESHOLD
+        return _real_probe("memory_pressure", store, self._monkeypatch)
 
-        def probe():
-            try:
-                rows = store.get_system_metrics(hours=1.0/60, limit=3)
-                if not rows:
-                    return True
-                mem = rows[-1].get("memory_percent")
-                if mem is None:
-                    return True
-                return mem < MEMORY_PRESSURE_THRESHOLD
-            except Exception:
-                return True
-        return probe
+    def test_unknown_when_no_data(self, store):
+        # 2026-11-12: was "healthy when no data".
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["state"] == "unknown"
+        assert "evaluated" not in result
 
-    def test_healthy_when_no_data(self, store):
-        probe = self._make_probe(store)
-        assert probe() is True
+    def test_unknown_when_memory_is_null(self, store):
+        store.record_system_metrics(FakeReadings(memory_percent=None))
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["state"] == "unknown"
 
     def test_healthy_with_normal_memory(self, store):
         store.record_system_metrics(FakeReadings(memory_percent=45.0))
-        probe = self._make_probe(store)
-        assert probe() is True
+        result = self._make_probe(store)()
+        assert result["ok"] is True
+        assert result["evaluated"] is True
+        assert result["sample_age_seconds"] <= 5
 
     def test_degraded_with_high_memory(self, store):
         store.record_system_metrics(FakeReadings(memory_percent=95.0))
-        probe = self._make_probe(store)
-        assert probe() is False
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["evaluated"] is True
+        assert result["state"] == "high"
 
     def test_healthy_at_boundary(self, store):
         store.record_system_metrics(FakeReadings(memory_percent=89.9))
-        probe = self._make_probe(store)
-        assert probe() is True
+        assert self._make_probe(store)()["ok"] is True
+
+    def test_one_skipped_write_does_not_blind_the_probe(self, store):
+        # The newest row is two minutes old: one or two ~30 s writes were
+        # skipped. Still a reading, and its age is reported.
+        conn = store._connect()
+        ts = (datetime.now() - timedelta(seconds=120)).isoformat()
+        conn.execute(
+            "INSERT INTO system_metrics (timestamp, memory_percent, epoch) VALUES (?, ?, 1)",
+            (ts, 45.0),
+        )
+        conn.commit()
+        result = self._make_probe(store)()
+        assert result["ok"] is True
+        assert 115 <= result["sample_age_seconds"] <= 130
+
+    def test_stale_rows_are_not_evidence(self, store):
+        conn = store._connect()
+        ts = (datetime.now() - timedelta(minutes=10)).isoformat()
+        conn.execute(
+            "INSERT INTO system_metrics (timestamp, memory_percent, epoch) VALUES (?, ?, 1)",
+            (ts, 45.0),
+        )
+        conn.commit()
+        result = self._make_probe(store)()
+        assert result["ok"] is False
+        assert result["state"] == "unknown"
+
+
+class _Health:
+    def __init__(self):
+        self.beats = []
+
+    def heartbeat(self, name):
+        self.beats.append(name)
+
+
+class _BrokenStore:
+    def record_system_metrics(self, readings):
+        raise RuntimeError("database disk image is malformed")
+
+
+class TestSystemMetricsWriter:
+    """The loop's writer: a failed write is counted and is not a heartbeat.
+
+    2026-11-12: the write sat in `except Exception: pass` and the thermal /
+    memory heartbeats fired "regardless", so a store rejecting every row left
+    no trace and kept both subsystems looking alive.
+    """
+
+    def test_failed_write_is_counted_and_not_heartbeated(self):
+        from types import SimpleNamespace
+
+        from anima_mcp import server
+        from anima_mcp.error_recovery import reset_suppressed_counts, suppressed_counts
+
+        reset_suppressed_counts()
+        health = _Health()
+        ctx = SimpleNamespace(store=_BrokenStore())
+
+        assert server._record_system_metrics(ctx, FakeReadings(), health) is False
+
+        assert suppressed_counts().get("server.system_metrics") == 1
+        assert health.beats == []
+        reset_suppressed_counts()
+
+    def test_successful_write_heartbeats_both_probes(self, store):
+        from types import SimpleNamespace
+
+        from anima_mcp import server
+
+        health = _Health()
+        ctx = SimpleNamespace(store=store)
+
+        assert server._record_system_metrics(ctx, FakeReadings(), health) is True
+
+        assert sorted(health.beats) == ["memory_pressure", "thermal_trend"]
+        assert len(store.get_system_metrics(hours=1.0)) == 1
+
+    @pytest.mark.parametrize("has_store, has_readings", [(False, True), (True, False)])
+    def test_nothing_written_means_no_heartbeat(self, store, has_store, has_readings):
+        from types import SimpleNamespace
+
+        from anima_mcp import server
+
+        health = _Health()
+        ctx = SimpleNamespace(store=store if has_store else None)
+        readings = FakeReadings() if has_readings else None
+
+        assert server._record_system_metrics(ctx, readings, health) is False
+        assert health.beats == []
+
+    def test_loop_calls_the_writer_and_has_no_bare_swallow(self):
+        import inspect
+
+        from anima_mcp import server
+
+        source = inspect.getsource(server._update_display_loop)
+        assert "_record_system_metrics(_ctx, readings, _health)" in source
+        assert "_ctx.store.record_system_metrics(readings)" not in source
+        assert '_health.heartbeat("thermal_trend")' not in source

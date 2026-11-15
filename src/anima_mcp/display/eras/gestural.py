@@ -4,21 +4,50 @@ Feb 7, 2026 – present.
 
 5 micro-primitives (dot, stroke, curve, cluster, drag).
 Focus drift with direction locks (no forced orbits — circles emerge organically or not at all).
-Full-palette HSV color generation.
+Full-palette HSV color generation, decided per gesture run (see RUN_SHIMMER).
 Granular mark-making: small deliberate acts that accumulate into forms.
 """
 
+import colorsys
 import math
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..art_era import (
     EraState,
     draw_distinct,
     hue_distance,
+    set_distance,
     weighted_choice,
 )
+
+Color = Tuple[int, int, int]
+
+# The off-palette colours a run may take instead of the piece's hue window.
+VIBRANT_COLORS: List[Color] = [
+    (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+    (255, 0, 255), (0, 255, 255), (255, 128, 0), (255, 64, 64),
+    (255, 192, 203), (255, 215, 0), (0, 191, 255), (138, 43, 226),
+    (75, 0, 130), (0, 128, 128), (139, 69, 19), (34, 139, 34),
+    (210, 180, 140), (255, 182, 193), (173, 216, 230), (144, 238, 144),
+    (255, 255, 224), (221, 160, 221), (128, 0, 0), (0, 100, 0),
+    (25, 25, 112), (128, 0, 128),
+]
+
+# How many of those one piece may use. Until 2026-11-12 every mark drew
+# afresh from all 26, so a quarter of every piece was the whole list.
+ACCENT_COUNT = 2
+
+# A run's marks shimmer around the run's own place in the hue window by this
+# fraction of the piece's span. A proportion of the piece's own disposition,
+# not a cut against anything Lumen senses.
+RUN_SHIMMER = 0.12
+
+
+def _hex(color: Sequence[int]) -> str:
+    """A colour as it is banked in a disposition — JSON-safe and hashable."""
+    return "#%02x%02x%02x" % (int(color[0]), int(color[1]), int(color[2]))
 
 
 @dataclass
@@ -40,6 +69,16 @@ class GesturalState(EraState):
     hue_span: float = 180.0    # width of the hue window (was the hardcoded 180)
     lead_gesture: str = ""     # the primitive this piece leans on
     lead_weight: float = 1.0   # how hard it leans (1.0 = no lean, the old behavior)
+    # The piece's accent pair (2026-11-12). Empty on a bare state, which then
+    # takes its accents from the whole list — one per run, like any other.
+    accents: Tuple[Color, ...] = ()
+
+    # --- Per-run colour identity (decided when a gesture run begins) --------
+    # Colour used to be drawn per MARK, so one 15-45 mark line came out as
+    # 15-45 colours and no stroke read as a stroke (measured 2026-11-12: a
+    # piece with a 50-degree window still filled 8 of 12 hue bins).
+    run_place: float = 0.0               # the run's place in the window, -0.5..0.5
+    run_accent: Optional[Color] = None   # set when this run is an accent run
 
     def intentionality(self) -> float:
         """Proprioceptive I_signal for EISV.
@@ -68,6 +107,7 @@ class GesturalState(EraState):
             "hue_span": round(self.hue_span, 1),
             "lead": self.lead_gesture,
             "lead_weight": round(self.lead_weight, 2),
+            "accents": [_hex(c) for c in self.accents],
         }
 
 
@@ -95,12 +135,18 @@ class GesturalEra:
                 "hue_span": random.uniform(30.0, 220.0),
                 "lead": random.choice(options),
                 "lead_weight": random.uniform(2.0, 3.2),
+                "accents": tuple(random.sample(VIBRANT_COLORS, ACCENT_COUNT)),
             }
 
         def distance(candidate: dict, prior: Mapping) -> float:
             hue = hue_distance(candidate["hue_offset"], prior.get("hue_offset", 0.0))
             lead = 0.0 if candidate["lead"] == prior.get("lead") else 1.0
-            return 0.5 * hue + 0.5 * lead
+            # A prior banked before accents existed has none, so it differs
+            # from every candidate equally — a constant, not a preference —
+            # and hue and lead keep the 1:1 they had.
+            accents = set_distance(
+                [_hex(c) for c in candidate["accents"]], prior.get("accents") or ())
+            return 0.4 * hue + 0.4 * lead + 0.2 * accents
 
         d = draw_distinct(make, distance, recent)
         state = GesturalState()
@@ -108,6 +154,7 @@ class GesturalEra:
         state.hue_span = d["hue_span"]
         state.lead_gesture = d["lead"]
         state.lead_weight = d["lead_weight"]
+        state.accents = tuple(d["accents"])
         return state
 
     def choose_gesture(
@@ -277,6 +324,20 @@ class GesturalEra:
 
         return focus_x, focus_y, direction
 
+    @staticmethod
+    def _begin_run_colour(state: GesturalState, presence: float) -> None:
+        """Decide a new run's colour identity.
+
+        The accent odds are the per-mark odds the era always had, taken once
+        per run. Run length does not depend on colour, so the share of marks
+        that come out vibrant is unchanged in expectation.
+        """
+        if random.random() < (0.15 + presence * 0.15):
+            state.run_accent = random.choice(state.accents or VIBRANT_COLORS)
+        else:
+            state.run_accent = None
+        state.run_place = random.uniform(-0.5, 0.5)
+
     def generate_color(
         self,
         state: GesturalState,
@@ -288,21 +349,20 @@ class GesturalEra:
     ) -> Tuple[Tuple[int, int, int], str]:
         """Generate a color for the current mark. Full palette, state-influenced not restricted.
 
+        The colour's identity — accent or not, and where in the piece's hue
+        window — is decided once per gesture run; saturation, value and a
+        small shimmer still vary per mark. Touches nothing the geometry reads,
+        so pixels, gesture switches and coherence are what they were.
+
         light_regime modulates palette: dark → cooler/deeper, bright → warmer/vivid.
         """
-        VIBRANT_COLORS = [
-            (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
-            (255, 0, 255), (0, 255, 255), (255, 128, 0), (255, 64, 64),
-            (255, 192, 203), (255, 215, 0), (0, 191, 255), (138, 43, 226),
-            (75, 0, 130), (0, 128, 128), (139, 69, 19), (34, 139, 34),
-            (210, 180, 140), (255, 182, 193), (173, 216, 230), (144, 238, 144),
-            (255, 255, 224), (221, 160, 221), (128, 0, 0), (0, 100, 0),
-            (25, 25, 112), (128, 0, 128),
-        ]
+        # The engine asks for the colour before it chooses the next gesture, so
+        # an exhausted run here means this mark opens a new one.
+        if state.gesture_remaining <= 0:
+            self._begin_run_colour(state, presence)
 
-        use_vibrant = random.random() < (0.15 + presence * 0.15)
-        if use_vibrant:
-            color = random.choice(VIBRANT_COLORS)
+        if state.run_accent is not None:
+            color = state.run_accent
             if stability < 0.5 and random.random() < 0.3:
                 color = tuple(int(c * (0.6 + stability * 0.4)) for c in color)
             # Light regime: dim vibrants in dark, boost in bright
@@ -312,16 +372,19 @@ class GesturalEra:
                 color = tuple(min(255, int(c * 1.15)) for c in color)
             return color, "vibrant"
 
-        import colorsys
-
         # Warmth still sets the anchor; the piece's own offset and span decide
         # where around it this composition lives and how wide it ranges. A
         # narrow-span piece reads near-monochrome, a wide one polychrome —
         # where before every piece sampled the same 180-degree window.
+        # The run holds one place in that window; its marks shimmer around it.
+        # The two parts sum to at most half the span, so the window is the
+        # same window it was.
         hue_base = warmth * 360.0
         half_span = state.hue_span / 2.0
         hue = (
-            hue_base + state.hue_offset + random.uniform(-half_span, half_span)
+            hue_base + state.hue_offset
+            + state.run_place * state.hue_span * (1.0 - RUN_SHIMMER)
+            + random.uniform(-half_span, half_span) * RUN_SHIMMER
         ) % 360.0
 
         # Light regime shifts: dark → cooler hues, lower sat; bright → warmer, higher sat

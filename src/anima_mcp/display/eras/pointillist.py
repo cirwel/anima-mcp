@@ -15,19 +15,53 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from ..art_era import EraState, draw_distinct, hue_distance
 
+# The anchor wanders, but on a tether: each mark keeps this much of the wander
+# and adds a 2-degree step, which settles at about 10 degrees of spread. Until
+# 2026-11-12 the same step was a free random walk — ~75 degrees over a piece —
+# so the anchor a piece was given was not the anchor it ended with.
+ANCHOR_TETHER = 0.98
+ANCHOR_STEP_DEGREES = 2.0
+
+# Range of the per-piece complement share (see PointillistState). Proportions
+# of a zone's own dots; nothing Lumen senses is compared against them.
+COMPLEMENT_SHARE_MIN = 0.08
+COMPLEMENT_SHARE_MAX = 0.30
+
+
+def draw_zone_role() -> float:
+    """The hue role one density zone holds, as degrees off the anchor.
+
+    The same 45/30/25 split (anchor / complement / split-complement) the era
+    always used — taken once per ZONE instead of once per dot.
+    """
+    r = random.random()
+    if r < 0.45:
+        return 0.0
+    if r < 0.75:
+        return 180.0
+    return random.choice([120.0, -120.0])
+
 
 @dataclass
 class PointillistState(EraState):
     """Pointillist era's per-drawing state."""
 
-    # Color anchor — dominant hue that slowly shifts
+    # Color anchor — the piece's dominant hue, held for the whole piece
     color_anchor_hue: float = 0.0  # 0-360 degrees, set randomly at start
+    anchor_wander: float = 0.0     # tethered drift around the anchor, degrees
+    # Per piece: the share of each zone's dots placed in the complement of the
+    # zone's own hue — the side-by-side pairs optical mixing is made of.
+    complement_share: float = 0.0
 
     # Density zone — focus stays within a zone, building dot density
     zone_center_x: float = 120.0
     zone_center_y: float = 120.0
     zone_radius: float = 40.0
     zone_remaining: int = 0  # Marks left in current zone
+    # The hue role this zone holds (degrees off the anchor). Per dot until
+    # 2026-11-12, which spread every scheme evenly over every zone: a piece's
+    # hue resultant measured 0.03, i.e. no dominant hue whatever its anchor.
+    zone_role: float = 0.0
 
     def intentionality(self) -> float:
         """Working within a density zone = committed."""
@@ -42,11 +76,13 @@ class PointillistState(EraState):
         return ["single", "pair", "trio"]
 
     def disposition(self) -> Dict[str, Any]:
-        """Pointillist is the middle case: it drew a per-piece colour anchor,
-        but its density zones re-randomise mid-piece, so the zone structure
-        averages out over hundreds of dots and only the anchor carries the
-        piece's identity. The anchor is what is reported."""
-        return {"color_anchor_hue": round(self.color_anchor_hue, 1)}
+        """The colour anchor and the complement share — the two things drawn
+        once. Density zones still re-randomise mid-piece (place, size and now
+        hue role), so they are not part of the piece's identity."""
+        return {
+            "color_anchor_hue": round(self.color_anchor_hue, 1),
+            "complement_share": round(self.complement_share, 2),
+        }
 
 
 class PointillistEra:
@@ -60,26 +96,41 @@ class PointillistEra:
     min_marks_for_completion = 80  # Need density before a pointillist drawing is "done"
 
     def create_state(self, recent: Sequence[Mapping] = ()) -> PointillistState:
-        """Draw a colour anchor unlike the recent pieces'. Same distribution as
-        before — only the choice among a few candidates is new."""
+        """Draw a colour anchor and complement share unlike the recent pieces'."""
+        share_range = COMPLEMENT_SHARE_MAX - COMPLEMENT_SHARE_MIN
 
         def make() -> dict:
-            return {"color_anchor_hue": random.uniform(0, 360)}
+            return {
+                "color_anchor_hue": random.uniform(0, 360),
+                "complement_share": random.uniform(
+                    COMPLEMENT_SHARE_MIN, COMPLEMENT_SHARE_MAX),
+            }
 
         def distance(candidate: dict, prior: Mapping) -> float:
-            return hue_distance(
+            hue = hue_distance(
                 candidate["color_anchor_hue"],
                 prior.get("color_anchor_hue", 0.0),
             )
+            # A prior banked before the share existed differs from every
+            # candidate equally — a constant, not a guessed share.
+            share = 1.0
+            try:
+                prior_share = float(prior["complement_share"])
+                share = min(1.0, abs(candidate["complement_share"] - prior_share) / share_range)
+            except (KeyError, TypeError, ValueError):
+                pass
+            return 0.8 * hue + 0.2 * share
 
         d = draw_distinct(make, distance, recent)
         state = PointillistState()
         state.color_anchor_hue = d["color_anchor_hue"]
+        state.complement_share = d["complement_share"]
         # Start with a random zone
         state.zone_center_x = random.uniform(50, 190)
         state.zone_center_y = random.uniform(50, 190)
         state.zone_radius = random.uniform(25, 60)
         state.zone_remaining = random.randint(40, 100)
+        state.zone_role = draw_zone_role()
         return state
 
     def choose_gesture(
@@ -192,6 +243,7 @@ class PointillistEra:
             max_radius = 50 - 20 * C - 10 * clarity
             state.zone_radius = random.uniform(15, max(16, max_radius))
             state.zone_remaining = random.randint(30, 80 + int(40 * C))
+            state.zone_role = draw_zone_role()
             focus_x = state.zone_center_x + random.gauss(0, 5)
             focus_y = state.zone_center_y + random.gauss(0, 5)
             direction = random.uniform(0, 2 * math.pi)
@@ -214,28 +266,26 @@ class PointillistEra:
     ) -> Tuple[Tuple[int, int, int], str]:
         """Generate colors for optical mixing — complementary pairs, analogous clusters.
 
-        The color anchor shifts slowly. Each dot is either near the anchor hue
-        or its complement, creating optical mixing when dots overlap.
+        Each zone holds one hue role off the piece's anchor (see
+        ``draw_zone_role``); a per-piece share of its dots take that hue's
+        complement, so the pairs sit side by side inside the zone. The anchor
+        wanders on a tether and stays the piece's own. Touches nothing the
+        geometry reads.
         light_regime modulates: dark → deeper values, bright → higher saturation.
         """
         import colorsys
 
-        # Slowly drift the color anchor (1-3 degrees per mark)
-        state.color_anchor_hue = (state.color_anchor_hue + random.gauss(0, 2.0)) % 360.0
-        anchor = state.color_anchor_hue
+        state.anchor_wander = (
+            ANCHOR_TETHER * state.anchor_wander + random.gauss(0, ANCHOR_STEP_DEGREES))
+        zone_hue = state.color_anchor_hue + state.anchor_wander + state.zone_role
 
-        # Choose hue strategy
-        r = random.random()
-        if r < 0.45:
-            # Near anchor hue (analogous range ±30 degrees)
-            hue = (anchor + random.gauss(0, 15)) % 360.0
-        elif r < 0.75:
-            # Complementary (180 degrees away, ±20 degrees)
-            hue = (anchor + 180 + random.gauss(0, 10)) % 360.0
+        if random.random() < state.complement_share:
+            # The zone hue's optical partner (180 degrees away, ±20 degrees)
+            hue = (zone_hue + 180 + random.gauss(0, 10)) % 360.0
         else:
-            # Split complementary (±120 degrees from anchor)
-            offset = random.choice([120, -120])
-            hue = (anchor + offset + random.gauss(0, 10)) % 360.0
+            # The zone's own hue: analogous ±30 on the anchor, ±20 off it
+            spread = 15 if state.zone_role == 0.0 else 10
+            hue = (zone_hue + random.gauss(0, spread)) % 360.0
 
         # Light regime modulation
         if light_regime == "dark":

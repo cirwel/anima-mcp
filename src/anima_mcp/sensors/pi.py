@@ -397,6 +397,8 @@ class PiSensors(SensorBackend):
                 and not isinstance(precision, bool)
                 and 0.0 < float(precision) <= 2.0
             ):
+                self._shadow_light_observed_at = None
+                self._shadow_light_precision_s = None
                 try:
                     observed_at = datetime.fromisoformat(
                         observed_at_text.replace("Z", "+00:00")
@@ -405,13 +407,35 @@ class PiSensors(SensorBackend):
                     capture_end = observed_at + timedelta(seconds=precision_s)
                     capture_now = datetime.now(tz=observed_at.tzinfo)
                     capture_age = (capture_now - capture_end).total_seconds()
-                    if capture_age < -2.0 or capture_age > self._env_shadow_stale_s:
-                        raise ValueError("stale or future light capture provenance")
+                except ValueError:
+                    capture_age = None  # unparseable: no provenance, as before
+                if capture_age is None or capture_age < -2.0:
+                    # Unparseable or future-dated (a clock problem): no
+                    # evidence about the value's age either way. It cannot
+                    # align anything, and the reading is kept as before.
+                    pass
+                elif capture_age > self._env_shadow_stale_s:
+                    # The capture itself is stale behind a fresh envelope: the
+                    # VEML7700 owner stopped answering and the flush loop kept
+                    # re-stamping its last value. Until 2026-11-12 only the
+                    # provenance was withdrawn here and the stale lux was still
+                    # returned as the current reading — hours-old light counted
+                    # as a live channel. Same limit and same answer as a stale
+                    # envelope: the reading is unknown. Copy rather than mutate,
+                    # so the absence reaches available_sensors() too.
+                    readings = {**readings, "light_lux": None}
+                    from ..error_recovery import note_suppressed
+                    note_suppressed(
+                        "sensors.pi.shadow_light_capture_stale",
+                        ValueError(
+                            f"light capture is {capture_age:.0f}s old behind a "
+                            f"fresh envelope (limit {self._env_shadow_stale_s:.0f}s)"
+                            "; light_lux published as unknown"
+                        ),
+                    )
+                else:
                     self._shadow_light_observed_at = observed_at
                     self._shadow_light_precision_s = precision_s
-                except ValueError:
-                    self._shadow_light_observed_at = None
-                    self._shadow_light_precision_s = None
             else:
                 self._shadow_light_observed_at = None
                 self._shadow_light_precision_s = None

@@ -778,3 +778,46 @@ class TestDimensionPreferences:
         assert dims["warmth"]["evidence_status"] == "established"
         assert dims["warmth"]["valence"] > 0
         assert dims["warmth"]["confidence"] > 0
+
+
+class TestWellnessGoalFollowsLumensOwnBand:
+    """`wellness < 0.4` -> "find what makes me feel stable" could never fire:
+    wellness did not fall below 0.4 once in 255,973 samples. #119 replaced the
+    same constant in preference learning with a self-relative band and missed
+    this copy (found 2026-11-12)."""
+
+    ENV = {"light_lux": 50.0, "temp_c": 22.0, "humidity_pct": 20.0}
+
+    def _anima(self, w):
+        return {"warmth": w, "clarity": w, "stability": w, "presence": w}
+
+    def _live_band(self, growth, mean=0.70, sigma=0.04):
+        import random
+        random.seed(7)
+        for _ in range(300):
+            w = min(1.0, max(0.0, random.gauss(mean, sigma)))
+            growth.observe_state_preference(self._anima(w), self.ENV)
+        band = growth.wellness_learning_band()
+        assert band["source"] == "self_relative"
+        return band
+
+    def test_a_low_day_for_lumen_can_suggest_it(self, growth):
+        band = self._live_band(growth)
+        low = band["poor_below"] - 0.02
+        assert low > 0.4, "the point: this is low for Lumen and above the old cut"
+        goal = growth.suggest_goal(self._anima(low))
+        assert goal is not None
+        assert goal.description == "find what makes me feel stable"
+
+    def test_an_ordinary_day_does_not(self, growth):
+        band = self._live_band(growth)
+        assert growth.suggest_goal(self._anima(band["mean"])) is None
+
+    def test_cold_start_keeps_the_absolute_floor(self, growth):
+        """Before the band has samples it falls back to the old constant, so a
+        fresh install behaves as it did."""
+        assert growth.wellness_learning_band()["source"] == "absolute_fallback"
+        assert growth.suggest_goal(self._anima(0.45)) is None
+        goal = growth.suggest_goal(self._anima(0.35))
+        assert goal is not None
+        assert goal.description == "find what makes me feel stable"

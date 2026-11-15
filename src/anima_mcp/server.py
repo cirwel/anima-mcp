@@ -30,6 +30,7 @@ from mcp.server.stdio import stdio_server
 from .primitive_language import get_language_system
 from .eisv import get_trajectory_awareness
 from .state_history import maybe_record_state_history
+from .error_recovery import note_suppressed
 from .tool_registry import get_fastmcp, create_server, HAS_FASTMCP
 from .server_context import ServerContext
 from .server_state import (  # noqa: F401
@@ -85,6 +86,30 @@ SERVER_SHUTTING_DOWN = False  # Set during graceful shutdown to reject new reque
 def _predict_with_led_proprioception(metacog):
     """Predict with the context's canonical, nullable LED efference copy."""
     return metacog.predict(led_brightness=_get_led_brightness())
+
+
+def _record_system_metrics(ctx, readings, health) -> bool:
+    """Persist one system_metrics row; heartbeat its probes only if it landed.
+
+    2026-11-12: the write sat in `except Exception: pass` and the
+    thermal_trend / memory_pressure heartbeats fired "regardless of readings",
+    so a store rejecting every row left no trace and both subsystems kept
+    looking alive. A failed write is still non-fatal to the loop, but it is
+    counted, and the heartbeat now means what it says: a row was written.
+    Returns True when a row was written.
+    """
+    written = False
+    if readings and ctx and ctx.store:
+        try:
+            ctx.store.record_system_metrics(readings)
+            written = True
+        except Exception as e:
+            note_suppressed("server.system_metrics", e)
+    if written and health is not None:
+        health.heartbeat("thermal_trend")
+        health.heartbeat("memory_pressure")
+    return written
+
 
 # Phase helper functions — delegated to loop_phases.py
 from .loop_phases import (  # noqa: E402,F401
@@ -378,15 +403,7 @@ async def _update_display_loop():
 
             # System metrics persistence: Every 15 iterations (~30s), record to SQLite
             if loop_count % SYSTEM_METRICS_RECORD_INTERVAL == 0:
-                if readings and _ctx and _ctx.store:
-                    try:
-                        _ctx.store.record_system_metrics(readings)
-                    except Exception:
-                        pass  # Non-fatal — don't disrupt main loop
-                # Heartbeat regardless of readings — probes fail open independently
-                if _health is not None:
-                    _health.heartbeat("thermal_trend")
-                    _health.heartbeat("memory_pressure")
+                _record_system_metrics(_ctx, readings, _health)
 
             # Durable anima + sensor history, on Lumen's own schedule. The loop is
             # the only writer: reads no longer record (state_history.py).

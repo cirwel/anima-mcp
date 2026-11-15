@@ -238,12 +238,18 @@ class GoalsMixin:
                         14,
                     ))
 
-        # 5. Wellness-driven
-        if wellness < 0.4:
+        # 5. Wellness-driven — judged against Lumen's own wellness band.
+        # This compared against a fixed 0.4 / 0.8 until 2026-11-12. Wellness
+        # never fell below 0.4 in 255,973 samples, so "find what makes me feel
+        # stable" could not be suggested once in Lumen's life; #119 fixed the
+        # same constant in preference learning and missed this copy. The band
+        # falls back to the absolute pair before it has enough samples.
+        band = self.wellness_learning_band()
+        if wellness < band["poor_below"]:
             suggestions.append(("find what makes me feel stable",
                                 "i want to understand myself better",
                                 14))
-        elif wellness > 0.8 and anima_state.get("clarity", 0.5) > 0.8:
+        elif wellness > band["good_above"] and anima_state.get("clarity", 0.5) > 0.8:
             suggestions.append(("explore a new question while my mind is clear",
                                 "my clarity is high and i feel curious",
                                 7))

@@ -34,7 +34,11 @@ def _register_health_probes():
     """Register subsystem health probes. Shared by the normal wake() path and
     the degraded (store-failed) path — health visibility matters MOST when the
     identity store is down, so this must not depend on the store existing.
-    Store-dependent probes fail open on ctx.store is None."""
+    Store-dependent probes report *unknown* (never ok) on ctx.store is None."""
+    import math
+    from datetime import datetime
+
+    from .error_recovery import note_suppressed
     from .health import get_health_registry, outbound_heartbeat_health
     from .eisv import get_trajectory_awareness
     from .anima_history import get_anima_history
@@ -46,19 +50,55 @@ def _register_health_probes():
 
     _health = get_health_registry()
 
+    # Environment channels the broker envelope carries (SensorReadings).
+    _ENV_CHANNELS = ("ambient_temp_c", "humidity_pct", "light_lux", "pressure_hpa")
+
     def _sensor_probe():
+        """Fresh broker envelope that actually carries environment readings.
+
+        2026-11-12: this checked only that the envelope was fresh and had a
+        ``readings`` key, so it read ok with every environment channel None --
+        a live heartbeat around a dead sensor stack.  It now fails when ALL
+        environment channels are absent.  One missing channel does not fail it
+        (pressure is legitimately absent at times); it is named in the detail.
+        """
         shm = _get_last_shm_data()
-        if shm and "readings" in shm:
-            ts = shm.get("timestamp")
-            if isinstance(ts, str) and ts:
-                from datetime import datetime
-                try:
-                    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    age = (datetime.now(t.tzinfo) - t).total_seconds()
-                    return -5 <= age < SHM_STALE_THRESHOLD_SECONDS * 2
-                except (ValueError, AttributeError):
-                    pass
-        return False
+        if not shm or "readings" not in shm:
+            return {"ok": False, "state": "no_envelope"}
+        fresh = False
+        ts = shm.get("timestamp")
+        if isinstance(ts, str) and ts:
+            try:
+                t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                age = (datetime.now(t.tzinfo) - t).total_seconds()
+                fresh = -5 <= age < SHM_STALE_THRESHOLD_SECONDS * 2
+            except (ValueError, AttributeError):
+                fresh = False
+        if not fresh:
+            return {"ok": False, "state": "stale_envelope"}
+
+        readings = shm.get("readings")
+        present = []
+        for channel in _ENV_CHANNELS:
+            value = readings.get(channel) if isinstance(readings, dict) else None
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
+                present.append(channel)
+        missing = [channel for channel in _ENV_CHANNELS if channel not in present]
+        if not present:
+            state = "no_environment_channels"
+        elif missing:
+            state = "partial"
+        else:
+            state = "ok"
+        return {
+            "ok": bool(present),
+            "state": state,
+            "channels": {"present": present, "missing": missing},
+        }
 
     _health.register("sensors", probe=_sensor_probe, debounce_seconds=6.0)
     _health.register("display", probe=lambda: _get_ctx() and _get_ctx().display is not None and _get_ctx().display.is_available(), debounce_seconds=6.0)
@@ -104,49 +144,95 @@ def _register_health_probes():
     _health.register("anima", probe=lambda: _get_ctx() and _get_ctx().screen_renderer is not None and getattr(_get_ctx().screen_renderer, '_last_anima', None) is not None, debounce_seconds=6.0)
 
     # Rate-of-change probes — bridge system_metrics → health
-    def _thermal_rate_probe():
-        """Check CPU temp isn't rising dangerously fast."""
+    #
+    # 2026-11-12: both probes returned True for no store, too few rows, NULL
+    # values and any exception ("Fail open"), so they could only ever read ok
+    # or threshold-crossed -- never "I cannot tell".  A dead metrics writer
+    # was indistinguishable from a cool, roomy Pi.  They now answer with a
+    # details dict: no evidence is ``ok: False, state: "unknown"``; a real
+    # verdict, good or bad, carries ``evaluated: True``.  Registered
+    # optional=True, so health reads ``absent`` until a probe has reached its
+    # first verdict (a fresh boot cannot pin overall()) and ``degraded`` when
+    # it could tell before and no longer can.  The thresholds are unchanged.
+    def _unknown(reason, **details):
+        return {"ok": False, "state": "unknown", "reason": reason, **details}
+
+    def _recent_metrics(site, limit):
+        """Rows from the last 5 min, or an ``unknown`` verdict explaining why not."""
         ctx = _get_ctx()
         if not ctx or not ctx.store:
-            return True  # No store yet — can't check
+            return None, _unknown("no identity store")
         try:
-            rows = ctx.store.get_system_metrics(hours=1.0/12, limit=20)  # last 5 min
-            if len(rows) < 3:
-                return True  # Not enough data yet
-            from datetime import datetime
+            return ctx.store.get_system_metrics(hours=1.0 / 12, limit=limit), None
+        except Exception as e:
+            note_suppressed(site, e)
+            return None, _unknown(f"system_metrics unreadable: {type(e).__name__}")
+
+    def _thermal_rate_probe():
+        """Check CPU temp isn't rising dangerously fast."""
+        rows, unknown = _recent_metrics("health.thermal_trend", 20)
+        if unknown is not None:
+            return unknown
+        if len(rows) < 3:
+            return _unknown("fewer than 3 system_metrics rows in the last 5 min", rows=len(rows))
+        try:
             first, last = rows[0], rows[-1]
             t0 = datetime.fromisoformat(first["timestamp"])
             t1 = datetime.fromisoformat(last["timestamp"])
             minutes = (t1 - t0).total_seconds() / 60.0
             if minutes < 0.5:
-                return True  # Window too short
+                return _unknown("rows span under 30 s", rows=len(rows))
             temp0 = first.get("cpu_temp_c")
             temp1 = last.get("cpu_temp_c")
             if temp0 is None or temp1 is None:
-                return True
+                return _unknown("cpu_temp_c is NULL in system_metrics", rows=len(rows))
             rate = (temp1 - temp0) / minutes  # °C/min
-            return rate <= THERMAL_RATE_THRESHOLD
-        except Exception:
-            return True  # Fail open
+        except Exception as e:
+            note_suppressed("health.thermal_trend", e)
+            return _unknown(f"system_metrics rows unusable: {type(e).__name__}")
+        ok = rate <= THERMAL_RATE_THRESHOLD
+        return {
+            "ok": ok,
+            "evaluated": True,
+            "state": "ok" if ok else "rising_fast",
+            "rate_c_per_min": round(rate, 2),
+            "threshold_c_per_min": THERMAL_RATE_THRESHOLD,
+            "rows": len(rows),
+        }
 
     def _memory_pressure_probe():
         """Check memory isn't critically high."""
-        ctx = _get_ctx()
-        if not ctx or not ctx.store:
-            return True
+        # The newest row inside the same 5-minute window the thermal probe
+        # reads.  This was a 1-minute window, which did not matter while "no
+        # row" meant ok; now that it means unknown, a window of two ~30 s
+        # write cadences would flip on a single skipped write.  The row's age
+        # is reported so the freshness is visible rather than assumed.
+        rows, unknown = _recent_metrics("health.memory_pressure", 3)
+        if unknown is not None:
+            return unknown
+        if not rows:
+            return _unknown("no system_metrics rows in the last 5 min", rows=0)
         try:
-            rows = ctx.store.get_system_metrics(hours=1.0/60, limit=3)  # last 1 min
-            if not rows:
-                return True
-            mem = rows[-1].get("memory_percent")
+            latest = rows[-1]
+            mem = latest.get("memory_percent")
             if mem is None:
-                return True
-            return mem < MEMORY_PRESSURE_THRESHOLD
-        except Exception:
-            return True
+                return _unknown("memory_percent is NULL in system_metrics", rows=len(rows))
+            age = (datetime.now() - datetime.fromisoformat(latest["timestamp"])).total_seconds()
+            ok = mem < MEMORY_PRESSURE_THRESHOLD
+        except Exception as e:
+            note_suppressed("health.memory_pressure", e)
+            return _unknown(f"system_metrics rows unusable: {type(e).__name__}")
+        return {
+            "ok": ok,
+            "evaluated": True,
+            "state": "ok" if ok else "high",
+            "memory_percent": round(float(mem), 1),
+            "threshold_percent": MEMORY_PRESSURE_THRESHOLD,
+            "sample_age_seconds": round(age),
+        }
 
-    _health.register("thermal_trend", probe=_thermal_rate_probe, stale_threshold=3600.0, debounce_seconds=10.0)
-    _health.register("memory_pressure", probe=_memory_pressure_probe, stale_threshold=3600.0, debounce_seconds=10.0)
+    _health.register("thermal_trend", probe=_thermal_rate_probe, stale_threshold=3600.0, debounce_seconds=10.0, optional=True)
+    _health.register("memory_pressure", probe=_memory_pressure_probe, stale_threshold=3600.0, debounce_seconds=10.0, optional=True)
 
     print(f"[Wake] ✓ Health monitoring registered ({len(_health.subsystem_names())} subsystems)", file=sys.stderr, flush=True)
 
