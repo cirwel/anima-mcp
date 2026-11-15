@@ -509,3 +509,21 @@ def test_scheduled_jobs_live_on_systemd_timers_not_cron():
     assert "*/2 * * * *" not in restore
     for text in (restore, deploy, bootstrap):
         assert "install_scheduled_jobs.sh" in text
+
+
+def test_scheduled_job_install_failure_is_fatal_everywhere():
+    """A fresh reflash has no cron line to fall back on (review on #277)."""
+    restore = (ROOT / "scripts" / "restore_lumen.sh").read_text()
+    deploy = (ROOT / "deploy.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap_deploy.py").read_text()
+
+    install_at = restore.index("install_scheduled_jobs.sh\" || {")
+    assert "exit 1" in restore[install_at:install_at + 300]
+    assert "required timers not running" in restore
+    assert "(non-fatal)" not in restore[install_at - 400:install_at + 300]
+
+    sync_at = deploy.index("install_scheduled_jobs.sh")
+    assert "exit 1" in deploy[sync_at:sync_at + 400]
+
+    call_at = bootstrap.index("install_scheduled_jobs.sh")
+    assert "check=True" in bootstrap[call_at:call_at + 200]

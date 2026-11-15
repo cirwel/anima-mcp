@@ -91,15 +91,14 @@ def main():
     )
 
     # Scheduled maintenance timers (and retirement of their old crontab
-    # lines). Non-fatal: a failure leaves the cron lines in place.
+    # lines). Fatal: a Pi with no legacy cron line has no fallback, so a
+    # failure can leave a backup unscheduled.
     print("Synchronizing scheduled jobs...")
-    jobs = subprocess.run(
+    subprocess.run(
         ["bash", str(REPO_ROOT / "scripts" / "install_scheduled_jobs.sh")],
         timeout=120,
-        check=False,
+        check=True,
     )
-    if jobs.returncode != 0:
-        print("  scheduled job sync failed; cron entries left in place")
 
     # The Elixir sensor owner executes a compiled OTP release, not the synced
     # source tree. The helper is change-aware, skips unconfigured hosts, and

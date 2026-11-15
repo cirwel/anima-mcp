@@ -11,9 +11,11 @@
 # sharing a /tmp fail counter. One scheduler means one place to look:
 # `systemctl list-timers 'anima-*' 'lumen-*' 'wifi-*'`.
 #
-# Order matters: every timer is installed and enabled BEFORE its cron line is
-# removed, so a failure part-way leaves a job double-scheduled (harmless for
-# one hour) rather than unscheduled.
+# Order matters: every timer is installed and enabled BEFORE any cron line is
+# removed, so a failure part-way never takes away a schedule that existed.
+# That protects only jobs that had a cron line; on a freshly reflashed Pi
+# there is none, so a failure means the job is unscheduled. The script exits
+# non-zero on any failure, and every caller treats that as fatal.
 
 set -euo pipefail
 
@@ -51,7 +53,7 @@ for entry in "${TIMERS[@]}"; do
     name="${entry%%:*}"
     sudo systemctl enable --now "$name.timer" >/dev/null
     systemctl is-active --quiet "$name.timer" || {
-        echo "✗ $name.timer did not start; leaving its cron line in place" >&2
+        echo "✗ $name.timer did not start; crontab left untouched (a fresh Pi has no fallback: this job is unscheduled)" >&2
         exit 1
     }
     retired+=("${entry#*:}")

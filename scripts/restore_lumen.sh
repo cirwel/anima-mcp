@@ -520,8 +520,13 @@ ssh $SSH_OPTS "$PI_USER@$PI_HOST" "sudo usermod -aG adm $PI_USER && \
 # already enabled as wifi-watchdog.timer in step 5b, so two copies ran.
 log "Installing scheduled jobs (systemd timers)..."
 PI_SCRIPTS="/home/${PI_USER}/anima-mcp/scripts"
-ssh $SSH_OPTS "$PI_USER@$PI_HOST" "chmod +x ${PI_SCRIPTS}/storage_maintenance.py 2>/dev/null; bash ${PI_SCRIPTS}/install_scheduled_jobs.sh" \
-    && log "  scheduled jobs installed" || log "  scheduled job install failed (non-fatal)"
+# Fatal: a reflashed Pi has no crontab to fall back on, so a timer that did
+# not install is a job (DB backups included) that will never run.
+ssh $SSH_OPTS "$PI_USER@$PI_HOST" "chmod +x ${PI_SCRIPTS}/storage_maintenance.py 2>/dev/null; bash ${PI_SCRIPTS}/install_scheduled_jobs.sh" || {
+    log "  ERROR: scheduled job install failed; backups and watchdogs may be unscheduled"
+    exit 1
+}
+log "  scheduled jobs installed"
 
 # 7. Verify the embodied boundary, not merely that systemd accepted Start=.
 log "Verifying..."
@@ -549,9 +554,19 @@ ssh $SSH_OPTS "$PI_USER@$PI_HOST" \
 log "  configured sensor owner + broker + mind active; fresh shared state verified"
 ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active anima-watchdog.timer" 2>/dev/null && log "  watchdog timer active" || log "  watchdog timer not running"
 ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active anima-storage-maintenance.timer" 2>/dev/null && log "  storage maintenance timer active" || log "  storage maintenance timer not running"
+MISSING_TIMERS=""
 for t in wifi-watchdog anima-db-maintenance anima-db-backup anima-state-backup; do
-    ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active $t.timer" >/dev/null 2>&1 && log "  $t timer active" || log "  $t timer not running"
+    if ssh $SSH_OPTS "$PI_USER@$PI_HOST" "systemctl is-active --quiet $t.timer"; then
+        log "  $t timer active"
+    else
+        log "  $t timer NOT running"
+        MISSING_TIMERS="$MISSING_TIMERS $t"
+    fi
 done
+if [ -n "$MISSING_TIMERS" ]; then
+    log "  ERROR: required timers not running:$MISSING_TIMERS"
+    exit 1
+fi
 
 # 8. Tailscale (always installed — required for remote access)
 log "Installing Tailscale..."
