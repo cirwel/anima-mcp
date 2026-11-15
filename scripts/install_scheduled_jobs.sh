@@ -75,4 +75,8 @@ if current=$(crontab -l 2>/dev/null); then
     fi
 fi
 
+# The WiFi watchdog's fail counter moved from /tmp to /run. Remove the old
+# file, which the retired user-crontab copy may own, so nothing reads it.
+sudo rm -f /tmp/wifi_watchdog_fails
+
 echo "✓ Scheduled jobs on systemd timers: ${TIMERS[*]%%:*}"

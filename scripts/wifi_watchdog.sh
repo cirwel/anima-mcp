@@ -2,7 +2,7 @@
 # WiFi Watchdog - Auto-reconnect if WiFi drops
 # Scheduled by systemd/wifi-watchdog.timer every 2 minutes, as root. Do not
 # also add a crontab line: until 2026-11-13 restore_lumen.sh did, and two
-# copies ran (root + user) sharing the /tmp fail counter.
+# copies ran (root + user) sharing the fail counter.
 #
 # Escalation levels:
 #   1. nmcli reconnect (soft)
@@ -10,7 +10,12 @@
 #   3. Full reboot (nuclear)
 
 LOGFILE="/home/unitares-anima/.anima/wifi_watchdog.log"
-FAIL_COUNT_FILE="/tmp/wifi_watchdog_fails"
+# In /run, not /tmp: the old user-crontab copy could leave a user-owned
+# /tmp/wifi_watchdog_fails, and with fs.protected_regular=1 (Debian default)
+# root cannot reopen someone else's file in sticky /tmp with O_CREAT. The
+# count would then never advance and the watchdog would soft-reconnect forever
+# without escalating. /run is root-owned tmpfs, still cleared at boot.
+FAIL_COUNT_FILE="/run/wifi_watchdog_fails"
 MAX_SOFT_RETRIES=3  # After 3 soft fails (6 min), escalate to hardware reset
 MAX_HARD_RETRIES=5  # After 5 total fails (10 min), reboot
 
@@ -53,8 +58,7 @@ if ! ip link show wlan0 > /dev/null 2>&1; then
     modprobe brcmfmac 2>/dev/null
     sleep 5
     # If interface is still missing after driver reload, reboot (but only once —
-    # fail count persists across reboots via /tmp which is tmpfs, cleared on reboot,
-    # so this won't loop)
+    # the fail count lives in /run, tmpfs cleared on reboot, so this won't loop)
     if ! ip link show wlan0 > /dev/null 2>&1; then
         log "CRITICAL: wlan0 still missing after driver reload. REBOOTING."
         sync

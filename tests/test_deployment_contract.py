@@ -527,3 +527,14 @@ def test_scheduled_job_install_failure_is_fatal_everywhere():
 
     call_at = bootstrap.index("install_scheduled_jobs.sh")
     assert "check=True" in bootstrap[call_at:call_at + 200]
+
+
+def test_wifi_watchdog_counter_is_root_owned_tmpfs():
+    """The old cron copy could own /tmp/wifi_watchdog_fails; with
+    fs.protected_regular=1 root then cannot rewrite it, and the watchdog
+    never escalates past soft reconnects (review on #277)."""
+    watchdog = (ROOT / "scripts" / "wifi_watchdog.sh").read_text()
+    installer = (ROOT / "scripts" / "install_scheduled_jobs.sh").read_text()
+    assert 'FAIL_COUNT_FILE="/run/wifi_watchdog_fails"' in watchdog
+    assert 'FAIL_COUNT_FILE="/tmp/' not in watchdog
+    assert "rm -f /tmp/wifi_watchdog_fails" in installer
