@@ -244,6 +244,10 @@ class TestCompletionPredicate:
         stub._recent_dispositions_for = (
             DrawingEngine._recent_dispositions_for.__get__(stub)
         )
+        # ...and records the switch in the piece's process log.
+        from anima_mcp.display.drawing_replay import ReplayRecorder
+        stub._replay = ReplayRecorder(lambda: None)
+        stub._replay._off = True  # off: never asks for a path, writes nothing
         stub.set_era = DrawingEngine.set_era.__get__(stub)
         result = stub.set_era("field", force_immediate=True)
         assert result["success"] is True

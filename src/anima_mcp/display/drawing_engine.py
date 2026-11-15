@@ -53,6 +53,14 @@ from .drawing_state import (  # noqa: F401
     curiosity_drain,
     is_earned_completion_reason,
 )
+from .drawing_state import _resolve_canvas_path
+from .drawing_replay import ReplayRecorder
+
+
+def _replay_in_progress_path() -> Path:
+    """The open piece's process log lives beside canvas.json (and follows its
+    test monkeypatches); finished logs are written beside each PNG."""
+    return _resolve_canvas_path().with_name("canvas.replay.jsonl")
 
 
 class DrawingEngine:
@@ -118,6 +126,11 @@ class DrawingEngine:
         self.intent.era_state = self.active_era.create_state(
             self._recent_dispositions_for(self.active_era.name)
         )
+
+        # Process recording: observation only, never consulted by drawing.
+        self._replay = ReplayRecorder(_replay_in_progress_path)
+        self._replay.open(self.canvas, self.active_era.name)
+        self.canvas._replay_tap = self._replay.pending
 
         self._db_path = resolve_db_path(db_path)
         self._identity_store = identity_store
@@ -451,6 +464,7 @@ class DrawingEngine:
             return
 
         self.canvas.save_to_disk()
+        self._replay.flush()
         self._last_persist_time = now
         self._last_persist_mark_count = self.intent.mark_count
 
@@ -640,6 +654,18 @@ class DrawingEngine:
         # --- Update attention and coherence tracking ---
         self._update_attention(I_signal, S_signal, C, gesture_switch)
         self._update_coherence_tracking(C, I_signal)
+
+        # One replay record per mark: the pixels it placed plus the state it
+        # was placed in. After the step so the state is the one the mark caused.
+        # draw_pixel detaches a tap that failed; the marks it missed would
+        # leave a hole, so this piece gets no replay at all.
+        if self.canvas._replay_tap is not self._replay.pending:
+            self._replay.stop("pixel tap detached")
+        self._replay.record_mark(
+            gesture=era_state.gesture,
+            eisv=(state.E, state.I, state.S, state.V, C),
+            arc_phase=state.arc_phase,
+        )
 
         # Sync state to canvas for persistence across restarts
         self.canvas.mark_count = self.intent.mark_count
@@ -961,7 +987,9 @@ class DrawingEngine:
         # queues switches behind completion; this guards the forced path.
         if drawing_in_progress:
             self.canvas._novelty_settling = None
+        self._replay.note_era(era_name)
         self.canvas.save_to_disk()
+        self._replay.flush()
         print(f"[Canvas] Era switched to: {era_name}", file=sys.stderr, flush=True)
         return {
             "success": True,
@@ -1068,6 +1096,8 @@ class DrawingEngine:
         self.intent.reset()
         self.active_era = get_era(new_era_name)
         self.canvas._era_name = new_era_name
+        self._replay.start_piece(self.canvas, new_era_name)
+        self.canvas._replay_tap = self._replay.pending
         self.intent.era_state = self.active_era.create_state(
             self._recent_dispositions_for(new_era_name)
         )
@@ -1145,6 +1175,11 @@ class DrawingEngine:
             tmp_path = filepath.with_suffix(".tmp")
             img.save(tmp_path, format="PNG")
             tmp_path.rename(filepath)
+
+            # The process beside the product: lumen_drawing_X.replay.jsonl.gz
+            self._replay.finalize(
+                filepath, self.canvas,
+                reason=self.canvas.last_completion_reason, manual=manual)
 
             # Update tracking. Sub-threshold canvases only reach here via a
             # manual save (the user chose to keep it); they are written as files
