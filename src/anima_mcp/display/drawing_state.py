@@ -207,6 +207,10 @@ class CanvasState:
     _dirty: bool = True  # Set by draw_pixel(), cleared after render
     _cached_image: object = None  # Cached PIL Image of all pixels
     _new_pixels: list = field(default_factory=list)  # Pixels added since last render
+    # Process recording (drawing_replay.ReplayRecorder.pending). Not persisted;
+    # None means nothing is listening. Unlike _new_pixels, the renderer never
+    # clears it, so it can be read per mark.
+    _replay_tap: Optional[list] = None
 
     # Spatial density grid — 8x8 cells (30px each) for spatial awareness
     density_grid: List[List[int]] = field(default_factory=lambda: [[0] * 8 for _ in range(8)])
@@ -233,6 +237,8 @@ class CanvasState:
             is_new = (x, y) not in self.pixels
             self.pixels[(x, y)] = color
             self._new_pixels.append((x, y, color))  # Track for incremental render
+            if self._replay_tap is not None:
+                self._replay_tap.append((x, y, color))
             self._dirty = True
             # Update density grid (only for new pixels, not overwrites)
             if is_new:
