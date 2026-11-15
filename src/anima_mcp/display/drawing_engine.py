@@ -657,6 +657,10 @@ class DrawingEngine:
 
         # One replay record per mark: the pixels it placed plus the state it
         # was placed in. After the step so the state is the one the mark caused.
+        # draw_pixel detaches a tap that failed; the marks it missed would
+        # leave a hole, so this piece gets no replay at all.
+        if self.canvas._replay_tap is not self._replay.pending:
+            self._replay.stop("pixel tap detached")
         self._replay.record_mark(
             gesture=era_state.gesture,
             eisv=(state.E, state.I, state.S, state.V, C),
@@ -1093,6 +1097,7 @@ class DrawingEngine:
         self.active_era = get_era(new_era_name)
         self.canvas._era_name = new_era_name
         self._replay.start_piece(self.canvas, new_era_name)
+        self.canvas._replay_tap = self._replay.pending
         self.intent.era_state = self.active_era.create_state(
             self._recent_dispositions_for(new_era_name)
         )

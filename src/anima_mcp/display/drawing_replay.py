@@ -352,7 +352,20 @@ class ReplayRecorder:
                     fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
             tmp.replace(path)
         except Exception as e:
-            _log(f"could not mark recording off on disk: {e}")
+            # No marker means a restart would resume this log with a hole in
+            # it. Without the log, a restart begins a fresh one whose opening
+            # is an explicit "pre-existing" base, which hides nothing.
+            _log(f"could not mark recording off on disk ({e}); removing the log")
+            try:
+                self.path().unlink()
+            except Exception as e2:
+                _log(f"could not remove the log either: {e2}")
+
+    def stop(self, why: str) -> None:
+        """Stop recording for the rest of this piece (see _go_off)."""
+        if not self._off:
+            _log(f"recording off for piece {self._piece}: {why}")
+            self._go_off(why)
 
     def _reconcile_record(self, records: Iterable[dict], canvas) -> List[dict]:
         """[] when the log already ends on the canvas, else one base record

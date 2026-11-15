@@ -218,6 +218,27 @@ class TestRecorder:
         rec2.flush()
         assert [r["type"] for r in iter_records(rec2.path())] == ["header", "mark"]
 
+    def test_unwritable_off_marker_falls_back_to_removing_the_log(self, tmp_path, monkeypatch):
+        canvas = CanvasState()
+        rec = _recorder_for(canvas, tmp_path)
+        _mark(canvas, rec, [(1, 1)])
+        rec.flush()
+        real_open = open
+
+        def failing_open(file, mode="r", *a, **k):
+            if str(file).endswith(".tmp"):
+                raise OSError("read-only")
+            return real_open(file, mode, *a, **k)
+
+        monkeypatch.setattr("builtins.open", failing_open)
+        rec.stop("disk trouble")
+        monkeypatch.undo()
+        assert not rec.path().exists()
+        rec2 = _recorder_for(canvas, tmp_path)  # restart: a fresh, labelled log
+        records = list(iter_records(rec2.path()))
+        assert [r["type"] for r in records] == ["header", "base"]
+        assert records[1]["why"] == "pre-existing"
+
     def test_a_failing_tap_never_stops_a_mark(self):
         class _Boom(list):
             def append(self, item):
@@ -268,6 +289,22 @@ class TestEngineWiring:
         engine.set_era("field", force_immediate=True)
         records = list(iter_records(canvas_path.with_name("canvas.replay.jsonl")))
         assert records[-1]["type"] == "era" and records[-1]["era"] == "field"
+
+    def test_a_detached_tap_means_no_replay_for_that_piece(self, canvas_path, tmp_path, monkeypatch):
+        engine = DrawingEngine()
+        self._draw_until(engine, 20, monkeypatch)
+        engine.canvas._replay_tap = None  # what draw_pixel does when the tap fails
+        self._draw_until(engine, 20, monkeypatch)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        saved = engine.canvas_save(manual=True)
+        assert not replay_path_for(Path(saved)).exists()
+        engine.canvas.drawing_paused_until = 0.0
+        engine.canvas_clear(persist=True, already_saved=True)
+        assert engine.canvas._replay_tap is engine._replay.pending  # next piece records
+        self._draw_until(engine, 20, monkeypatch)
+        engine._replay.flush()
+        kinds = [r["type"] for r in iter_records(canvas_path.with_name("canvas.replay.jsonl"))]
+        assert kinds[0] == "header" and "mark" in kinds and "off" not in kinds
 
     def test_recording_does_not_change_what_is_drawn(self, canvas_path, tmp_path, monkeypatch):
         """Same seeds, tap on vs. tap off: identical canvases."""
