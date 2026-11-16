@@ -346,6 +346,20 @@ class TestIntervalPersistence:
         second._connect()
         assert second._current_interval == moved
 
+    def test_self_feedback_does_not_move_the_pace(self, pls):
+        """Self-scores used to walk the interval to the 10-minute floor."""
+        before = pls._current_interval
+        for _ in range(50):
+            utt = pls.generate_utterance(default_state())
+            pls.record_self_feedback(utt, default_state())
+        assert pls._current_interval == before
+
+    def test_a_reply_soon_after_shortens_the_pace(self, pls):
+        utt = pls.generate_utterance(default_state())
+        before = pls._current_interval
+        pls.record_implicit_feedback(utt, message_arrived=True, delay_seconds=60)
+        assert pls._current_interval == before - timedelta(minutes=1)
+
     def test_persisted_interval_is_clamped(self, tmp_path):
         db = str(tmp_path / "prim.db")
         first = PrimitiveLanguageSystem(db_path=db)

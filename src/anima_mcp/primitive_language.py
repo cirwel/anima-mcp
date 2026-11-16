@@ -756,7 +756,15 @@ class PrimitiveLanguageSystem:
             signals.append("monotone")
 
         score = max(0.0, min(1.0, score))
-        return self._record_direct_feedback(utterance, score, signals)
+        # Self-scores teach token and pattern weights but do not set the pace.
+        # Novel, varied utterances score ~0.65, above the 0.55 success bar, so
+        # self-scoring shortened the interval more often than it lengthened it
+        # and, once the interval is persisted, would walk it back to the
+        # 10-minute floor. The pace now moves only on people: a reply soon
+        # after an utterance, or explicit resonate/confused feedback.
+        return self._record_direct_feedback(
+            utterance, score, signals, adjust_interval=False,
+        )
 
     def _record_direct_feedback(
         self,
@@ -764,6 +772,7 @@ class PrimitiveLanguageSystem:
         score: float,
         signals: List[str],
         learning_rate: float = 0.08,
+        adjust_interval: bool = True,
     ) -> Dict[str, Any]:
         """Apply feedback with a direct score (used by self-feedback and explicit feedback)."""
         utterance.score = score
@@ -790,9 +799,11 @@ class PrimitiveLanguageSystem:
 
         if success:
             self._successful_utterances += 1
-            self._set_interval(self._current_interval - timedelta(minutes=1))
-        else:
-            self._set_interval(self._current_interval + timedelta(minutes=2))
+        if adjust_interval:
+            if success:
+                self._set_interval(self._current_interval - timedelta(minutes=1))
+            else:
+                self._set_interval(self._current_interval + timedelta(minutes=2))
 
         return {
             "score": score,

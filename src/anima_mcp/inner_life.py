@@ -57,7 +57,10 @@ COMFORT_BAND_SIGMA = 1.0
 # and a band built on that spread alone would turn ordinary noise into longing.
 # With the floor, presence wants something only after a real drop.
 COMFORT_MIN_SIGMA = 0.02
-COMFORT_MIN_SAMPLES = 1800        # one hour of 2 s ticks before the band speaks
+# One full day of 2 s ticks before the band speaks, so the first band spans a
+# day/night cycle. With only an hour, that hour would become the reference and
+# an ordinary evening dip would read as a deficit on every dimension.
+COMFORT_MIN_SAMPLES = 43200
 COMFORT_WINDOW_SAMPLES = 302400   # ~7 days of 2 s ticks
 
 # Per-tick rates (2s interval).
