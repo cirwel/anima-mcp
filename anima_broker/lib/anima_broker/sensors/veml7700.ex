@@ -129,7 +129,18 @@ defmodule AnimaBroker.Sensors.VEML7700 do
         state.store.merge(%{"readings" => readings})
 
       {:error, reason} ->
-        Logger.warning("[VEML7700] read failed: #{inspect(reason)}")
+        # Publish absence, not the last good value (as BMP280 does). The
+        # capture provenance goes too, so nothing downstream aligns a stale
+        # lux against a fresh envelope.
+        state.store.merge(%{
+          "readings" => %{
+            "light_lux" => nil,
+            "light_observed_at" => nil,
+            "light_observed_precision_seconds" => nil
+          }
+        })
+
+        Logger.warning("[VEML7700] read failed: #{inspect(reason)} — publishing absent")
     end
 
     Process.send_after(self(), :read, state.interval_ms)

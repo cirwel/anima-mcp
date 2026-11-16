@@ -298,6 +298,8 @@ defmodule AnimaBroker.Governance.ClientTest do
 
     wait_until(fn -> get_in(Store.snapshot(), ["governance", "action"]) == "pause" end)
     assert :sys.get_state(pid).failures == 0
+    # The pause path sends no margin; it must not be published as comfortable.
+    assert Map.fetch!(Store.snapshot()["governance"], "margin") == nil
   end
 
   test "fixed csid mode skips onboard and claims the substrate identity" do

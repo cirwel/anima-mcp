@@ -528,7 +528,10 @@ defmodule AnimaBroker.Governance.Client do
         # No "proceed" default — callers guarantee an action is present, and
         # a shape without one must never be written as a verdict (#97).
         "action" => Map.fetch!(result, "action"),
-        "margin" => Map.get(result, "margin", "comfortable"),
+        # No "comfortable" default either: the agent_paused path sends no
+        # margin, and a paused Lumen must not be published as comfortable.
+        # Python consumers already treat a null margin as unknown.
+        "margin" => Map.get(result, "margin"),
         "reason" => Map.get(result, "reason"),
         "body_eisv_projection" => body_projection,
         "governance_eisv" => governance_eisv,
