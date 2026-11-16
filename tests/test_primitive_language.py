@@ -286,6 +286,91 @@ class TestShouldGenerate:
         assert should is True
         assert reason == "interval_reached"
 
+    def test_high_presence_alone_no_longer_speaks_early(self, pls, monkeypatch):
+        """Presence is system headroom, not company; it sat above 0.6 always."""
+        import anima_mcp.primitive_language as pl
+        monkeypatch.setattr(pl, "_last_social_contact", None)
+        pls._last_utterance = datetime.now() - timedelta(minutes=12)
+        for _ in range(200):
+            should, reason = pls.should_generate(default_state(presence=0.95))
+            assert should is False
+            assert reason == "waiting"
+
+    def test_spoken_to_speaks_after_the_floor(self, pls, monkeypatch):
+        import anima_mcp.primitive_language as pl
+        monkeypatch.setattr(pl, "_last_social_contact", None)
+        pls._last_utterance = datetime.now() - timedelta(minutes=12)
+        pl.note_social_contact()
+        should, reason = pls.should_generate(default_state())
+        assert (should, reason) == (True, "spoken_to")
+
+    def test_spoken_to_still_respects_the_floor(self, pls, monkeypatch):
+        import anima_mcp.primitive_language as pl
+        monkeypatch.setattr(pl, "_last_social_contact", None)
+        pls._last_utterance = datetime.now() - timedelta(minutes=3)
+        pl.note_social_contact()
+        assert pls.should_generate(default_state()) == (False, "too_soon")
+
+    def test_contact_before_last_utterance_is_already_answered(self, pls, monkeypatch):
+        import anima_mcp.primitive_language as pl
+        monkeypatch.setattr(pl, "_last_social_contact", None)
+        pl.note_social_contact(datetime.now() - timedelta(minutes=20))
+        pls._last_utterance = datetime.now() - timedelta(minutes=12)
+        assert pls.should_generate(default_state()) == (False, "waiting")
+
+
+class TestIntervalPersistence:
+    """The learned interval used to reset to 25 minutes on every restart."""
+
+    def test_interval_survives_restart(self, tmp_path):
+        db = str(tmp_path / "prim.db")
+        first = PrimitiveLanguageSystem(db_path=db)
+        first._connect()
+        first._set_interval(timedelta(minutes=33))
+        first.close()
+        second = PrimitiveLanguageSystem(db_path=db)
+        second._connect()
+        assert second._current_interval == timedelta(minutes=33)
+
+    def test_feedback_moves_and_persists_interval(self, tmp_path):
+        db = str(tmp_path / "prim.db")
+        first = PrimitiveLanguageSystem(db_path=db)
+        first._connect()
+        first.generate_utterance(default_state())
+        before = first._current_interval
+        first.record_explicit_feedback(positive=False)
+        assert first._current_interval > before
+        moved = first._current_interval
+        first.close()
+        second = PrimitiveLanguageSystem(db_path=db)
+        second._connect()
+        assert second._current_interval == moved
+
+    def test_self_feedback_does_not_move_the_pace(self, pls):
+        """Self-scores used to walk the interval to the 10-minute floor."""
+        before = pls._current_interval
+        for _ in range(50):
+            utt = pls.generate_utterance(default_state())
+            pls.record_self_feedback(utt, default_state())
+        assert pls._current_interval == before
+
+    def test_a_reply_soon_after_shortens_the_pace(self, pls):
+        utt = pls.generate_utterance(default_state())
+        before = pls._current_interval
+        pls.record_implicit_feedback(utt, message_arrived=True, delay_seconds=60)
+        assert pls._current_interval == before - timedelta(minutes=1)
+
+    def test_persisted_interval_is_clamped(self, tmp_path):
+        db = str(tmp_path / "prim.db")
+        first = PrimitiveLanguageSystem(db_path=db)
+        conn = first._connect()
+        conn.execute("INSERT INTO primitive_state (key, value) VALUES ('current_interval_minutes', 500)")
+        conn.commit()
+        first.close()
+        second = PrimitiveLanguageSystem(db_path=db)
+        second._connect()
+        assert second._current_interval == second._max_interval
+
 
 # ==================== Feedback ====================
 

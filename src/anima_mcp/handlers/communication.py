@@ -12,6 +12,23 @@ from mcp.types import TextContent
 _SOCIAL_BOOST_PATH = Path("/dev/shm/anima_social_boost")
 
 
+def _signal_social_contact() -> None:
+    """Someone spoke to Lumen: tell the broker and the speech timer.
+
+    The broker consumes (deletes) the boost file, so the speech timer, which
+    runs here in the server process, gets its own in-process note.
+    """
+    try:
+        _SOCIAL_BOOST_PATH.touch()
+    except Exception:
+        pass
+    try:
+        from ..primitive_language import note_social_contact
+        note_social_contact()
+    except Exception:
+        pass
+
+
 def _get_request_headers() -> dict | None:
     """Get HTTP headers from the current MCP request context.
 
@@ -189,11 +206,8 @@ async def handle_lumen_qa(arguments: dict) -> list[TextContent]:
         # Add answer via add_agent_message (handles responds_to linking)
         result = add_agent_message(answer, agent_name=agent_name, responds_to=validated_question_id)
 
-        # Signal social boost to broker (someone answered Lumen's question)
-        try:
-            _SOCIAL_BOOST_PATH.touch()
-        except Exception:
-            pass
+        # Signal social contact (broker mood contagion + speech timer)
+        _signal_social_contact()
 
         # Extract insight from Q&A (inline so result visible in response)
         # This populates Lumen's knowledge base with learnings from answers
@@ -417,11 +431,8 @@ async def handle_post_message(arguments: dict) -> list[TextContent]:
                     activity.record_interaction()
             except Exception:
                 pass
-            # Signal social boost to broker (inner life mood contagion)
-            try:
-                _SOCIAL_BOOST_PATH.touch()
-            except Exception:
-                pass
+            # Signal social contact (broker mood contagion + speech timer)
+            _signal_social_contact()
             # Snapshot clarity for self-model interaction observation
             try:
                 _, cur_anima = _get_readings_and_anima(fallback_to_sensors=False)
@@ -506,11 +517,8 @@ async def handle_post_message(arguments: dict) -> list[TextContent]:
                     activity.record_interaction()
             except Exception:
                 pass
-            # Signal social boost to broker (inner life mood contagion)
-            try:
-                _SOCIAL_BOOST_PATH.touch()
-            except Exception:
-                pass
+            # Signal social contact (broker mood contagion + speech timer)
+            _signal_social_contact()
             # Snapshot clarity for self-model interaction observation
             try:
                 _, cur_anima = _get_readings_and_anima(fallback_to_sensors=False)

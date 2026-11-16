@@ -141,3 +141,90 @@ def test_saturated_drive_decays_when_mood_good():
     assert il._drives["warmth"] < 1.0, (
         f"Drive should have started decaying after 50 ticks of good mood, got {il._drives['warmth']}"
     )
+
+
+# ==================== Self-relative comfort band ====================
+
+from anima_mcp import inner_life as _il_mod  # noqa: E402
+
+
+def _settle(il, value, ticks):
+    """Feed `ticks` updates with temperament held at `value` on every dim."""
+    for _ in range(ticks):
+        il._temperament = {d: value for d in il._drives}
+        il._observe_temperament(il._temperament)
+
+
+def test_comfort_falls_back_to_absolute_before_enough_samples():
+    il = _make_inner_life({d: 0.8 for d in ("warmth", "clarity", "stability", "presence")})
+    c = il.comfort_threshold("clarity")
+    assert c["source"] == "absolute_fallback"
+    assert c["threshold"] == _il_mod.DRIVE_COMFORT["clarity"]
+
+
+def test_clarity_drive_can_arise_against_its_own_band():
+    """Lived case: clarity never fell below 0.45, so its drive was dead.
+
+    Against its own band, a dip from a 0.80 baseline to 0.65 is longing.
+    """
+    dims = ("warmth", "clarity", "stability", "presence")
+    il = _make_inner_life({d: 0.8 for d in dims})
+    # A baseline that wanders 0.75-0.85 for an hour+.
+    for i in range(_il_mod.COMFORT_MIN_SAMPLES + 200):
+        v = 0.75 if i % 2 else 0.85
+        il._observe_temperament({d: v for d in dims})
+    c = il.comfort_threshold("clarity")
+    assert c["source"] == "self_relative"
+    assert 0.74 < c["threshold"] < 0.76  # mean 0.80 - 1 sigma (0.05)
+
+    il._temperament = {"warmth": 0.8, "clarity": 0.65, "stability": 0.8, "presence": 0.8}
+    low = _make_anima(warmth=0.8, clarity=0.65, stability=0.8, presence=0.8)
+    il.update(low, low)
+    assert il._drives["clarity"] > 0.0
+    assert 0.65 > _il_mod.DRIVE_COMFORT["clarity"]  # the old cut would never have fired
+    assert il._drives["warmth"] == 0.0
+
+
+def test_min_sigma_keeps_tiny_noise_from_becoming_a_want():
+    """Presence barely moves; a 0.005 wobble must not register as longing."""
+    dims = ("warmth", "clarity", "stability", "presence")
+    il = _make_inner_life({d: 0.71 for d in dims})
+    for i in range(_il_mod.COMFORT_MIN_SAMPLES + 10):
+        v = 0.712 if i % 2 else 0.708
+        il._observe_temperament({d: v for d in dims})
+    c = il.comfort_threshold("presence")
+    assert c["sigma"] == _il_mod.COMFORT_MIN_SIGMA
+    assert c["threshold"] < 0.705
+
+
+def test_band_window_lets_the_baseline_drift():
+    dims = ("warmth", "clarity", "stability", "presence")
+    il = _make_inner_life({d: 0.5 for d in dims})
+    il._comfort_band = {d: {"n": float(_il_mod.COMFORT_WINDOW_SAMPLES), "mean": 0.5, "var": 0.0001}
+                        for d in dims}
+    # One window of a new operating point moves the mean ~63% of the way
+    # (EMA behaviour), where plain Welford over the same history moves half.
+    for _ in range(_il_mod.COMFORT_WINDOW_SAMPLES):
+        il._observe_temperament({d: 0.7 for d in dims})
+    assert il._comfort_band["clarity"]["mean"] > 0.62
+    assert il._comfort_band["clarity"]["n"] == _il_mod.COMFORT_WINDOW_SAMPLES
+
+
+def test_comfort_band_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(_il_mod, "_PERSISTENCE_PATH", tmp_path / "inner_life.json")
+    il = _il_mod.InnerLife()
+    il._temperament = {d: 0.8 for d in _il_mod.DIMENSIONS}
+    for _ in range(_il_mod.COMFORT_MIN_SAMPLES):
+        il._observe_temperament(il._temperament)
+    il.save()
+    again = _il_mod.InnerLife()
+    assert again.comfort_threshold("clarity")["source"] == "self_relative"
+    assert again._comfort_band["clarity"]["n"] == _il_mod.COMFORT_MIN_SAMPLES
+
+
+def test_update_publishes_comfort_source():
+    il = _make_inner_life({d: 0.5 for d in ("warmth", "clarity", "stability", "presence")})
+    a = _make_anima()
+    state = il.update(a, a)
+    assert state.comfort["warmth"]["source"] == "absolute_fallback"
+    assert "comfort" in state.to_dict()
