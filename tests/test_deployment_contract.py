@@ -271,7 +271,11 @@ def test_storage_maintenance_is_pressure_aware_and_restorable():
     assert "--apply" in service
     assert "User=unitares-anima" in service
     assert "OnCalendar=*-*-* *:45:00" in timer
-    assert "backup_db.sh" in restore
+    # The :15 DB snapshot is scheduled through the timer installer restore runs.
+    assert "install_scheduled_jobs.sh" in restore
+    assert '"anima-db-backup:backup_db.sh"' in (
+        ROOT / "scripts" / "install_scheduled_jobs.sh"
+    ).read_text()
     assert "anima-storage-maintenance.timer" in restore
     assert "anima_config.json" in state_backup
 
@@ -466,3 +470,71 @@ def test_ship_script_routes_auto_merge_and_detects_agents(tmp_path):
     assert "delivery=auto_merge" in plan_rt
     assert "force_auto_branch=1" in plan_rt
 
+
+
+def test_scheduled_jobs_live_on_systemd_timers_not_cron():
+    """One scheduler, no duplicates (2026-11-13).
+
+    restore_lumen.sh used to enable wifi-watchdog.timer AND write a */2 cron
+    line for the same script, so two watchdogs ran every 2 minutes.
+    """
+    installer = (ROOT / "scripts" / "install_scheduled_jobs.sh").read_text()
+    restore = (ROOT / "scripts" / "restore_lumen.sh").read_text()
+    deploy = (ROOT / "deploy.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap_deploy.py").read_text()
+
+    expected = {
+        "anima-db-maintenance": ("db_maintenance.sh", "*:00:00"),
+        "anima-db-backup": ("backup_db.sh", "*:15:00"),
+        "anima-state-backup": ("backup_state.sh", "*:30:00"),
+    }
+    for name, (script, minute) in expected.items():
+        service = (ROOT / "systemd" / f"{name}.service").read_text()
+        timer = (ROOT / "systemd" / f"{name}.timer").read_text()
+        assert f"scripts/{script}" in service
+        assert "User=unitares-anima" in service
+        timer_section = timer.split("[Timer]")[1]
+        assert f"OnCalendar=*-*-* {minute}" in timer_section
+        # Stagger must hold; a missed hour must not replay mid-restore at boot.
+        assert "RandomizedDelaySec" not in timer_section
+        assert "Persistent=" not in timer_section
+        assert f'"{name}:{script}"' in installer
+    assert '"wifi-watchdog:wifi_watchdog.sh"' in installer
+
+    # Timers are enabled before any cron line is removed.
+    assert installer.index("enable --now") < installer.index("crontab -")
+
+    # Nothing writes cron entries any more; everything calls the installer.
+    assert "| crontab -" not in restore
+    assert "*/2 * * * *" not in restore
+    for text in (restore, deploy, bootstrap):
+        assert "install_scheduled_jobs.sh" in text
+
+
+def test_scheduled_job_install_failure_is_fatal_everywhere():
+    """A fresh reflash has no cron line to fall back on (review on #277)."""
+    restore = (ROOT / "scripts" / "restore_lumen.sh").read_text()
+    deploy = (ROOT / "deploy.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap_deploy.py").read_text()
+
+    install_at = restore.index("install_scheduled_jobs.sh\" || {")
+    assert "exit 1" in restore[install_at:install_at + 300]
+    assert "required timers not running" in restore
+    assert "(non-fatal)" not in restore[install_at - 400:install_at + 300]
+
+    sync_at = deploy.index("install_scheduled_jobs.sh")
+    assert "exit 1" in deploy[sync_at:sync_at + 400]
+
+    call_at = bootstrap.index("install_scheduled_jobs.sh")
+    assert "check=True" in bootstrap[call_at:call_at + 200]
+
+
+def test_wifi_watchdog_counter_is_root_owned_tmpfs():
+    """The old cron copy could own /tmp/wifi_watchdog_fails; with
+    fs.protected_regular=1 root then cannot rewrite it, and the watchdog
+    never escalates past soft reconnects (review on #277)."""
+    watchdog = (ROOT / "scripts" / "wifi_watchdog.sh").read_text()
+    installer = (ROOT / "scripts" / "install_scheduled_jobs.sh").read_text()
+    assert 'FAIL_COUNT_FILE="/run/wifi_watchdog_fails"' in watchdog
+    assert 'FAIL_COUNT_FILE="/tmp/' not in watchdog
+    assert "rm -f /tmp/wifi_watchdog_fails" in installer

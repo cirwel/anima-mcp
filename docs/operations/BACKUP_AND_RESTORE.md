@@ -148,7 +148,7 @@ tar -xzf "$STATE_ARCHIVE" -C ~/backups/lumen/anima_data
 - **Automated (Mac):** `/Users/cirwel/scripts/backup_lumen.sh` -- twice daily (6am, 6pm) + hourly snapshots
 - **Launchd plist:** `~/Library/LaunchAgents/com.unitares.lumen-backup.plist`
 - **Log:** `/Users/cirwel/backups/lumen_backup.log`
-- **Pi local backup:** `backup_state.sh` runs hourly via crontab, saves JSON state to `~/.anima/backups/state/` (24 snapshots)
+- **Pi local backup:** `backup_state.sh` runs hourly at `:30` via `anima-state-backup.timer`, saves JSON state to `~/.anima/backups/state/` (24 snapshots). `backup_db.sh` (`:15`, `anima-db-backup.timer`) and `db_maintenance.sh` (`:00`, `anima-db-maintenance.timer`) are timers too; none of these is in cron any more (`scripts/install_scheduled_jobs.sh`, run by deploy and restore).
 - **Pi storage maintenance:** `anima-storage-maintenance.timer` runs hourly at
   `:45`, after the database (`:15`) and learned-state (`:30`) snapshots.
 
@@ -327,11 +327,12 @@ If you truly need to read the ext4 root partition from the SD card on macOS, the
 
 ## WiFi Watchdog
 
-To reduce future WiFi drops after reflash:
+`restore_lumen.sh` installs it as `wifi-watchdog.timer` (every 2 minutes, as
+root). To (re)install it by hand:
 ```bash
-chmod +x ~/anima-mcp/scripts/wifi_watchdog.sh
-(crontab -l 2>/dev/null; echo "*/5 * * * * $HOME/anima-mcp/scripts/wifi_watchdog.sh") | crontab -
+bash ~/anima-mcp/scripts/install_scheduled_jobs.sh
 ```
+Do not also add a crontab line for it — that ran two copies at once.
 
 ---
 

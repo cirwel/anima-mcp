@@ -1,7 +1,7 @@
 #!/bin/bash
 # Hourly backup of Lumen JSON state files
 # Keeps last 24 backups (1 day of hourly snapshots)
-# Installed via crontab: 30 * * * * /home/unitares-anima/anima-mcp/scripts/backup_state.sh
+# Scheduled by systemd/anima-state-backup.timer at :30 (was a crontab line until 2026-11-13).
 
 ANIMA_DIR="/home/unitares-anima/.anima"
 BACKUP_DIR="${ANIMA_DIR}/backups/state"

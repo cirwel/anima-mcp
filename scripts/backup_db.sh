@@ -1,7 +1,7 @@
 #!/bin/bash
 # Hourly consistent backup of anima.db (sqlite backup API, WAL-safe).
 # Keeps last 24 backups (1 day of hourly snapshots).
-# Installed via crontab: 15 * * * * /home/unitares-anima/anima-mcp/scripts/backup_db.sh
+# Scheduled by systemd/anima-db-backup.timer at :15 (was a crontab line until 2026-11-13).
 #
 # Why two stages (2026-10-15): copying the ~280MB DB straight onto the SD card
 # left the whole copy as dirty page cache. Lumen's own small commits then had

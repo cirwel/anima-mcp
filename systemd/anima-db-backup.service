@@ -1,0 +1,18 @@
+[Unit]
+Description=Anima hourly anima.db snapshot (sqlite backup API, RAM-staged)
+Documentation=https://github.com/CIRWEL/anima-mcp/blob/main/docs/operations/BACKUP_AND_RESTORE.md
+ConditionPathIsDirectory=/home/unitares-anima/.anima
+
+# Was a user crontab line until 2026-11-13; moved here so every scheduled job
+# on the Pi is visible in `systemctl list-timers` and its output lands in the
+# journal (exported hourly by lumen-journal-archive). Runs as the same user,
+# with HOME set as cron set it and no extra sandboxing, so the script
+# behaves as it did under cron. (Nice=10 matches the other maintenance units.)
+
+[Service]
+Type=oneshot
+User=unitares-anima
+Group=unitares-anima
+ExecStart=/home/unitares-anima/anima-mcp/scripts/backup_db.sh
+Nice=10
+TimeoutStartSec=20min
