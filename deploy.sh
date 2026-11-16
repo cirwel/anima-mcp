@@ -270,6 +270,7 @@ if ssh -p $PI_PORT $SSH_EXTRA -o ConnectTimeout=5 -o StrictHostKeyChecking=accep
     echo -e "${GREEN}✓ Scheduled jobs synchronized${NC}"
 else
     echo -e "${RED}✗ Could not synchronize scheduled jobs (backups/watchdogs may be unscheduled)${NC}"
+    echo -e "${YELLOW}  Services were not restarted and the Elixir release was not synced: the Pi checkout is ahead of the running code. Fix the timers, then re-run deploy${NC}"
     exit 1
 fi
 
