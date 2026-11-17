@@ -60,5 +60,39 @@ defmodule AnimaBroker.Sensors.AHT20Test do
       # the trigger command was issued
       assert_receive {:i2c_write, 0x38, <<0xAC, 0x33, 0x00>>}
     end
+
+    test "a busy first read is re-read once, without a second trigger" do
+      busy = <<0x98, 0x80, 0x00, 0x08, 0x00, 0x00, 0x00>>
+      ready = <<0x18, 0x80, 0x00, 0x08, 0x00, 0x00, 0x00>>
+
+      bus = %{
+        trace: self(),
+        responses: %{{:read, 7} => sequence([{:ok, busy}, {:ok, ready}])}
+      }
+
+      assert {:ok, %{humidity_pct: h}} = AHT20.read_once(FakeI2C, bus, 0x38, 0)
+      assert_in_delta h, 50.0, 1.0e-6
+      assert_receive {:i2c_write, 0x38, <<0xAC, 0x33, 0x00>>}
+      refute_received {:i2c_write, 0x38, <<0xAC, 0x33, 0x00>>}
+    end
+
+    test "a sensor still busy after the one retry reports :busy" do
+      busy = <<0x98, 0x80, 0x00, 0x08, 0x00, 0x00, 0x00>>
+      bus = %{responses: %{{:read, 7} => sequence([{:ok, busy}, {:ok, busy}, {:ok, busy}])}}
+
+      assert {:error, :busy} = AHT20.read_once(FakeI2C, bus, 0x38, 0)
+    end
+  end
+
+  # Returns a zero-arity function that hands out `responses` one per call.
+  defp sequence(responses) do
+    {:ok, agent} = Agent.start_link(fn -> responses end)
+
+    fn ->
+      Agent.get_and_update(agent, fn
+        [next | rest] -> {next, rest}
+        [] -> {{:error, :sequence_exhausted}, []}
+      end)
+    end
   end
 end

@@ -1978,14 +1978,28 @@ class TestVoiceIntegration:
         readings = _make_readings(ambient_temp_c=23.0, humidity_pct=50.0, light_lux=300.0)
 
         voice.update_environment(
-            temperature=readings.ambient_temp_c or readings.cpu_temp_c or 22.0,
-            humidity=readings.humidity_pct or 50.0,
+            temperature=readings.ambient_temp_c,
+            humidity=readings.humidity_pct,
             light_level=None,
         )
         voice.update_environment.assert_called_once()
         call_kwargs = voice.update_environment.call_args.kwargs
         assert call_kwargs["temperature"] == 23.0
         assert call_kwargs["light_level"] is None
+
+    def test_broker_voice_gets_unknown_room_not_cpu_temperature(self):
+        """A dead AHT20 reaches the voice as None, not CPU temp or 22C/50%."""
+        from anima_mcp.creature_runtime import CreatureRuntimeMixin
+
+        voice = MagicMock()
+        anima = _make_anima(warmth=0.6, clarity=0.7, stability=0.5, presence=0.4)
+        readings = _make_readings(ambient_temp_c=None, humidity_pct=None, cpu_temp_c=58.0)
+
+        CreatureRuntimeMixin.update_broker_voice(SimpleNamespace(), voice, anima, readings, None)
+
+        call_kwargs = voice.update_environment.call_args.kwargs
+        assert call_kwargs["temperature"] is None
+        assert call_kwargs["humidity"] is None
 
     def test_voice_error_doesnt_crash(self):
         """Voice update error is caught and does not crash."""

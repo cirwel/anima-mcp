@@ -63,6 +63,34 @@ def _eisv_bar_fraction(key: str, value: float) -> float:
     return min(1.0, max(0.0, magnitude))
 
 
+def _sparkline_segments(values, x0, width, y_top, height):
+    """Points for a sparkline, split into segments at missing (None) values.
+
+    Scaling uses only the values that are present, so a gap neither draws a
+    line to 0 nor stretches the range. Runs shorter than two points are
+    dropped because a single point cannot be drawn as a line.
+    """
+    present = [v for v in values if v is not None]
+    if len(present) < 2:
+        return []
+    v_min, v_max = min(present), max(present)
+    v_range = v_max - v_min if v_max > v_min else 1.0
+    n = len(values)
+    segments, current = [], []
+    for i, v in enumerate(values):
+        if v is None:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+            continue
+        px = x0 + int(i * width / max(1, n - 1))
+        py = y_top + height - int(((v - v_min) / v_range) * height)
+        current.append((px, py))
+    if len(current) >= 2:
+        segments.append(current)
+    return segments
+
+
 class InfoMixin:
     """Mixin for info-group screens (sensors, identity, diagnostics, health)."""
 
@@ -74,9 +102,14 @@ class InfoMixin:
 
         # Cache: sensor values rounded to display precision (avoids redraw for noise)
         throttle = getattr(readings, 'throttle_bits', None) or 0
+        # A missing reading keys as "-", not 0, so a sensor dying in a dark
+        # room (0 lux) still redraws the screen.
+        def _k(value, spec):
+            return "-" if value is None else format(value, spec)
+
         cache_key = (
-            f"{(readings.ambient_temp_c or 0):.1f}|{(readings.humidity_pct or 0):.0f}|"
-            f"{(readings.light_lux or 0):.0f}|{(readings.cpu_temp_c or 0):.1f}|"
+            f"{_k(readings.ambient_temp_c, '.1f')}|{_k(readings.humidity_pct, '.0f')}|"
+            f"{_k(readings.light_lux, '.0f')}|{(readings.cpu_temp_c or 0):.1f}|"
             f"{(readings.cpu_percent or 0):.0f}|{(readings.disk_percent or 0):.0f}|"
             f"{(readings.memory_percent or 0):.0f}|{throttle}"
         )
@@ -259,34 +292,28 @@ class InfoMixin:
                 draw.text((130, y), "no wifi", fill=C_HOT, font=f_micro)
 
             # ── Sparklines (right of env bars) ─────────────────────────────
+            # Missing readings stay None and leave a gap in the sparkline,
+            # rather than drawing a plunge to 0 that looks like a real value.
             self._sensor_history.append((
-                readings.ambient_temp_c or 0,
-                readings.humidity_pct    or 0,
-                readings.cpu_temp_c      or 0,
+                readings.ambient_temp_c,
+                readings.humidity_pct,
+                readings.cpu_temp_c,
             ))
             if len(self._sensor_history) >= 5 and len(spark_bar_ys) >= 2:
                 history = list(self._sensor_history)
-                n = len(history)
                 spark_x = 172
                 spark_w = 56
                 spark_h = 8
                 sparklines = [
-                    (0, spark_bar_ys[0], cpu_color if (readings.ambient_temp_c or 0) > 25 else C_OK),
+                    (0, spark_bar_ys[0], cpu_color if (readings.ambient_temp_c is not None and readings.ambient_temp_c > 25) else C_OK),
                     (1, spark_bar_ys[1], C_OK),
                 ]
                 if cpu_bar_y is not None:
                     sparklines.append((2, cpu_bar_y - 1, cpu_color))
                 for data_idx, y_top, color in sparklines:
                     values = [h[data_idx] for h in history]
-                    v_min, v_max = min(values), max(values)
-                    v_range = v_max - v_min if v_max > v_min else 1.0
-                    pts = []
-                    for i, v in enumerate(values):
-                        px = spark_x + int(i * spark_w / max(1, n - 1))
-                        py = y_top + spark_h - int(((v - v_min) / v_range) * spark_h)
-                        pts.append((px, py))
-                    if len(pts) >= 2:
-                        draw.line(pts, fill=_dim(color, 0.7), width=1)
+                    for seg in _sparkline_segments(values, spark_x, spark_w, y_top, spark_h):
+                        draw.line(seg, fill=_dim(color, 0.7), width=1)
 
             self._draw_status_bar(draw)
             self._store_screen_cache("sensors", cache_key, image)

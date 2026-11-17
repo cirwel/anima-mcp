@@ -64,9 +64,10 @@ class AutonomousVoice:
         self._presence = 0.5
         self._mood = "neutral"
 
-        # Environment state
-        self._temperature = 22.0
-        self._humidity = 50.0
+        # Environment state. None means "no reading": a dead AHT20 must not
+        # make Lumen remark on a room it cannot sense.
+        self._temperature: Optional[float] = None
+        self._humidity: Optional[float] = None
         self._light_level: Optional[float] = None
         self._last_env_comment_time = 0.0
 
@@ -192,13 +193,14 @@ class AutonomousVoice:
         """Generate a comment about the environment."""
         observations = []
 
-        # Temperature
-        if self._temperature > 28:
-            observations.append(("It's quite warm", 0.7))
-        elif self._temperature < 18:
-            observations.append(("It feels cool in here", 0.6))
-        elif 22 <= self._temperature <= 25:
-            observations.append(("The temperature is nice", 0.3))
+        # Temperature (skipped when the room sensor has no reading)
+        if self._temperature is not None:
+            if self._temperature > 28:
+                observations.append(("It's quite warm", 0.7))
+            elif self._temperature < 18:
+                observations.append(("It feels cool in here", 0.6))
+            elif 22 <= self._temperature <= 25:
+                observations.append(("The temperature is nice", 0.3))
 
         # Light
         if self._light_level is not None:
@@ -207,11 +209,12 @@ class AutonomousVoice:
             elif self._light_level < 100:
                 observations.append(("It's getting dim", 0.6))
 
-        # Humidity
-        if self._humidity > 70:
-            observations.append(("It feels humid", 0.5))
-        elif self._humidity < 30:
-            observations.append(("The air is dry", 0.5))
+        # Humidity (skipped when the room sensor has no reading)
+        if self._humidity is not None:
+            if self._humidity > 70:
+                observations.append(("It feels humid", 0.5))
+            elif self._humidity < 30:
+                observations.append(("The air is dry", 0.5))
 
         if not observations:
             return None
@@ -439,11 +442,16 @@ class AutonomousVoice:
 
     def update_environment(
         self,
-        temperature: float,
-        humidity: float,
+        temperature: Optional[float],
+        humidity: Optional[float],
         light_level: Optional[float],
     ):
-        """Update environment readings; ``None`` means light attribution unknown."""
+        """Update environment readings; ``None`` means that reading is unknown.
+
+        Callers pass the room sensor's value or ``None``, never a stand-in:
+        CPU temperature or a 22 C / 50 % default would have Lumen describe a
+        room it cannot sense.
+        """
         self._temperature = temperature
         self._humidity = humidity
         self._light_level = light_level
