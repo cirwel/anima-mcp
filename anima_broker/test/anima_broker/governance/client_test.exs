@@ -161,6 +161,11 @@ defmodule AnimaBroker.Governance.ClientTest do
       end
     end
 
+    # The Store is shared: an earlier test can leave action "proceed" there, and
+    # the wait below would then pass before this test's check-in lands.
+    Store.merge(%{"governance" => %{"action" => "sentinel-before-checkin"}})
+    _ = Store.snapshot()
+
     %{pid: pid, id_file: id_file} = start_client(http_post)
 
     assert_receive {:post, %{"name" => "onboard", "arguments" => onboard_args}}, 2_000
@@ -391,6 +396,10 @@ defmodule AnimaBroker.Governance.ClientTest do
           })
       end
     end
+
+    # Same stale-"proceed" guard as the first check-in test.
+    Store.merge(%{"governance" => %{"action" => "sentinel-before-checkin"}})
+    _ = Store.snapshot()
 
     %{pid: pid, id_file: id_file} = start_client(http_post)
     wait_until(fn -> :sys.get_state(pid).identity != nil end)
