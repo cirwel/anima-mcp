@@ -30,6 +30,7 @@ from anima_mcp.display.face import FaceState, EyeState, MouthState  # noqa: E402
 from anima_mcp.display.screen_info import (  # noqa: E402
     _eisv_bar_fraction,
     _select_eisv_for_display,
+    _sparkline_segments,
 )
 
 
@@ -1186,3 +1187,30 @@ class TestSlowRenderPhaseBreakdown:
         screen_renderer.render(face_state=face_state)
         captured = capsys.readouterr()
         assert "Slow render:" not in captured.err
+
+
+class TestSparklineSegments:
+    """A missing reading leaves a gap; it is never drawn as 0."""
+
+    def test_full_history_is_one_segment(self):
+        segs = _sparkline_segments([20.0, 21.0, 22.0], 0, 10, 0, 8)
+        assert len(segs) == 1
+        assert len(segs[0]) == 3
+
+    def test_none_splits_the_line_instead_of_dropping_to_zero(self):
+        values = [20.0, 21.0, None, 22.0, 23.0]
+        segs = _sparkline_segments(values, 0, 40, 0, 8)
+        assert len(segs) == 2
+        # Scaling uses only present values: 20 is the bottom (y=8), 23 the top.
+        ys = [y for seg in segs for _, y in seg]
+        assert max(ys) == 8
+        assert min(ys) == 0
+
+    def test_dead_sensor_draws_nothing(self):
+        assert _sparkline_segments([None] * 6, 0, 40, 0, 8) == []
+
+    def test_isolated_point_is_dropped(self):
+        segs = _sparkline_segments([20.0, None, 21.0, 22.0], 0, 30, 0, 8)
+        assert len(segs) == 1
+        assert len(segs[0]) == 2
+

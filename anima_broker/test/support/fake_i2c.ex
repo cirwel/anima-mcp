@@ -15,6 +15,9 @@ defmodule AnimaBroker.Test.FakeI2C do
   Writes always succeed (and are optionally traced). Reads/write_reads return
   the canned response, or `{:error, {:no_canned_response, key}}` if absent — so
   a driver asking for something the test didn't stub fails loudly.
+
+  A canned response may also be a zero-arity function, called on each read, so
+  a test can return a different answer per call (busy, then ready).
   """
   @behaviour AnimaBroker.Hardware.I2C
 
@@ -37,6 +40,7 @@ defmodule AnimaBroker.Test.FakeI2C do
 
   defp fetch(bus, key) do
     case Map.fetch(bus[:responses] || %{}, key) do
+      {:ok, resp} when is_function(resp, 0) -> resp.()
       {:ok, resp} -> resp
       :error -> {:error, {:no_canned_response, key}}
     end

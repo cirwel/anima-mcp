@@ -1523,6 +1523,18 @@ class TestAutonomousVoiceUpdateEnvironment:
         assert autonomous._humidity == 65.0
         assert autonomous._light_level == 300.0
 
+    def test_update_environment_accepts_unknown(self, autonomous):
+        autonomous.update_environment(28.5, 65.0, 300.0)
+        autonomous.update_environment(None, None, None)
+        assert autonomous._temperature is None
+        assert autonomous._humidity is None
+        assert autonomous._light_level is None
+
+    def test_environment_starts_unknown(self, autonomous):
+        # No stand-in room before the first reading arrives.
+        assert autonomous._temperature is None
+        assert autonomous._humidity is None
+
 
 class TestAutonomousVoiceEnvironmentThoughts:
     """Test environment-based thought generation."""
@@ -1591,6 +1603,21 @@ class TestAutonomousVoiceEnvironmentThoughts:
         autonomous._humidity = 50.0  # Between 30-70
         thought = autonomous._generate_environment_thought()
         assert thought is None
+
+    def test_dead_room_sensor_says_nothing_about_the_room(self, autonomous):
+        """With no temperature or humidity reading, no remark about either."""
+        autonomous._temperature = None
+        autonomous._humidity = None
+        autonomous._light_level = None
+        assert autonomous._generate_environment_thought() is None
+
+    def test_dead_room_sensor_still_allows_light_remarks(self, autonomous):
+        autonomous._temperature = None
+        autonomous._humidity = None
+        autonomous._light_level = 900.0
+        thought = autonomous._generate_environment_thought()
+        assert thought is not None
+        assert "bright" in thought.text.lower()
 
     def test_urgency_scaled_by_warmth(self, autonomous):
         autonomous._temperature = 30.0

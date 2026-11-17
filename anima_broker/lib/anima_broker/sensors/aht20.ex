@@ -61,6 +61,11 @@ defmodule AnimaBroker.Sensors.AHT20 do
   @doc """
   Trigger a measurement, wait `delay_ms`, then read and decode. `delay_ms` is
   injectable so tests can pass 0 against a fake bus.
+
+  If the status byte still says busy, wait once more and re-read without a new
+  trigger (the datasheet's "wait, then poll status"). One retry only: a sensor
+  that stays busy is reported as `{:error, :busy}` and published as absent,
+  rather than briefly blanking a healthy sensor on one slow conversion.
   """
   @spec read_once(module(), I2C.bus(), I2C.address(), non_neg_integer()) ::
           {:ok, %{temp_c: float(), humidity_pct: float()}} | {:error, term()}
@@ -68,6 +73,17 @@ defmodule AnimaBroker.Sensors.AHT20 do
     with :ok <- impl.write(bus, address, @cmd_trigger),
          _ <- if(delay_ms > 0, do: Process.sleep(delay_ms)),
          {:ok, bytes} <- impl.read(bus, address, 7) do
+      case decode(bytes) do
+        {:error, :busy} -> reread(impl, bus, address, delay_ms)
+        decoded -> decoded
+      end
+    end
+  end
+
+  defp reread(impl, bus, address, delay_ms) do
+    if delay_ms > 0, do: Process.sleep(delay_ms)
+
+    with {:ok, bytes} <- impl.read(bus, address, 7) do
       decode(bytes)
     end
   end

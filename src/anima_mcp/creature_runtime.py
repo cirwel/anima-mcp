@@ -1137,8 +1137,10 @@ class CreatureRuntimeMixin:
                     mood=feeling.get("mood", "neutral")
                 )
                 voice.update_environment(
-                    temperature=readings.ambient_temp_c or readings.cpu_temp_c or 22.0,
-                    humidity=readings.humidity_pct or 50.0,
+                    # The room sensor's own values or None: never CPU
+                    # temperature or a comfortable default (invariant 2).
+                    temperature=readings.ambient_temp_c,
+                    humidity=readings.humidity_pct,
                     light_level=_external_light_for_environment,
                 )
             except Exception as e:

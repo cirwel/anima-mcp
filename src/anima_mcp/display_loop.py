@@ -722,8 +722,9 @@ async def sync_governance_and_render_display(
                         ) or {})
                     )
                     voice.update_environment(
-                        temperature=readings.ambient_temp_c or 22.0,
-                        humidity=readings.humidity_pct or 50.0,
+                        # Room sensor values or None, never a default.
+                        temperature=readings.ambient_temp_c,
+                        humidity=readings.humidity_pct,
                         light_level=_voice_external_light,
                     )
         except Exception as e:
