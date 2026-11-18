@@ -1695,9 +1695,13 @@ class SelfIterationPipelineMixin:
                 assert approver_identity is not None
                 proposer_identity = proposal.get("proposer_identity")
                 verifier_identities = self._active_verifier_identities(proposal, state)
-                if approver_identity == proposer_identity or approver_identity in (
-                    verifier_identities
-                ):
+                prior_participant_ids = {
+                    identity.get("id")
+                    for identity in [proposer_identity, *verifier_identities]
+                    if isinstance(identity, dict)
+                    and isinstance(identity.get("id"), str)
+                }
+                if approver_identity["id"] in prior_participant_ids:
                     raise SelfIterationError(
                         "execution approver must differ from the proposer and active verifiers"
                     )
@@ -1708,15 +1712,7 @@ class SelfIterationPipelineMixin:
                     raise SelfIterationError(
                         f"{RUNNER_SIGNER_ID_ENV} must name a dedicated result signer"
                     )
-                participant_ids = {
-                    identity.get("id")
-                    for identity in [
-                        proposer_identity,
-                        approver_identity,
-                        *verifier_identities,
-                    ]
-                    if isinstance(identity, dict)
-                }
+                participant_ids = {approver_identity["id"], *prior_participant_ids}
                 if result_signer_id in participant_ids:
                     raise SelfIterationError(
                         "execution result signer must differ from all proposal participants"

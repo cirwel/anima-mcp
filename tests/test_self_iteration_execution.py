@@ -749,6 +749,56 @@ class TestIsolatedExecutionLifecycle:
                 expected_evaluation_sha256=evaluation["evaluation_sha256"],
             )
 
+    @pytest.mark.parametrize(
+        ("actor_id", "kind", "issuer"),
+        [
+            ("proposer-1", "oauth_client", None),
+            ("proposer-1", "oauth_subject", "https://other-issuer.example.test"),
+            ("verifier-1", "oauth_client", None),
+            ("verifier-1", "oauth_subject", "https://other-issuer.example.test"),
+        ],
+    )
+    def test_same_participant_id_with_different_kind_or_issuer_cannot_approve(
+        self, execution_setup, actor_id, kind, issuer
+    ):
+        setup = execution_setup
+        proposal, candidate, evaluation, _prepared = _prepared_lifecycle(setup)
+
+        def alternate_provenance(recorded_at: str) -> dict:
+            return {
+                "schema": PROVENANCE_SCHEMA,
+                "recorded_by": "anima-mcp-execution-test",
+                "recorded_at": recorded_at,
+                "transport": {"kind": "test", "server_observed": True},
+                "authentication": {"method": "oauth_bearer", "verified": True},
+                "actor": {
+                    "kind": kind,
+                    "id": actor_id,
+                    "issuer": issuer,
+                    "verified": True,
+                },
+                "session": {"present": False, "verified": False},
+                "trust": {},
+            }
+
+        aliased_actor = SelfIterationSystem(
+            repo_root=setup.repo,
+            ledger_path=setup.ledger,
+            sandbox_root=setup.sandbox_root,
+            clock=setup.clock,
+            provenance_provider=alternate_provenance,
+            verifier_key_provider=setup.registry,
+            isolation_runner=setup.runner,
+        )
+        with pytest.raises(SelfIterationError, match="must differ"):
+            aliased_actor.prepare_execution(
+                proposal_id=proposal["id"],
+                candidate_id=candidate["candidate_id"],
+                expected_candidate_sha256=candidate["candidate_sha256"],
+                evaluation_id=evaluation["evaluation_id"],
+                expected_evaluation_sha256=evaluation["evaluation_sha256"],
+            )
+
     def test_bad_or_expired_signature_never_consumes_challenge(self, execution_setup):
         setup = execution_setup
         proposal, candidate, _evaluation, prepared = _prepared_lifecycle(setup)
