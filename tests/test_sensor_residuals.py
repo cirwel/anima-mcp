@@ -445,6 +445,18 @@ def test_persistence_roundtrip_clock_step_and_corrupt_quarantine(tmp_path: Path)
     assert detail["snapshot_age_s"] == 0.0
     assert detail["channels"]["ambient_temp_c"]["last_valid_age_s"] == 0.0
 
+    # Bumping comparison_version keeps Welford baselines but resets comparison stats
+    saved_obj = json.loads(p.read_text())
+    assert saved_obj["comparison_version"] == COMPARISON_VERSION
+    saved_obj["comparison_version"] = COMPARISON_VERSION + 1
+    p.write_text(json.dumps(saved_obj))
+    restarted_comp = SensorResidualTracker(p, min_samples=5, window_samples=50, auto_load=True)
+    assert restarted_comp.bands["ambient_temp_c"].mean == pytest.approx(
+        tracker.bands["ambient_temp_c"].mean
+    )
+    assert sum(restarted_comp.bands["ambient_temp_c"].z_abs_histogram.values()) == 0
+    assert restarted_comp.correlations["warmth_signed_z_vs_current_warmth"].n == 0
+
     # Corrupt file is quarantined to .corrupt and cold-starts safely
     p.write_text("{corrupt json")
     recovered = SensorResidualTracker(p, min_samples=5, window_samples=50, auto_load=True)
