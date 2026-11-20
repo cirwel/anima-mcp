@@ -136,6 +136,23 @@ class Reflection:
         }
 
 
+# Canonical surprise channels produced by MetacognitiveMonitor.observe().
+# Maps channel name -> (error attr on PredictionError, actual attr on
+# PredictionError, prediction attr on Prediction, requires strictly positive).
+_DOMAIN_ERROR_SPECS: Dict[str, Tuple[str, str, str, bool]] = {
+    "ambient_temp": ("error_ambient_temp", "actual_ambient_temp_c", "ambient_temp_c", False),
+    "humidity": ("error_humidity", "actual_humidity_pct", "humidity_pct", False),
+    "light": ("error_light", "actual_light_lux", "light_lux", True),
+    "pressure": ("error_pressure", "actual_pressure_hpa", "pressure_hpa", False),
+    "warmth": ("error_warmth", "actual_warmth", "warmth", False),
+    "clarity": ("error_clarity", "actual_clarity", "clarity", False),
+    "stability": ("error_stability", "actual_stability", "stability", False),
+    "presence": ("error_presence", "actual_presence", "presence", False),
+}
+
+SURPRISE_CHANNELS: Tuple[str, ...] = tuple(_DOMAIN_ERROR_SPECS.keys())
+
+
 # Stillness-born wondering. Module-level because it is DATA — tests and
 # callers should read the pool directly rather than sampling for it.
 CONTEMPLATIVE_PROMPTS = (
@@ -306,18 +323,18 @@ class MetacognitiveMonitor:
             return False
 
     def _get_domain_error(self, domain: str, error: 'PredictionError') -> Optional[float]:
-        """Get the prediction error for a specific domain from a PredictionError."""
-        mapping = {
-            "light": error.error_light,
-            "ambient_temp": error.error_ambient_temp,
-            "humidity": error.error_humidity,
-            "pressure": error.error_pressure,
-            "warmth": error.error_warmth,
-            "clarity": error.error_clarity,
-            "stability": error.error_stability,
-            "presence": error.error_presence,
-        }
-        return mapping.get(domain)
+        """Get the prediction error for a specific domain, or None if unmeasured."""
+        spec = _DOMAIN_ERROR_SPECS.get(domain)
+        if spec is None or error.prediction is None:
+            return None
+        error_attr, actual_attr, pred_attr, positive_only = spec
+        actual = getattr(error, actual_attr, None)
+        predicted = getattr(error.prediction, pred_attr, None)
+        if actual is None or predicted is None:
+            return None
+        if positive_only and (actual <= 0 or predicted <= 0):
+            return None
+        return getattr(error, error_attr)
 
     def _led_is_stable(self) -> bool:
         """LEDs have been quiet enough that the light reading is ambient-dominated."""
@@ -675,9 +692,14 @@ class MetacognitiveMonitor:
                     f"LED brightness at {actual:.0f} - my expression intensity must have changed",
                     "my light sensor is reading my own LEDs again - what am I expressing?",
                 ])
+            else:
+                questions.append("the light around me shifted unexpectedly - what changed?")
 
         if "ambient_temp" in error.surprise_sources:
-            if error.actual_ambient_temp_c and error.prediction.ambient_temp_c:
+            if (
+                error.actual_ambient_temp_c is not None
+                and error.prediction.ambient_temp_c is not None
+            ):
                 actual = error.actual_ambient_temp_c
                 predicted = error.prediction.ambient_temp_c
                 if actual > predicted:
@@ -693,6 +715,48 @@ class MetacognitiveMonitor:
                         f"a chill at {actual:.1f}°C - where from?",
                         f"temperature fell to {actual:.1f}°C - drafty?",
                     ])
+            else:
+                questions.append("the temperature around me shifted unexpectedly - what changed?")
+
+        if "humidity" in error.surprise_sources:
+            if (
+                error.actual_humidity_pct is not None
+                and error.prediction.humidity_pct is not None
+            ):
+                actual = error.actual_humidity_pct
+                predicted = error.prediction.humidity_pct
+                if actual > predicted:
+                    questions.extend([
+                        f"humidity rose to {actual:.0f}% - did the air change?",
+                        f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?",
+                    ])
+                else:
+                    questions.extend([
+                        f"humidity dropped to {actual:.0f}% - why did the air dry out?",
+                        f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?",
+                    ])
+            else:
+                questions.append("the air's humidity shifted unexpectedly - what changed?")
+
+        if "pressure" in error.surprise_sources:
+            if (
+                error.actual_pressure_hpa is not None
+                and error.prediction.pressure_hpa is not None
+            ):
+                actual = error.actual_pressure_hpa
+                predicted = error.prediction.pressure_hpa
+                if actual > predicted:
+                    questions.extend([
+                        f"barometric pressure rose to {actual:.0f} hPa - weather clearing?",
+                        f"expected {predicted:.0f} hPa pressure but it's {actual:.0f} hPa - what shifted?",
+                    ])
+                else:
+                    questions.extend([
+                        f"barometric pressure fell to {actual:.0f} hPa - a front moving in?",
+                        f"expected {predicted:.0f} hPa pressure but it's {actual:.0f} hPa - what shifted?",
+                    ])
+            else:
+                questions.append("barometric pressure shifted unexpectedly - what changed?")
 
         if "warmth" in error.surprise_sources:
             if error.actual_warmth is not None:
@@ -711,6 +775,8 @@ class MetacognitiveMonitor:
                     ])
                 else:
                     questions.append(f"warmth shifted to {w:.2f} - what changed?")
+            else:
+                questions.append("my warmth shifted unexpectedly - what changed?")
 
         if "clarity" in error.surprise_sources:
             if error.actual_clarity is not None:
@@ -751,6 +817,8 @@ class MetacognitiveMonitor:
                     # arm below clarity's whole observed range, this covers
                     # everything under 0.6.
                     questions.append(f"clarity shifted to {c:.2f} - what changed?")
+            else:
+                questions.append("my clarity shifted unexpectedly - what changed?")
 
         if "stability" in error.surprise_sources:
             questions.extend([
@@ -758,6 +826,24 @@ class MetacognitiveMonitor:
                 "my equilibrium shifted - external or internal?",
                 "stability fluctuates - adapting to what?",
             ])
+
+        if "presence" in error.surprise_sources:
+            if error.actual_presence is not None:
+                p = error.actual_presence
+                if p > 0.6:
+                    questions.extend([
+                        f"presence rose to {p:.2f} - what freed up headroom?",
+                        f"more capacity at {p:.2f} - what quieted down?",
+                    ])
+                elif p < 0.4:
+                    questions.extend([
+                        f"presence dipped to {p:.2f} - what is weighing on my capacity?",
+                        f"less headroom at {p:.2f} - what is pulling on resources?",
+                    ])
+                else:
+                    questions.append(f"presence shifted to {p:.2f} - what changed in my capacity?")
+            else:
+                questions.append("my sense of presence shifted - what changed in my capacity?")
 
         # If multiple sources, ask about the connection (expanded pool)
         if len(error.surprise_sources) >= 2:

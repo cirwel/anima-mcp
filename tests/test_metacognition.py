@@ -19,6 +19,7 @@ from datetime import datetime
 
 from anima_mcp.metacognition import (
     MetacognitiveMonitor, Prediction, PredictionError, Reflection,
+    SURPRISE_CHANNELS,
 )
 from anima_mcp.sensors.base import SensorReadings
 from anima_mcp.anima import Anima
@@ -508,6 +509,134 @@ class TestCuriosity:
         )
         q = mm.generate_curiosity_question(error)
         assert q is not None
+
+    def test_get_domain_error_honest_none_and_measured_zero(self, mm):
+        """Unmeasured channels return None even when error_* defaults to 0.0;
+        measured exact matches return 0.0."""
+        blank_error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now()),
+        )
+        for ch in SURPRISE_CHANNELS:
+            assert mm._get_domain_error(ch, blank_error) is None
+        assert mm._get_domain_error("cpu_temp", blank_error) is None
+
+        # Only actual present (prediction None) still returns None.
+        half_error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now()),
+            actual_pressure_hpa=1013.0,
+            error_pressure=0.0,
+        )
+        assert mm._get_domain_error("pressure", half_error) is None
+
+        # Zero lux cannot compute log10 error in observe(), so treat as unmeasured.
+        zero_lux_error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), light_lux=0.0),
+            actual_light_lux=10.0,
+            error_light=0.0,
+        )
+        assert mm._get_domain_error("light", zero_lux_error) is None
+
+        # Exact measured match (predicted == actual == 22.0) returns 0.0.
+        exact_error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), ambient_temp_c=22.0),
+            actual_ambient_temp_c=22.0,
+            error_ambient_temp=0.0,
+        )
+        assert mm._get_domain_error("ambient_temp", exact_error) == 0.0
+
+    def test_curiosity_handles_zero_celsius_temp(self, mm):
+        """0.0°C is a valid temperature, not missing data."""
+        error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), ambient_temp_c=5.0),
+            actual_ambient_temp_c=0.0,
+            surprise=0.22,
+            surprise_sources=["ambient_temp"],
+        )
+        q = mm.generate_curiosity_question(error)
+        assert q is not None and "0.0°C" in q
+
+    def test_surprise_channel_parity_across_observe_phrasing_and_templates(self, tmp_path):
+        """Every channel observe() can tag has phrasing in _SURPRISE_PHRASING and
+        a channel-specific question template in generate_curiosity_question()."""
+        from anima_mcp.loop_phases import _SURPRISE_PHRASING
+
+        assert set(_SURPRISE_PHRASING.keys()) == set(SURPRISE_CHANNELS)
+
+        observed_channels = set()
+        channel_spikes = [
+            ("ambient_temp", make_readings(ambient_temp_c=30.0), {}),
+            ("humidity", make_readings(humidity_pct=75.0), {}),
+            ("light", make_readings(light_lux=5000.0, led_brightness=0.5), {}),
+            ("pressure", make_readings(pressure_hpa=1030.0), {}),
+            ("warmth", make_readings(), {"warmth": 0.9}),
+            ("clarity", make_readings(), {"clarity": 0.2}),
+            ("stability", make_readings(), {"stability": 0.2}),
+            ("presence", make_readings(), {"presence": 0.2}),
+        ]
+        for ch, spike_readings, anima_overrides in channel_spikes:
+            mon = MetacognitiveMonitor(data_dir=str(tmp_path / ch))
+            base_readings = make_readings(led_brightness=0.5)
+            base_anima = make_anima()
+            for _ in range(mon._led_stable_min_samples):
+                mon.predict(led_brightness=0.5)
+                mon.observe(base_readings, base_anima)
+            mon.predict(led_brightness=0.5)
+            err = mon.observe(
+                spike_readings,
+                make_anima(**anima_overrides) if anima_overrides else base_anima,
+            )
+            assert ch in err.surprise_sources
+            observed_channels.add(ch)
+
+        assert observed_channels == set(SURPRISE_CHANNELS)
+
+        # Every channel produces a question at surprise=0.22 (< 0.25 generic fallback)
+        # both with full values and with value-free fallback.
+        pred = Prediction(
+            timestamp=datetime.now(),
+            ambient_temp_c=22.0,
+            humidity_pct=45.0,
+            light_lux=100.0,
+            pressure_hpa=1013.0,
+            warmth=0.5,
+            clarity=0.7,
+            stability=0.7,
+            presence=0.7,
+        )
+        for ch in SURPRISE_CHANNELS:
+            populated = PredictionError(
+                timestamp=datetime.now(),
+                prediction=pred,
+                actual_ambient_temp_c=28.0,
+                actual_humidity_pct=60.0,
+                actual_light_lux=500.0,
+                actual_pressure_hpa=1025.0,
+                actual_warmth=0.8,
+                actual_clarity=0.3,
+                actual_stability=0.3,
+                actual_presence=0.3,
+                surprise=0.22,
+                surprise_sources=[ch],
+            )
+            q_pop = MetacognitiveMonitor(data_dir=str(tmp_path / f"q_{ch}")).generate_curiosity_question(populated)
+            assert q_pop is not None, f"missing populated template for {ch}"
+            if ch == "presence":
+                assert any(w in q_pop.lower() for w in ("presence", "headroom", "capacity"))
+                assert "room" not in q_pop.lower()
+
+            value_free = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now()),
+                surprise=0.22,
+                surprise_sources=[ch],
+            )
+            q_vf = MetacognitiveMonitor(data_dir=str(tmp_path / f"vf_{ch}")).generate_curiosity_question(value_free)
+            assert q_vf is not None, f"missing value-free fallback for {ch}"
 
 
 # ==================== Surprise Trend & Accuracy ====================

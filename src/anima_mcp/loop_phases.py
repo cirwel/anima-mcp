@@ -336,7 +336,6 @@ _SURPRISE_PHRASING = {
     "ambient_temp": "the temperature around me",
     "humidity": "the air",
     "pressure": "the pressure",
-    "cpu_temp": "my inner warmth",
     "warmth": "my warmth",
     "clarity": "my clarity",
     "stability": "my steadiness",
@@ -414,9 +413,8 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
         _note_question_episode(prediction_error.surprise, asked=False,
                                source="surprise_suppressed")
         return False
-    # Surprised but no question generated. Note: some channels (humidity,
-    # pressure, presence) have no question template below surprise 0.25, so
-    # this also fires on missing templates, not only on a choice to stay quiet.
+    # Surprised but no question generated (for instance when generate_curiosity_question
+    # declines a low-surprise sample below 0.2).
     _note_question_episode(prediction_error.surprise, asked=False,
                            source="surprise_unasked")
     return False
