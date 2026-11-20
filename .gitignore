@@ -61,3 +61,7 @@ config/anima.env
 
 # superpowers plugin planning artifacts
 docs/superpowers/
+
+# Cloudflare Worker local state
+.wrangler/
+.dev.vars

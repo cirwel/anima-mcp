@@ -1,0 +1,26 @@
+# Self-hosted receiver for Lumen's dead-man's switch.
+# Setup and verification: docs/operations/HEARTBEAT.md.
+#
+# Nothing here is deployment-specific. The hostname is passed at deploy time
+# (`wrangler deploy --domain <host>`), and the two secrets are set with
+# `wrangler secret put PING_TOKEN` and `wrangler secret put ALERT_WEBHOOK_URL`.
+
+name = "lumen-heartbeat"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+[vars]
+SWITCH_NAME = "Lumen"
+# The Pi pings every 5 minutes. 20 minutes tolerates three missed pings.
+GRACE_MINUTES = "20"
+# Repeat the alert once a day while the outage lasts. "0" turns this off.
+REMIND_HOURS = "24"
+
+[[durable_objects.bindings]]
+name = "SWITCH"
+class_name = "HeartbeatSwitch"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HeartbeatSwitch"]
