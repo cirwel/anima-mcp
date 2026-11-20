@@ -28,6 +28,7 @@ MAX_UNANSWERED_QUESTIONS_SOFT_CAP = 6  # hold new questions until backlog shrink
 MAX_QUESTIONS_PER_ROLLING_DAY = 3  # hard curiosity budget, independent of replies
 QUESTION_EXPIRY_SECONDS = 14_400  # 4 hours before stale unanswered questions expire
 QUESTION_BUDGET_WINDOW_SECONDS = 86_400
+CONTEXT_QUIET_MOMENT = "a quiet moment"
 
 _QUESTION_BOILERPLATE_PREFIXES = (
     "why is it that i now know that ",
@@ -595,9 +596,11 @@ class MessageBoard:
             author: Who is asking (default: "lumen")
             context: What triggered this question (e.g., "light dropped suddenly")
             reserve_budget_slots: Leave at least this many slots of the rolling
-                24h question budget unclaimed for higher-priority callers.
+                24h question budget and unanswered soft cap unclaimed for
+                unreserved callers (admitted questions still count toward the
+                shared rolling budget).
             max_same_context_per_day: Cap questions with this exact ``context``
-                within the rolling 24h budget window.
+                within the rolling 24h budget window (no-op if ``context`` is None).
         """
         import time
 
@@ -609,9 +612,8 @@ class MessageBoard:
             m for m in recent_questions
             if m.timestamp > now - QUESTION_BUDGET_WINDOW_SECONDS
         ]
-        effective_daily_budget = max(
-            0, MAX_QUESTIONS_PER_ROLLING_DAY - max(0, reserve_budget_slots)
-        )
+        reserved = max(0, reserve_budget_slots)
+        effective_daily_budget = max(0, MAX_QUESTIONS_PER_ROLLING_DAY - reserved)
         if len(recent_in_window) >= effective_daily_budget:
             return None
 
@@ -626,7 +628,8 @@ class MessageBoard:
             1 for m in recent_questions
             if not m.answered and m.expired_at is None
         )
-        if unanswered_ct >= MAX_UNANSWERED_QUESTIONS_SOFT_CAP:
+        effective_unanswered_cap = max(0, MAX_UNANSWERED_QUESTIONS_SOFT_CAP - reserved)
+        if unanswered_ct >= effective_unanswered_cap:
             return None
 
         if recent_questions:
