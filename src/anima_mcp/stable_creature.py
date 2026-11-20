@@ -60,82 +60,41 @@ from .display.face import derive_face_state, face_to_ascii, EyeState
 from .db_paths import BROKER_AGENCY_DB
 from .light_attribution import read_led_proprioception
 from .metacognition import get_metacognitive_monitor
-
-
-# Enhanced learning systems (optional - for genuine agency)
-# Each module imported independently so one failure doesn't disable all 8.
-_LEARNING_MODULES: dict = {}
-
-def _has_module(name: str) -> bool:
-    return _LEARNING_MODULES.get(name, False)
-
-
-try:
-    from .adaptive_prediction import get_adaptive_prediction_model
-    _LEARNING_MODULES["adaptive_prediction"] = True
-except ImportError:
-    get_adaptive_prediction_model = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["adaptive_prediction"] = False
-
-try:
-    from .preferences import get_preference_system
-    _LEARNING_MODULES["preferences"] = True
-except ImportError:
-    get_preference_system = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["preferences"] = False
-
-try:
-    from .self_model import get_self_model
-    _LEARNING_MODULES["self_model"] = True
-except ImportError:
-    get_self_model = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["self_model"] = False
-
-try:
-    from .agency import get_action_selector, get_exploration_manager, ActionType
-    _LEARNING_MODULES["agency"] = True
-except ImportError:
-    get_action_selector = None  # type: ignore[assignment,misc]
-    get_exploration_manager = None  # type: ignore[assignment,misc]
-    ActionType = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["agency"] = False
-
-try:
-    from .memory_retrieval import get_memory_retriever, retrieve_relevant_memories
-    _LEARNING_MODULES["memory_retrieval"] = True
-except ImportError:
-    get_memory_retriever = None  # type: ignore[assignment,misc]
-    retrieve_relevant_memories = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["memory_retrieval"] = False
-
-try:
-    from .weighted_pathways import get_weighted_pathways, discretize_context
-    _LEARNING_MODULES["weighted_pathways"] = True
-except ImportError:
-    get_weighted_pathways = None  # type: ignore[assignment,misc]
-    discretize_context = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["weighted_pathways"] = False
-
-try:
-    from .experiential_filter import get_experiential_filter
-    _LEARNING_MODULES["experiential_filter"] = True
-except ImportError:
-    get_experiential_filter = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["experiential_filter"] = False
-
-try:
-    from .experiential_marks import get_experiential_marks
-    _LEARNING_MODULES["experiential_marks"] = True
-except ImportError:
-    get_experiential_marks = None  # type: ignore[assignment,misc]
-    _LEARNING_MODULES["experiential_marks"] = False
-
-ENHANCED_LEARNING_AVAILABLE = any(_LEARNING_MODULES.values())
-if not ENHANCED_LEARNING_AVAILABLE:
-    print("[StableCreature] Enhanced learning not available (all modules failed)")
-elif not all(_LEARNING_MODULES.values()):
-    failed = [k for k, v in _LEARNING_MODULES.items() if not v]
-    print(f"[StableCreature] Enhanced learning partial: missing {', '.join(failed)}")
+from .creature_runtime import (  # noqa: F401
+    ActionType,
+    AutonomousVoice,
+    CreatureRuntimeMixin,
+    ENHANCED_LEARNING_AVAILABLE,
+    MAX_RETRIES,
+    RETRY_DELAY,
+    UPDATE_INTERVAL,
+    VOICE_AVAILABLE,
+    _LEARNING_MODULES,
+    _apply_belief_update_bonus,
+    _build_broker_reflection_event,
+    _build_preference_state,
+    _direct_i2c_initialization_failed,
+    _has_module,
+    _load_persistent_identity,
+    _pair_led_action_to_light_capture,
+    _run_coroutine_with_timeout,
+    _snapshot_preferences,
+    _snapshot_self_beliefs,
+    _stdout_is_terminal,
+    broker_agency_enabled,
+    broker_voice_enabled,
+    discretize_context,
+    get_action_selector,
+    get_adaptive_prediction_model,
+    get_experiential_filter,
+    get_experiential_marks,
+    get_exploration_manager,
+    get_memory_retriever,
+    get_preference_system,
+    get_self_model,
+    get_weighted_pathways,
+    retrieve_relevant_memories,
+)
 
 # Activity state (sleep/wake cycle)
 try:
@@ -144,19 +103,6 @@ try:
 except ImportError:
     ACTIVITY_STATE_AVAILABLE = False
     print("[StableCreature] Activity state not available")
-
-# Voice support (optional - graceful degradation if not available)
-try:
-    from .audio import AutonomousVoice  # noqa: F401
-    VOICE_AVAILABLE = True
-except ImportError:
-    VOICE_AVAILABLE = False
-    print("[StableCreature] Voice module not available (missing dependencies)")
-
-# Config
-UPDATE_INTERVAL = 2.0  # seconds
-MAX_RETRIES = 3
-RETRY_DELAY = 0.5
 
 
 running = True
@@ -168,24 +114,6 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-
-
-
-from .creature_runtime import (  # noqa: E402,F401
-    CreatureRuntimeMixin,
-    _apply_belief_update_bonus,
-    _build_broker_reflection_event,
-    _build_preference_state,
-    _direct_i2c_initialization_failed,
-    _load_persistent_identity,
-    _pair_led_action_to_light_capture,
-    _run_coroutine_with_timeout,
-    _snapshot_preferences,
-    _snapshot_self_beliefs,
-    _stdout_is_terminal,
-    broker_agency_enabled,
-    broker_voice_enabled,
-)
 
 
 class StableCreature(CreatureRuntimeMixin):

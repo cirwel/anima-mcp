@@ -130,13 +130,6 @@ def _get_canvas_path() -> Path:
     return anima_dir / "canvas.json"
 
 
-def _resolve_canvas_path() -> Path:
-    """Resolve canvas path, respecting monkeypatches on drawing_engine._get_canvas_path."""
-    de_mod = sys.modules.get("anima_mcp.display.drawing_engine")
-    fn = getattr(de_mod, "_get_canvas_path", _get_canvas_path) if de_mod is not None else _get_canvas_path
-    return fn()
-
-
 @dataclass
 class CanvasState:
     """Drawing canvas state for notepad mode - persists across restarts."""
@@ -482,7 +475,7 @@ class CanvasState:
                 "resonance_settling": self._resonance_settling,
                 "novelty_settling": self._novelty_settling,
             }
-            atomic_json_write(_resolve_canvas_path(), data)
+            atomic_json_write(_get_canvas_path(), data)
             return True
         except Exception as e:
             print(f"[Canvas] Save to disk error: {e}", file=sys.stderr, flush=True)
@@ -490,7 +483,7 @@ class CanvasState:
 
     def load_from_disk(self):
         """Load canvas state from disk - defensive against corruption."""
-        path = _resolve_canvas_path()
+        path = _get_canvas_path()
         if not path.exists():
             return  # No saved state, use defaults
 

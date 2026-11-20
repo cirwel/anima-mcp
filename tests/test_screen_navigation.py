@@ -16,7 +16,7 @@ def renderer(tmp_path):
     display = MagicMock()
     display._deferred = False
     # Patch canvas path to tmp_path so no real disk I/O
-    with patch("anima_mcp.display.drawing_engine._get_canvas_path", return_value=tmp_path / "canvas.json"):
+    with patch("anima_mcp.display.drawing_state._get_canvas_path", return_value=tmp_path / "canvas.json"):
         r = ScreenRenderer(display, db_path=str(tmp_path / "test.db"))
     return r
 

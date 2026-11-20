@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import anima_mcp.display.drawing_engine as de
+import anima_mcp.display.drawing_state as ds
 from anima_mcp.display.drawing_engine import DrawingEngine
 from anima_mcp.display.drawing_replay import (
     ReplayRecorder,
@@ -39,7 +39,7 @@ def _load_renderer():
 @pytest.fixture
 def canvas_path(monkeypatch, tmp_path):
     path = tmp_path / "canvas.json"
-    monkeypatch.setattr(de, "_get_canvas_path", lambda: path)
+    monkeypatch.setattr(ds, "_get_canvas_path", lambda: path)
     return path
 
 

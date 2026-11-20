@@ -369,8 +369,8 @@ class TestComparisonScope:
 class TestPersistence:
 
     def test_recent_dispositions_round_trip(self, tmp_path, monkeypatch):
-        from anima_mcp.display import drawing_engine as de
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        from anima_mcp.display import drawing_state as ds
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: tmp_path / "canvas.json")
         canvas = CanvasState()
         entries = [{"era": "gestural", "lead": "drag", "hue_offset": 12.0}]
         canvas.recent_dispositions = list(entries)
@@ -383,9 +383,9 @@ class TestPersistence:
     def test_malformed_history_degrades_to_no_bias(self, tmp_path, monkeypatch):
         """Not to a repaired one. An empty history means one plain unbiased
         draw, which is the correct failure."""
-        from anima_mcp.display import drawing_engine as de
+        from anima_mcp.display import drawing_state as ds
         path = tmp_path / "canvas.json"
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: path)
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: path)
         path.write_text(json.dumps({
             "pixels": {},
             "recent_dispositions": [
@@ -397,8 +397,8 @@ class TestPersistence:
         assert canvas.recent_dispositions == [{"era": "field", "base_hue": 3.0}]
 
     def test_history_is_bounded(self, tmp_path, monkeypatch):
-        from anima_mcp.display import drawing_engine as de
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        from anima_mcp.display import drawing_state as ds
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: tmp_path / "canvas.json")
         canvas = CanvasState()
         canvas.recent_dispositions = [
             {"era": "field", "base_hue": float(i)} for i in range(50)

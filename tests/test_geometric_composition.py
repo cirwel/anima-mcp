@@ -299,7 +299,7 @@ class TestPieceLengthDoesNotDependOnVariety:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"), \
                 patch.object(CanvasState, "save_to_disk", lambda self: True):
             eng = DrawingEngine(db_path=str(tmp_path / "t.db"), identity_store=None)

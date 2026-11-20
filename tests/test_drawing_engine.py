@@ -282,7 +282,7 @@ class TestCanvasPersistence:
         canvas._era_name = "pointillist"
         canvas.drawings_saved = 3
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             canvas.save_to_disk()
 
@@ -305,7 +305,7 @@ class TestCanvasPersistence:
         canvas = CanvasState()
         canvas.auto_rotate = True
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_file):
             assert canvas.save_to_disk() is True
             restored = CanvasState()
@@ -314,7 +314,7 @@ class TestCanvasPersistence:
         assert restored.auto_rotate is True
 
     def test_load_handles_missing_file(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "nonexistent.json"):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -325,7 +325,7 @@ class TestCanvasPersistence:
     def test_load_handles_corrupted_json(self, tmp_path):
         bad_file = tmp_path / "canvas.json"
         bad_file.write_text("not valid json {{{")
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=bad_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -336,7 +336,7 @@ class TestCanvasPersistence:
     def test_load_handles_empty_file(self, tmp_path):
         empty_file = tmp_path / "canvas.json"
         empty_file.write_text("")
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=empty_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -345,7 +345,7 @@ class TestCanvasPersistence:
     def test_load_handles_non_dict_data(self, tmp_path):
         bad_file = tmp_path / "canvas.json"
         bad_file.write_text('"just a string"')
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=bad_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -364,7 +364,7 @@ class TestCanvasPersistence:
         }
         canvas_file = tmp_path / "canvas.json"
         canvas_file.write_text(json.dumps(data))
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -375,7 +375,7 @@ class TestCanvasPersistence:
         data = {"drawing_phase": "invalid_phase"}
         canvas_file = tmp_path / "canvas.json"
         canvas_file.write_text(json.dumps(data))
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -385,7 +385,7 @@ class TestCanvasPersistence:
         data = {"arc_phase": "flying"}
         canvas_file = tmp_path / "canvas.json"
         canvas_file.write_text(json.dumps(data))
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -399,7 +399,7 @@ class TestCanvasPersistence:
         }
         canvas_file = tmp_path / "canvas.json"
         canvas_file.write_text(json.dumps(data))
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_file):
             canvas = CanvasState()
             canvas.load_from_disk()
@@ -793,7 +793,7 @@ class TestDrawingEngineNarrativeArc:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create a DrawingEngine with mocked disk and identity."""
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -885,7 +885,7 @@ class TestDrawingEngineAttention:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -982,7 +982,7 @@ class TestDrawingEngineRecovery:
         }
         canvas_file.write_text(json.dumps(data))
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path", return_value=canvas_file):
+        with patch("anima_mcp.display.drawing_state._get_canvas_path", return_value=canvas_file):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
 
         assert engine.canvas.pixels == {(10, 20): (255, 128, 0)}
@@ -1001,7 +1001,7 @@ class TestDrawingEngineRecovery:
         }))
         monkeypatch.setattr(eras_module, "auto_rotate", False)
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path", return_value=canvas_file):
+        with patch("anima_mcp.display.drawing_state._get_canvas_path", return_value=canvas_file):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
 
         assert engine.get_current_era()["auto_rotate"] is True
@@ -1013,7 +1013,7 @@ class TestDrawingEngineRecovery:
 
         canvas_file = tmp_path / "canvas.json"
         monkeypatch.setattr(eras_module, "auto_rotate", False)
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path", return_value=canvas_file):
+        with patch("anima_mcp.display.drawing_state._get_canvas_path", return_value=canvas_file):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
             result = engine.set_auto_rotate(True)
             restored = CanvasState()
@@ -1030,7 +1030,7 @@ class TestDrawingEngineRecovery:
         import anima_mcp.display.eras as eras_module
 
         monkeypatch.setattr(eras_module, "auto_rotate", False)
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
 
@@ -1043,7 +1043,7 @@ class TestDrawingEngineRecovery:
         assert engine.canvas.auto_rotate is False
 
     def test_draw_persists_after_mark_batch(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path", return_value=tmp_path / "canvas.json"):
+        with patch("anima_mcp.display.drawing_state._get_canvas_path", return_value=tmp_path / "canvas.json"):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
 
         anima = make_anima()
@@ -1063,7 +1063,7 @@ class TestDrawingEngineCoherenceTracking:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1109,7 +1109,7 @@ class TestDrawingEngineEISVStep:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1144,7 +1144,7 @@ class TestDrawingEngineSetDrives:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1171,7 +1171,7 @@ class TestDrawingEngineGetDrawingEISV:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1209,7 +1209,7 @@ class TestDrawingEngineSetEra:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1252,7 +1252,7 @@ class TestDrawingEngineCanvasClear:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1289,7 +1289,7 @@ class TestDrawingEngineCanvasCheckAutonomy:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1393,7 +1393,7 @@ class TestCanvasSaveSensorFallback:
         from pathlib import Path
         from unittest.mock import MagicMock
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         engine.canvas.drawing_phase = "opening"
@@ -1420,7 +1420,7 @@ class TestCanvasSaveSensorFallback:
     def test_fresh_sensor_read_when_last_readings_missing(self, tmp_path):
         from unittest.mock import MagicMock
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         for i in range(250):
@@ -1451,7 +1451,7 @@ class TestCanvasSaveSensorFallback:
     def test_skip_growth_when_fresh_read_also_fails(self, tmp_path):
         from unittest.mock import MagicMock
 
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             engine = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         for i in range(250):
@@ -1497,7 +1497,7 @@ class TestCanvasSaveGalleryGating:
     def engine(self, tmp_path, monkeypatch):
         # canvas_save writes to Path.home()/.anima/drawings — redirect HOME.
         monkeypatch.setenv("HOME", str(tmp_path))
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1550,7 +1550,7 @@ class TestSaidFinishedReplayGuard:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1594,7 +1594,7 @@ class TestEraEarnedCompletion:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         return eng
@@ -1658,7 +1658,7 @@ class TestDrawingGoalPersistence:
 
     def test_goal_survives_engine_reload(self, tmp_path):
         canvas_path = tmp_path / "canvas.json"
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=canvas_path):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
             goal = DrawingGoal(warmth_bias=0.1, coverage_target="sparse",
@@ -1678,7 +1678,7 @@ class TestDrawingGoalPersistence:
         assert eng2.drawing_goal.initial_quadrant == 2
 
     def test_clear_drops_previous_goal_data(self, tmp_path):
-        with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+        with patch("anima_mcp.display.drawing_state._get_canvas_path",
                    return_value=tmp_path / "canvas.json"):
             eng = DrawingEngine(db_path=str(tmp_path / "test.db"), identity_store=None)
         eng.canvas.drawing_goal_data = {"coverage_target": "dense"}

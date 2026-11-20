@@ -54,10 +54,10 @@ class TestPieceIdentity:
         assert canvas.piece_uid() != first
 
     def test_piece_uid_survives_a_save_load_roundtrip(self, tmp_path, monkeypatch):
-        import anima_mcp.display.drawing_engine as de
+        import anima_mcp.display.drawing_state as ds
 
         path = tmp_path / "canvas.json"
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: path)
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: path)
         canvas = CanvasState()
         canvas.draw_pixel(5, 5, (1, 2, 3))
         expected = canvas.piece_uid()
@@ -351,7 +351,10 @@ class TestSingletonSafety:
         import anima_mcp.display.drawing_engine as de
 
         monkeypatch.setattr(base, "_growth_system", None)
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(
+            "anima_mcp.display.drawing_state._get_canvas_path",
+            lambda: tmp_path / "canvas.json",
+        )
         engine = de.DrawingEngine(db_path=str(tmp_path / "anima.db"))
         engine.canvas.draw_pixel(10, 10, (1, 2, 3))
         engine._sample_trajectory(engine.canvas.last_clear_time + 10_000)
@@ -366,7 +369,10 @@ class TestSamplerBehavior:
 
         db = str(tmp_path / "anima.db")
         monkeypatch.setattr(base, "_growth_system", GrowthSystem(db_path=db))
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(
+            "anima_mcp.display.drawing_state._get_canvas_path",
+            lambda: tmp_path / "canvas.json",
+        )
         eng = de.DrawingEngine(db_path=db)
         return eng
 
@@ -488,9 +494,9 @@ class TestDensityGridSurvivesRestart:
     """
 
     def _saved_canvas(self, tmp_path, monkeypatch):
-        import anima_mcp.display.drawing_engine as de
+        import anima_mcp.display.drawing_state as ds
 
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: tmp_path / "canvas.json")
         canvas = CanvasState()
         for gx in range(6):
             for gy in range(5):
@@ -524,9 +530,9 @@ class TestDensityGridSurvivesRestart:
 
     def test_sparsest_cell_is_meaningful_after_reload(self, tmp_path, monkeypatch):
         """resonance steers focus by this; an empty grid aimed it all at (0,0)."""
-        import anima_mcp.display.drawing_engine as de
+        import anima_mcp.display.drawing_state as ds
 
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: tmp_path / "canvas.json")
         canvas = CanvasState()
         for k in range(40):  # crowd cell (0,0) only
             canvas.draw_pixel(k % 29, k // 29, (200, 120, 40))
@@ -558,7 +564,10 @@ class TestResumedPieceDeltas:
 
         db = str(tmp_path / "anima.db")
         monkeypatch.setattr(base, "_growth_system", GrowthSystem(db_path=db))
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(
+            "anima_mcp.display.drawing_state._get_canvas_path",
+            lambda: tmp_path / "canvas.json",
+        )
 
         first = de.DrawingEngine(db_path=db)
         for i in range(400):
