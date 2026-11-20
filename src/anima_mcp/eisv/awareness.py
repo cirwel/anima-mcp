@@ -65,6 +65,23 @@ def _ethical_drift_magnitude(
     return max(abs(component) for component in components)
 
 
+def _stratum_recall_bounds(suggested_count: int, actual_count: int) -> Dict[str, Any]:
+    """Structural anchor floor and achievable ceiling for a recall stratum."""
+    if suggested_count > 0 and actual_count > 0:
+        return {
+            "anchored_floor": round(1.0 / suggested_count, 4),
+            "achievable_ceiling": round(
+                min(actual_count, suggested_count) / suggested_count, 4
+            ),
+            "informative": min(actual_count, suggested_count) > 1,
+        }
+    return {
+        "anchored_floor": None,
+        "achievable_ceiling": None,
+        "informative": False,
+    }
+
+
 class TrajectoryAwareness:
     """EISV trajectory awareness for primitive language.
 
@@ -114,6 +131,18 @@ class TrajectoryAwareness:
         self._total_generations: int = 0
         self._eisv_weight_update_count: int = 0
         self._eisv_weight_matched_token_count: int = 0
+        self._eisv_weight_positive_updates: int = 0
+        self._eisv_weight_negative_updates: int = 0
+        self._eisv_weight_net_reward: float = 0.0
+        self._eisv_weight_skipped: Dict[str, int] = {
+            "not_fallback_generated": 0,
+            "degenerate_stratum": 0,
+            "unknown_bounds": 0,
+            "floor_violation": 0,
+            "no_baseline": 0,
+            "zero_delta": 0,
+        }
+        self._free_recall_baseline: Dict[tuple[int, int], tuple[int, float]] = {}
         self._suggestion_recall_stats: Dict[
             tuple[int, int], tuple[int, float]
         ] = {}
@@ -355,11 +384,15 @@ class TrajectoryAwareness:
             lumen_tokens = translate_expression(eisv_tokens)
             trigger = shape_to_lumen_trigger(shape.value)
 
+            student_active = bool(
+                self._use_student and getattr(self._generator, "is_loaded", False)
+            )
             result = {
                 "shape": shape.value,
                 "suggested_tokens": lumen_tokens,
                 "eisv_tokens": eisv_tokens,
                 "trigger": trigger,
+                "generator_source": "student" if student_active else "fallback",
             }
 
             self._cached_result = result
@@ -431,32 +464,116 @@ class TrajectoryAwareness:
         self,
         eisv_tokens: List[str],
         score: float,
+        *,
+        suggested_count: Optional[int] = None,
+        actual_count: Optional[int] = None,
+        generator_source: Optional[str] = None,
+        anchored_recall: bool = False,
     ) -> int:
-        """Apply feedback to matching EISV tokens and return match count.
+        """Apply feedback to matching EISV tokens and return updated token count.
 
-        Zero-match input is a true no-op: it changes no counter and writes no
-        event. This keeps Lumen vocabulary out of the EISV learning stream.
+        When ``anchored_recall`` is True, guards against structural ratchets:
+        skips student-generated output, skips degenerate strata where
+        ``min(actual_count, suggested_count) <= 1`` (achievable ceiling ==
+        anchored floor), treats scores below the anchored floor as anomalies,
+        and centers non-anchor recall on its pre-update per-stratum mean.
         """
         if self._current_shape is None:
             return 0
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            if anchored_recall:
+                self._eisv_weight_skipped["unknown_bounds"] += 1
+            return 0
+        numeric_score = float(score)
+        if not math.isfinite(numeric_score):
+            if anchored_recall:
+                self._eisv_weight_skipped["unknown_bounds"] += 1
+            return 0
+
+        if anchored_recall:
+            student_active = bool(
+                self._use_student and getattr(self._generator, "is_loaded", False)
+            )
+            if generator_source == "student" or (
+                generator_source is None and student_active
+            ):
+                self._eisv_weight_skipped["not_fallback_generated"] += 1
+                return 0
+            if (
+                suggested_count is None
+                or actual_count is None
+                or isinstance(suggested_count, bool)
+                or isinstance(actual_count, bool)
+                or suggested_count <= 0
+                or actual_count <= 0
+            ):
+                self._eisv_weight_skipped["unknown_bounds"] += 1
+                return 0
+
+            anchored_floor = 1.0 / suggested_count
+            achievable_ceiling = min(actual_count, suggested_count) / suggested_count
+            if min(actual_count, suggested_count) <= 1 or achievable_ceiling <= anchored_floor:
+                self._eisv_weight_skipped["degenerate_stratum"] += 1
+                return 0
+            if numeric_score < anchored_floor - 1e-9:
+                self._eisv_weight_skipped["floor_violation"] += 1
+                return 0
+
+            free_recall = max(
+                0.0,
+                min(
+                    1.0,
+                    (numeric_score - anchored_floor)
+                    / (achievable_ceiling - anchored_floor),
+                ),
+            )
+            stratum = (suggested_count, actual_count)
+            prev_n, prev_mean = self._free_recall_baseline.get(stratum, (0, 0.0))
+            new_n = prev_n + 1
+            new_mean = prev_mean + (free_recall - prev_mean) / new_n
+            self._free_recall_baseline[stratum] = (new_n, new_mean)
+            if prev_n == 0:
+                self._eisv_weight_skipped["no_baseline"] += 1
+                return 0
+            effective_reward = free_recall - prev_mean
+            if abs(effective_reward) < 1e-9:
+                self._eisv_weight_skipped["zero_delta"] += 1
+                return 0
+            logged_score = round(0.5 + 0.5 * effective_reward, 6)
+        else:
+            effective_reward = (numeric_score - 0.5) * 2.0
+            if abs(effective_reward) < 1e-9:
+                self._eisv_weight_skipped["zero_delta"] += 1
+                return 0
+            logged_score = numeric_score
+
         try:
             matched_count = self._generator.update_weights(
                 self._current_shape,
                 eisv_tokens,
-                score,
+                numeric_score,
+                reward=effective_reward,
             )
         except Exception:
             return 0
         if matched_count <= 0:
+            shape_weights = self._generator.get_weights(self._current_shape)
+            if any(token in shape_weights for token in eisv_tokens):
+                self._eisv_weight_skipped["zero_delta"] += 1
             return 0
 
         self._eisv_weight_update_count += 1
         self._eisv_weight_matched_token_count += matched_count
+        if effective_reward > 0:
+            self._eisv_weight_positive_updates += 1
+        else:
+            self._eisv_weight_negative_updates += 1
+        self._eisv_weight_net_reward += effective_reward
         self._log_event(
             event_type="eisv_weight_update",
             shape=self._current_shape,
             expression_tokens=eisv_tokens,
-            eisv_weight_feedback_score=score,
+            eisv_weight_feedback_score=logged_score,
             buffer_size=len(self._buffer),
         )
         return matched_count
@@ -510,6 +627,7 @@ class TrajectoryAwareness:
                 "actual_count": actual_count,
                 "observation_count": observation_count,
                 "mean_suggestion_recall": recall_sum / observation_count,
+                **_stratum_recall_bounds(suggested_count, actual_count),
             }
             for (suggested_count, actual_count), (
                 observation_count,
@@ -568,6 +686,7 @@ class TrajectoryAwareness:
                         "actual_count": actual_count,
                         "observation_count": observation_count,
                         "mean_suggestion_recall": mean_recall,
+                        **_stratum_recall_bounds(suggested_count, actual_count),
                     }
                     for (
                         suggested_count,
@@ -603,8 +722,20 @@ class TrajectoryAwareness:
                 },
                 "eisv_weight_updates": {
                     "scope": "process_lifetime",
+                    "persisted": False,
+                    "fallback_only": True,
+                    "student_active": bool(
+                        self._use_student
+                        and getattr(self._generator, "is_loaded", False)
+                    ),
                     "update_count": self._eisv_weight_update_count,
                     "matched_token_count": self._eisv_weight_matched_token_count,
+                    "positive_updates": self._eisv_weight_positive_updates,
+                    "negative_updates": self._eisv_weight_negative_updates,
+                    "net_reward": round(self._eisv_weight_net_reward, 4)
+                    if self._eisv_weight_update_count > 0
+                    else None,
+                    "skipped": dict(self._eisv_weight_skipped),
                 },
             },
             "recent_events": recent_events,
