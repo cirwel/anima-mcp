@@ -7,11 +7,9 @@ from anima_mcp.agency import Action, ActionType
 from anima_mcp.agency_runtime import execute_action, run_agency_phase
 
 
-def test_execute_focus_consumes_curiosity_and_marks_real_success():
+def test_execute_focus_sets_attention_and_marks_real_success():
     action = Action(ActionType.FOCUS_ATTENTION, {"sensor": "ambient_temp"})
     selector = MagicMock()
-    metacog = MagicMock()
-    prediction_error = SimpleNamespace(surprise=0.5, surprise_sources=["ambient_temp"])
 
     execute_action(
         action,
@@ -19,14 +17,13 @@ def test_execute_focus_consumes_curiosity_and_marks_real_success():
         action_selector=selector,
         anima=SimpleNamespace(),
         readings=SimpleNamespace(),
-        prediction_error=prediction_error,
-        metacog=metacog,
+        prediction_error=None,
+        metacog=None,
         surprise_level=0.5,
         surprise_sources=["ambient_temp"],
     )
 
     selector.set_attention_focus.assert_called_once_with("ambient_temp")
-    metacog.record_curiosity.assert_called_once_with(["ambient_temp"], prediction_error)
     assert action.execution_succeeded is True
 
 

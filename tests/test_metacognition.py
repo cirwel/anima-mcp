@@ -7,8 +7,7 @@ Covers:
   - Observation and surprise calculation
   - should_reflect gating (surprise, cooldown, sustained, multi-source)
   - reflect() assembly
-  - Curiosity question generation and domain weighting
-  - Curiosity effectiveness tracking (_evaluate_curiosity_outcomes)
+  - Curiosity question generation
   - Surprise trend and prediction accuracy
   - Baseline persistence (save/load)
 """
@@ -447,7 +446,7 @@ class TestReflect:
 # ==================== Curiosity ====================
 
 class TestCuriosity:
-    """Test curiosity question generation and domain weighting."""
+    """Test curiosity question generation."""
 
     def test_no_curiosity_low_surprise(self, mm):
         """Low surprise produces no curiosity question."""
@@ -510,70 +509,6 @@ class TestCuriosity:
         q = mm.generate_curiosity_question(error)
         assert q is not None
 
-    def test_record_curiosity(self, mm):
-        """record_curiosity stores domain error snapshot in log."""
-        error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_light=0.3, error_ambient_temp=0.1,
-        )
-        mm.record_curiosity(["light", "ambient_temp"], error)
-        assert len(mm._curiosity_log) == 1
-        assert "light" in mm._curiosity_log[0]["domains"]
-
-    def test_evaluate_curiosity_outcomes_reward(self, mm, monkeypatch):
-        """When prediction improves after curiosity, domain weight increases.
-
-        Weight movement is parked by default (#189 revival review); these
-        tests arm it to keep the rule mechanics pinned for the redesign."""
-        monkeypatch.setenv("ANIMA_CURIOSITY_WEIGHTS_ENABLED", "1")
-        # Record curiosity with high initial error
-        initial_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.5,
-        )
-        mm._save_counter = 10
-        mm.record_curiosity(["ambient_temp"], initial_error)
-
-        # Fast forward observations past eval horizon
-        mm._save_counter = 10 + mm._eval_horizon + 1
-
-        # Current error is much lower — improvement
-        current_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.1,
-        )
-        mm._evaluate_curiosity_outcomes(current_error)
-
-        # Domain weight should have increased
-        assert mm._domain_weights.get("ambient_temp", 1.0) > 1.0
-
-    def test_evaluate_curiosity_outcomes_penalty(self, mm, monkeypatch):
-        """When prediction worsens after curiosity, domain weight decreases."""
-        monkeypatch.setenv("ANIMA_CURIOSITY_WEIGHTS_ENABLED", "1")
-        initial_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.1,
-        )
-        mm._save_counter = 10
-        mm.record_curiosity(["ambient_temp"], initial_error)
-
-        mm._save_counter = 10 + mm._eval_horizon + 1
-
-        # Current error is higher — prediction worsened
-        current_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.5,
-        )
-        mm._evaluate_curiosity_outcomes(current_error)
-
-        # Domain weight should have decreased
-        assert mm._domain_weights.get("ambient_temp", 1.0) < 1.0
-
 
 # ==================== Surprise Trend & Accuracy ====================
 
@@ -618,7 +553,8 @@ class TestSurpriseTrendAndAccuracy:
         assert acc["mean_surprise"] == pytest.approx(0.2)
         assert acc["mean_temp_error"] == pytest.approx(0.1)
         assert "reflection_count" in acc
-        assert "domain_weights" in acc
+        assert "domain_weights" not in acc
+        assert "pending_curiosity_evals" not in acc
 
 
 # ==================== Persistence ====================
@@ -634,12 +570,6 @@ class TestPersistence:
         mm1._baseline_light = 100.0
         mm1._baseline_pressure = 1013.0
         mm1._diurnal_temp[14] = [25.0, 26.0]
-        mm1._domain_weights = {"light": 1.5, "ambient_temp": 0.8}
-        mm1._curiosity_log = [{
-            "domains": ["light"],
-            "errors_at_time": {"light": 0.4},
-            "obs_count": 12,
-        }]
         mm1._save_counter = 17
         assert mm1.save() is True
 
@@ -648,10 +578,26 @@ class TestPersistence:
         assert mm2._baseline_humidity == pytest.approx(45.0)
         assert mm2._baseline_light == pytest.approx(100.0)
         assert mm2._diurnal_temp[14] == [25.0, 26.0]
-        assert mm2._domain_weights.get("light") == pytest.approx(1.5)
-        assert mm2._domain_weights.get("ambient_temp") == pytest.approx(0.8)
-        assert mm2._curiosity_log == mm1._curiosity_log
         assert mm2._save_counter == 17
+
+    def test_load_tolerates_legacy_curiosity_keys_and_drops_on_save(self, tmp_path):
+        """Legacy domain_weights and curiosity_log load cleanly and drop on save."""
+        data_file = tmp_path / "metacognition_baselines.json"
+        data_file.write_text(json.dumps({
+            "baseline_ambient_temp": 22.5,
+            "domain_weights": {"light": 1.5, "ambient_temp": 0.8},
+            "curiosity_log": [{"domains": ["light"], "errors_at_time": {"light": 0.4}, "obs_count": 12}],
+            "observation_count": 17,
+        }))
+
+        mm = MetacognitiveMonitor(data_dir=str(tmp_path))
+        assert mm._baseline_ambient_temp == pytest.approx(22.5)
+        assert mm._save_counter == 17
+        assert mm.save() is True
+
+        saved = json.loads(data_file.read_text())
+        assert "domain_weights" not in saved
+        assert "curiosity_log" not in saved
 
     def test_read_only_observer_never_overwrites_snapshot(self, tmp_path):
         writer = MetacognitiveMonitor(data_dir=str(tmp_path))

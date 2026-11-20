@@ -45,7 +45,7 @@ def metacog(tmp_path):
 
 
 class TestSurpriseQuestionPath:
-    def test_posts_question_and_records_curiosity(self, metacog):
+    def test_posts_question_and_seeds_growth(self, metacog):
         error = _real_error()
         growth = MagicMock()
         with patch("anima_mcp.messages.add_question", return_value={"id": "q1"}) as add_q, \
@@ -61,10 +61,6 @@ class TestSurpriseQuestionPath:
         # predicted/actual dicts.
         assert "surprise=0.50" in kwargs["context"]
         assert "light changed unexpectedly" in kwargs["context"]
-        # Curiosity credit recorded for the surprising domains.
-        assert metacog._curiosity_log, "record_curiosity did not run"
-        logged_domains = {d for e in metacog._curiosity_log for d in e["domains"]}
-        assert "light" in logged_domains
         # Growth curiosity seeded with the posted question.
         growth.add_curiosity.assert_called_once()
         posted_question = add_q.call_args.args[0]
@@ -94,33 +90,31 @@ class TestSurpriseQuestionPath:
         assert note.call_args.kwargs["source"] == "surprise_unasked"
 
     def test_rate_limited_question_is_a_missed_episode(self, metacog):
-        # add_question returning None must not credit curiosity. (This
+        # add_question returning None must not record curiosity. (This
         # injects the None; the board's actual rate-limit/dedup gates are
         # covered by tests/test_messages.py — here the contract under test
         # is the helper's handling of a rejected post.)
         error = _real_error()
+        growth = MagicMock()
         with patch("anima_mcp.messages.add_question", return_value=None), \
-             patch("anima_mcp.question_evidence.note_question") as note:
+             patch("anima_mcp.question_evidence.note_question") as note, \
+             patch("anima_mcp.accessors._get_growth", return_value=growth):
             posted = handle_surprise_question(metacog, error)
         assert posted is False
-        assert not metacog._curiosity_log
+        growth.add_curiosity.assert_not_called()
         # The surprise did not become a question. This used to record
         # nothing, which left only the support side reachable on this path.
         note.assert_called_once()
         assert note.call_args.kwargs["asked"] is False
         assert note.call_args.kwargs["source"] == "surprise_suppressed"
 
-    def test_domain_weights_parked_by_default(self, metacog):
-        # The credit rule has never run in production and is structurally
-        # unsound (saturating ratchet); weight movement stays off until
-        # redesigned. Entries past the horizon retire unevaluated.
-        error = _real_error()
-        metacog._save_counter = 10
-        metacog.record_curiosity(["light"], error)
-        metacog._save_counter = 10 + metacog._eval_horizon + 1
-        metacog._evaluate_curiosity_outcomes(_real_error())
-        assert metacog._domain_weights == {}
-        assert metacog._curiosity_log == []
+    def test_curiosity_credit_retired(self, metacog):
+        # Sensor-error curiosity credit (#195) has been retired: no inert
+        # domain weights, curiosity log, or outcome evaluator remain.
+        assert not hasattr(metacog, "_domain_weights")
+        assert not hasattr(metacog, "_curiosity_log")
+        assert not hasattr(metacog, "record_curiosity")
+        assert not hasattr(metacog, "_evaluate_curiosity_outcomes")
 
     def test_call_site_wired_in_loop(self):
         # The original bug lived at the loop call site, which unit tests of

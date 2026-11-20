@@ -362,8 +362,8 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
       - the no-question branch kept filing negative evidence throughout
         (a one-sided stream, not silence), and growth curiosities kept
         flowing via the contemplative path since 2026-06-28.
-    The curiosity-credit WEIGHT movement is parked (see
-    ``_evaluate_curiosity_outcomes``) until its rule is validated.
+    Sensor-error curiosity credit (``record_curiosity`` / ``_domain_weights``)
+    was retired under #195 as structurally unsound.
 
     Context derives from ``surprise_sources`` — the per-channel computation
     the broken dict comparison was trying to re-do — sorted by their actual
@@ -393,9 +393,6 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
             print(f"[Metacog] Surprised! Asked: {curiosity_question} "
                   f"(surprise={prediction_error.surprise:.2f})",
                   file=sys.stderr, flush=True)
-            # Record curiosity for the internal learning loop: later, check
-            # if prediction improved in these domains.
-            metacog.record_curiosity(prediction_error.surprise_sources, prediction_error)
             # Also seed growth curiosities so suggest_goal can propose
             # "find an answer to: X" and check_goal_progress can
             # auto-complete when the question gets answered.
