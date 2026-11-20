@@ -85,7 +85,9 @@ healthy Lumen.
 ## Setup
 
 1. Create a check at any dead-man's-switch provider (healthchecks.io has a free
-   tier and is open-source). Period **5 min**, grace **15–20 min**.
+   tier and is open-source). Period **5 min**, grace **15–20 min**. To avoid a
+   third-party provider, deploy the receiver in this repo instead: see
+   [Self-hosted receiver](#self-hosted-receiver), then continue at step 3.
 2. Point its notification at somewhere that reaches a phone. Sending it to the
    same Discord you already watch is fine and keeps one destination — the
    independence that matters is in the *detector*, not the delivery channel.
@@ -114,6 +116,55 @@ healthy Lumen.
 
    Then confirm the provider shows a recent ping. **Installed is not the same as
    working** — that is the whole lesson of the July outage.
+
+## Self-hosted receiver
+
+`cloudflare/heartbeat-worker/` is a Cloudflare Worker that takes the place of
+the provider. It speaks the same protocol the Pi script already uses (`GET
+<url>` when healthy, `GET <url>/fail` when not), so nothing on the Pi changes
+except the URL. It still runs off both machines, which is the property the
+switch depends on; what it removes is the extra vendor.
+
+One Durable Object holds the state, and its alarm is the timer: every ping moves
+the alarm to *last contact + grace*, so it fires only when the pings stop.
+
+| event | webhook post |
+|---|---|
+| first healthy ping | `ARMED` |
+| no ping for `GRACE_MINUTES` (default 20) | `DOWN: ... is silent` |
+| a `/fail` ping | `DOWN: ... reports it is not healthy` |
+| healthy ping after either | `RECOVERED` |
+| still down after `REMIND_HOURS` (default 24, `0` disables) | `STILL DOWN` |
+
+A post the webhook does not accept is not recorded as sent. The receiver retries
+every 5 minutes until it lands. With either secret missing it answers 503, so
+the Pi logs `provider unreachable` and does not ping into a receiver that cannot
+alert.
+
+Deploy from `cloudflare/heartbeat-worker/`:
+
+```bash
+npx wrangler login
+npx wrangler deploy --domain heartbeat.example.org   # a hostname on a zone you own
+openssl rand -hex 24 | npx wrangler secret put PING_TOKEN
+npx wrangler secret put ALERT_WEBHOOK_URL            # e.g. a Discord channel webhook
+```
+
+The webhook receives `{"content": "<message>"}`, which is Discord's format. Set
+`ALERT_MENTION` (for example `<@your-user-id>`) if the channel does not notify
+on every message.
+
+The Pi's URL is then `https://heartbeat.example.org/<PING_TOKEN>`. Treat it like
+any provider ping URL: it is the secret.
+
+Verify with `curl https://heartbeat.example.org/<PING_TOKEN>/status`, which
+shows the last contact, the announced state and the next alarm. The `ARMED`
+post arriving on the phone is the proof that the delivery hop works. No `ARMED`
+post means the switch is not working, whatever the timer says. A receiver that
+has never been pinged does not alarm, so that first post is the only evidence
+that pings are landing.
+
+Tests: `node --test cloudflare/heartbeat-worker/test/worker.test.mjs`.
 
 ## Testing it for real without interrupting Lumen
 

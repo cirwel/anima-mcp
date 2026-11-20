@@ -41,3 +41,14 @@ jobs:
       - name: Run full test suite with coverage
         run: |
           pytest tests/ -v --tb=short --cov=anima_mcp --cov-report=term-missing
+
+  heartbeat-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # No dependencies: the runner's own Node is enough.
+      - name: Run heartbeat receiver tests
+        run: |
+          node --version
+          node --test cloudflare/heartbeat-worker/test/worker.test.mjs
