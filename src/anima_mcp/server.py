@@ -267,7 +267,7 @@ async def _update_display_loop():
                     _predict_with_led_proprioception(metacog)
 
                 except Exception as e:
-                    if loop_count % STATUS_LOG_THROTTLE == 1:
+                    if loop_count % STATUS_LOG_THROTTLE == 0:
                         print(f"[Metacog] Error (non-fatal): {e}",
                               file=sys.stderr, flush=True)
 
@@ -278,7 +278,7 @@ async def _update_display_loop():
                         _ctx, anima, readings, prediction_error, loop_count,
                     )
                 except Exception as e:
-                    if loop_count % STATUS_LOG_THROTTLE == 1:
+                    if loop_count % STATUS_LOG_THROTTLE == 0:
                         print(f"[Agency] Error (non-fatal): {e}", file=sys.stderr, flush=True)
 
             # === SELF-MODEL: Refresh the broker-owned belief snapshot ===
@@ -305,7 +305,7 @@ async def _update_display_loop():
                             _traj = get_trajectory_awareness()
                             _suggestion = _traj.get_trajectory_suggestion(lang_state)
                         except Exception as e:
-                            if loop_count % ERROR_LOG_THROTTLE == 1:
+                            if loop_count % ERROR_LOG_THROTTLE == 0:
                                 print(f"[TrajectorySuggestion] Error: {e}", file=sys.stderr, flush=True)
 
                         _suggested = _suggestion.get("suggested_tokens") if _suggestion else None
@@ -338,7 +338,7 @@ async def _update_display_loop():
                                     )
                                     print(f"[PrimitiveLang] Suggestion recall: {_suggestion_recall:.2f}", file=sys.stderr, flush=True)
                             except Exception as e:
-                                if loop_count % ERROR_LOG_THROTTLE == 1:
+                                if loop_count % ERROR_LOG_THROTTLE == 0:
                                     print(f"[SuggestionRecall] Error: {e}", file=sys.stderr, flush=True)
 
                         from .messages import add_observation
@@ -395,7 +395,7 @@ async def _update_display_loop():
                             logger.debug("[PrimitiveLang] Stats: %s utterances, avg_score=%s, interval=%.1fm", stats.get('total_utterances'), stats.get('average_score'), stats.get('current_interval_minutes'))
 
                 except Exception as e:
-                    if loop_count % STATUS_LOG_THROTTLE == 1:
+                    if loop_count % STATUS_LOG_THROTTLE == 0:
                         logger.debug("[PrimitiveLang] Error (non-fatal): %s", e)
 
             # Identity is fundamental - should always be available if wake() succeeded

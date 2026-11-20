@@ -1301,7 +1301,7 @@ def run_self_model_phase(anima, readings, prediction_error, base_delay: float, l
             sm.save()
 
     except Exception as e:
-        if loop_count % STATUS_LOG_THROTTLE == 1:
+        if loop_count % STATUS_LOG_THROTTLE == 0:
             import sys
             print(f"[SelfModel] Error (non-fatal): {e}", file=sys.stderr, flush=True)
 
