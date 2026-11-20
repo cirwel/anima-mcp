@@ -60,6 +60,8 @@ from .display.face import derive_face_state, face_to_ascii, EyeState
 from .db_paths import BROKER_AGENCY_DB
 from .light_attribution import read_led_proprioception
 from .metacognition import get_metacognitive_monitor
+# Re-exported for import compatibility; monkeypatches/overrides must target
+# `anima_mcp.creature_runtime` where CreatureRuntimeMixin resolves them.
 from .creature_runtime import (  # noqa: F401
     ActionType,
     AutonomousVoice,

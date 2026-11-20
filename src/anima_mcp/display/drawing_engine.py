@@ -48,7 +48,6 @@ from .drawing_state import (  # noqa: F401
     _EISV_PARAMS,
     _coverage_cuts,
     _curiosity_pivot,
-    _get_canvas_path,
     _get_drawing_bridge,
     curiosity_drain,
     is_earned_completion_reason,

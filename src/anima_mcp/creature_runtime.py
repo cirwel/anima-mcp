@@ -112,8 +112,10 @@ ENHANCED_LEARNING_AVAILABLE = any(_LEARNING_MODULES.values())
 if not ENHANCED_LEARNING_AVAILABLE:
     print("[StableCreature] Enhanced learning not available (all modules failed)")
 elif not all(_LEARNING_MODULES.values()):
-    failed = [k for k, v in _LEARNING_MODULES.items() if not v]
-    print(f"[StableCreature] Enhanced learning partial: missing {', '.join(failed)}")
+    print(
+        "[StableCreature] Enhanced learning partial: missing "
+        + ", ".join(k for k, v in _LEARNING_MODULES.items() if not v)
+    )
 
 # Voice support (optional - graceful degradation if not available)
 try:
