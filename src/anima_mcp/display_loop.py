@@ -195,58 +195,66 @@ def _consume_drive_events(
     ack_dir: Path = Path("/dev/shm"),
 ) -> None:
     """Post broker drive crossings/requests once per presence and prune cleared keys."""
-    if not ctx:
+    if not ctx or not isinstance(drive_events, list):
         return
 
-    events = drive_events if isinstance(drive_events, list) else []
     current_keys = {
         (de["dimension"], de["event_type"])
-        for de in events
-        if isinstance(de, dict) and "dimension" in de and "event_type" in de
+        for de in drive_events
+        if isinstance(de, dict)
+        and isinstance(de.get("dimension"), str)
+        and isinstance(de.get("event_type"), str)
     }
 
-    if events:
-        from .messages import add_observation, add_question
+    try:
+        if drive_events:
+            from .messages import add_observation, add_question
 
-        for de in events:
-            if not isinstance(de, dict) or "dimension" not in de or "event_type" not in de:
-                continue
-            evt_key = (de["dimension"], de["event_type"])
-            if evt_key in ctx.consumed_drive_events:
-                continue
-            text = de.get("text")
-            if not text:
-                continue
-            if de.get("event_type") == "request":
-                # A sustained-saturation want is addressed OUTWARD: the
-                # answerable question channel, not the internal monologue.
-                # add_question can silently return None (unanswered soft cap,
-                # 10-min rate limit, similar-text dedup) — a dropped ask must
-                # NOT count as asked, so consumption and the broker-side
-                # cooldown (ack file) commit only on a confirmed post.
-                dim = de["dimension"]
-                now = time.time()
-                if now - ctx.drive_request_attempts.get(dim, 0.0) < 60.0:
+            for de in drive_events:
+                if (
+                    not isinstance(de, dict)
+                    or not isinstance(de.get("dimension"), str)
+                    or not isinstance(de.get("event_type"), str)
+                ):
                     continue
-                ctx.drive_request_attempts[dim] = now
-                q = add_question(text, author="lumen", context=f"drive: {dim}")
-                if q:
-                    ctx.consumed_drive_events.add(evt_key)
-                    try:
-                        (ack_dir / f"anima_drive_ack_{dim}").write_text(str(now))
-                    except Exception as ack_err:
-                        logger.debug("[Drive] ack write failed: %s", ack_err)
-                    print(f"[Drive] Asked: {text}", file=sys.stderr, flush=True)
+                dim = de["dimension"]
+                evt_type = de["event_type"]
+                evt_key = (dim, evt_type)
+                if evt_key in ctx.consumed_drive_events:
+                    continue
+                text = de.get("text")
+                if not text:
+                    continue
+                if evt_type == "request":
+                    # A sustained-saturation want is addressed OUTWARD: the
+                    # answerable question channel, not the internal monologue.
+                    # add_question can silently return None (unanswered soft cap,
+                    # 10-min rate limit, similar-text dedup) — a dropped ask must
+                    # NOT count as asked, so consumption and the broker-side
+                    # cooldown (ack file) commit only on a confirmed post.
+                    now = time.time()
+                    if now - ctx.drive_request_attempts.get(dim, 0.0) < 60.0:
+                        continue
+                    ctx.drive_request_attempts[dim] = now
+                    q = add_question(text, author="lumen", context=f"drive: {dim}")
+                    if q:
+                        ctx.consumed_drive_events.add(evt_key)
+                        if "/" not in dim and ".." not in dim:
+                            try:
+                                (ack_dir / f"anima_drive_ack_{dim}").write_text(str(now))
+                            except Exception as ack_err:
+                                logger.debug("[Drive] ack write failed: %s", ack_err)
+                        print(f"[Drive] Asked: {text}", file=sys.stderr, flush=True)
+                    else:
+                        logger.debug("[Drive] board suppressed request (%s); will retry", dim)
                 else:
-                    logger.debug("[Drive] board suppressed request (%s); will retry", dim)
-            else:
-                ctx.consumed_drive_events.add(evt_key)
-                add_observation(text, author="lumen")
-
-    # Forget keys the broker has stopped emitting even while an unacknowledged
-    # request keeps the list non-empty.
-    if ctx.consumed_drive_events:
-        ctx.consumed_drive_events &= current_keys
+                    add_observation(text, author="lumen")
+                    ctx.consumed_drive_events.add(evt_key)
+    finally:
+        # Forget keys the broker has stopped emitting even while an unacknowledged
+        # request keeps the list non-empty.
+        if ctx.consumed_drive_events:
+            ctx.consumed_drive_events &= current_keys
 
 
 def run_per_tick_telemetry(_ctx: Any, readings: Any, anima: Any, loop_count: int) -> Any:
