@@ -729,8 +729,9 @@ class TestCuriosity:
             q_pop = MetacognitiveMonitor(data_dir=str(tmp_path / f"q_{ch}")).generate_curiosity_question(populated)
             assert q_pop is not None, f"missing populated template for {ch}"
             if ch == "presence":
+                import re
                 assert any(w in q_pop.lower() for w in ("presence", "headroom", "capacity"))
-                assert "room" not in q_pop.lower()
+                assert not re.search(r"\broom\b", q_pop.lower())
 
             value_free = PredictionError(
                 timestamp=datetime.now(),
