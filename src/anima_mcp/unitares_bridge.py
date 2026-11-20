@@ -37,8 +37,14 @@ _EISV_KEYS = ("E", "I", "S", "V")
 
 
 def _sanitize_probe_error(err: Exception) -> str:
-    """Format an availability-probe exception without leaking embedded URL userinfo."""
-    return re.sub(r"://[^/@\s]+@", "://***@", str(err))
+    """Format an availability-probe exception without leaking URL credentials or tokens."""
+    exc_name = type(err).__name__
+    msg = str(err).strip()
+    if not msg:
+        return exc_name
+    msg = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/]+@", r"\1***@", msg)
+    msg = re.sub(r"\?[^\s\"'<>)]+", "?***", msg)
+    return f"{exc_name}: {msg}"
 
 
 def _validated_eisv_vector(candidate: Any) -> Optional[Dict[str, float]]:
@@ -382,6 +388,7 @@ class UnitaresBridge:
         """
         if self._url is None:
             self._available = False
+            self._last_availability_error = None
             return False
 
         import time
@@ -400,6 +407,9 @@ class UnitaresBridge:
             if self._last_availability_check and (current_time - self._last_availability_check < 300.0):
                 return True
             # Fall through to recheck
+
+        prev_available = self._available
+        prev_error = self._last_availability_error
 
         try:
             # Try to connect to UNITARES server using shared session
@@ -420,9 +430,12 @@ class UnitaresBridge:
                         return True
                     elif response.status == 401:
                         # OAuth/auth required - not accessible from this client
-                        logger.warning("UNITARES requires authentication (401) - using local governance")
                         self._available = False
                         self._last_availability_error = "health: HTTP 401"
+                        if prev_available is not False or prev_error != self._last_availability_error:
+                            logger.warning("UNITARES requires authentication (401) - using local governance")
+                        else:
+                            logger.debug("UNITARES requires authentication (401) - using local governance")
                         self._circuit_failures += 1
                         self._last_availability_check = current_time
                         self._maybe_open_circuit(current_time)
@@ -433,7 +446,7 @@ class UnitaresBridge:
                         logger.debug("UNITARES health probe failed: %s", err)
             except Exception as e:
                 # Network/timeout errors - record and try MCP probe
-                err = f"health: {type(e).__name__}: {_sanitize_probe_error(e)}"
+                err = f"health: {_sanitize_probe_error(e)}"
                 errors.append(err)
                 logger.debug("UNITARES health probe failed: %s", err)
 
@@ -459,9 +472,12 @@ class UnitaresBridge:
                         return True
                     elif response.status == 401:
                         # OAuth/auth required - not accessible from this client
-                        logger.warning("UNITARES requires authentication (401) - using local governance")
                         self._available = False
                         self._last_availability_error = "mcp: HTTP 401"
+                        if prev_available is not False or prev_error != self._last_availability_error:
+                            logger.warning("UNITARES requires authentication (401) - using local governance")
+                        else:
+                            logger.debug("UNITARES requires authentication (401) - using local governance")
                         self._circuit_failures += 1
                         self._last_availability_check = current_time
                         self._maybe_open_circuit(current_time)
@@ -472,14 +488,17 @@ class UnitaresBridge:
                         logger.debug("UNITARES mcp probe failed: %s", err)
             except Exception as e:
                 # Network/timeout errors - record and open/increment failure state
-                err = f"mcp: {type(e).__name__}: {_sanitize_probe_error(e)}"
+                err = f"mcp: {_sanitize_probe_error(e)}"
                 errors.append(err)
                 logger.debug("UNITARES mcp probe failed: %s", err)
 
             # Both checks failed - mark unavailable but allow retry
             self._available = False
             self._last_availability_error = "; ".join(errors) if errors else "availability probes failed"
-            logger.warning("UNITARES fallback bridge unavailable: %s", self._last_availability_error)
+            if prev_available is not False or prev_error != self._last_availability_error:
+                logger.warning("UNITARES fallback bridge unavailable: %s", self._last_availability_error)
+            else:
+                logger.debug("UNITARES fallback bridge unavailable: %s", self._last_availability_error)
             self._circuit_failures += 1
             self._last_availability_check = current_time
             self._maybe_open_circuit(current_time)
@@ -494,8 +513,11 @@ class UnitaresBridge:
             return False
         except Exception as e:
             self._available = False
-            self._last_availability_error = f"{type(e).__name__}: {_sanitize_probe_error(e)}"
-            logger.warning("UNITARES availability check failed: %s", self._last_availability_error)
+            self._last_availability_error = _sanitize_probe_error(e)
+            if prev_available is not False or prev_error != self._last_availability_error:
+                logger.warning("UNITARES availability check failed: %s", self._last_availability_error)
+            else:
+                logger.debug("UNITARES availability check failed: %s", self._last_availability_error)
             self._circuit_failures += 1
             self._maybe_open_circuit(time.time())
             await self._reset_session()

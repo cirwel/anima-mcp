@@ -216,6 +216,21 @@ async def test_check_availability_records_and_clears_probe_error():
     assert bridge._last_availability_error is None
 
 
+def test_sanitize_probe_error_strips_credentials_and_handles_empty_message():
+    from anima_mcp.unitares_bridge import _sanitize_probe_error
+
+    err = RuntimeError(
+        "Failed https://user:p@ss@host.example:8767/mcp/?token=secret123&foo=bar"
+    )
+    sanitized = _sanitize_probe_error(err)
+    assert "user" not in sanitized
+    assert "p@ss" not in sanitized
+    assert "secret123" not in sanitized
+    assert "https://***@host.example:8767/mcp/?***" in sanitized
+
+    assert _sanitize_probe_error(TimeoutError()) == "TimeoutError"
+
+
 @pytest.mark.asyncio
 async def test_check_governance_convenience():
     """Test convenience function."""
