@@ -184,8 +184,36 @@ async def test_check_availability_unreachable():
     try:
         available = await bridge.check_availability()
         assert available is False
+        assert bridge._last_availability_error is not None
     finally:
         await bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_check_availability_records_and_clears_probe_error():
+    """check_availability records probe exceptions/statuses and clears on 200."""
+    bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp")
+
+    mock_session = AsyncMock()
+    mock_session.get = MagicMock(side_effect=TimeoutError("health timed out"))
+    mock_session.post = MagicMock(side_effect=ConnectionRefusedError("mcp refused"))
+
+    with patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()):
+        available = await bridge.check_availability()
+
+    assert available is False
+    assert bridge._last_availability_error == (
+        "health: TimeoutError: health timed out; mcp: ConnectionRefusedError: mcp refused"
+    )
+
+    mock_session.get = MagicMock(return_value=_mock_http_response(status=200))
+    bridge._circuit_open_until = 0.0
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        available = await bridge.check_availability()
+
+    assert available is True
+    assert bridge._last_availability_error is None
 
 
 @pytest.mark.asyncio

@@ -164,6 +164,7 @@ class NextStepsAdvocate:
         display_available: bool = False,
         brain_hat_available: bool = False,
         unitares_connected: bool = False,
+        unitares_status: Optional[str] = None,
         drives: Optional[Dict[str, float]] = None,
         strongest_drive: Optional[str] = None,
         wants: Optional[Dict[str, dict]] = None,
@@ -215,14 +216,20 @@ class NextStepsAdvocate:
             )
 
         if not unitares_connected:
+            if unitares_status in (None, "not_configured"):
+                action = "Check UNITARES_URL configuration"
+                reason = "Self-monitoring requires governance"
+            else:
+                action = "Check UNITARES connectivity and broker governance status"
+                reason = f"Self-monitoring requires governance (status: {unitares_status})"
             steps.append(
                 NextStep(
                     feeling="no governance connection",
                     desire="connection",
-                    action="Check UNITARES_URL configuration",
+                    action=action,
                     priority=Priority.MEDIUM,
                     category=StepCategory.INTEGRATION,
-                    reason="Self-monitoring requires governance",
+                    reason=reason,
                 )
             )
 
