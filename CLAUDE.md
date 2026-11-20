@@ -122,7 +122,7 @@ anima-broker-ex`).
 | `handlers/display_ops.py` | capture_screen, diagnostics, manage_display (`show_face` is an internal handler reached through manage_display, not a registered tool) |
 | `handlers/communication.py` | lumen_qa, post_message, say, configure_voice, primitive_feedback |
 | `handlers/workflows.py` | unified_workflow, next_steps, set_calibration, get_lumen_context, learning_visualization |
-| `handlers/self_iteration.py` | self_iteration (backed by `self_iteration.py` plus the `self_iteration_{ledger,attention,pipeline,application,canary,execution,sandbox,verification}.py` modules split out in #270/#271) |
+| `handlers/self_iteration.py` | self_iteration (backed by `self_iteration.py` plus `self_iteration_{ledger,attention,pipeline,stage_helpers,application,application_stage,canary,canary_stage,execution,execution_stage,sandbox,verification}.py`) |
 
 Handler modules import state accessors from `accessors.py` (e.g., `from ..accessors import _get_store`). `lifecycle.py`, `input_handler.py` and `loop_phases.py` access `_ctx` via `ctx_ref.py`; `display_loop.py` and `agency_runtime.py` receive the context as an argument (`display_loop.py` reaches server-level helpers through `_srv()`).
 
