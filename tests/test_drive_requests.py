@@ -212,3 +212,161 @@ class TestSelfAnswerExemption:
         pool = [m for m in (drive_q, normal_q)
                 if not (m.context or "").startswith("drive:")]
         assert pool == [normal_q]
+
+
+class TestDriveEventConsumption:
+    def _make_ctx(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(consumed_drive_events=set(), drive_request_attempts={})
+
+    def test_prunes_vanished_events_while_unacked_request_persists(self, tmp_path, monkeypatch):
+        from anima_mcp import display_loop, messages
+
+        obs = []
+        questions = []
+        monkeypatch.setattr(messages, "add_observation", lambda text, **kw: obs.append((text, kw)) or object())
+        monkeypatch.setattr(messages, "add_question", lambda text, **kw: questions.append((text, kw)) and None)
+
+        ctx = self._make_ctx()
+        unacked_req = {"dimension": "clarity", "event_type": "request", "text": "could there be more light?"}
+        warmth_arose = {"dimension": "warmth", "event_type": "arose", "text": "wanting warmth"}
+
+        # Tick 1: both present; warmth/arose posts once, clarity/request stays unacked
+        display_loop._consume_drive_events(ctx, [unacked_req, warmth_arose], ack_dir=tmp_path)
+        assert len(obs) == 1
+        assert len(questions) == 1
+        assert ("warmth", "arose") in ctx.consumed_drive_events
+        assert ("clarity", "request") not in ctx.consumed_drive_events
+
+        # Tick 1b: still in SHM -> warmth/arose deduplicated
+        display_loop._consume_drive_events(ctx, [unacked_req, warmth_arose], ack_dir=tmp_path)
+        assert len(obs) == 1
+
+        # Tick 2: warmth/arose dropped while unacked clarity/request remains -> warmth/arose pruned
+        display_loop._consume_drive_events(ctx, [unacked_req], ack_dir=tmp_path)
+        assert ctx.consumed_drive_events == set()
+
+        # Tick 3: a second warmth/arose fires again while clarity/request is still unacked
+        display_loop._consume_drive_events(ctx, [unacked_req, warmth_arose], ack_dir=tmp_path)
+        assert len(obs) == 2
+
+    def test_acked_request_writes_ack_dedups_and_prunes_while_unacked_stays(self, tmp_path, monkeypatch):
+        from anima_mcp import display_loop, messages
+
+        asked = []
+
+        def fake_add_question(text, **kw):
+            asked.append(kw["context"])
+            return object() if kw["context"] == "drive: warmth" else None
+
+        monkeypatch.setattr(messages, "add_question", fake_add_question)
+        monkeypatch.setattr(messages, "add_observation", lambda *a, **kw: None)
+
+        now = [2000.0]
+        monkeypatch.setattr(display_loop.time, "time", lambda: now[0])
+        ctx = self._make_ctx()
+        clarity_req = {"dimension": "clarity", "event_type": "request", "text": "light?"}
+        warmth_req = {"dimension": "warmth", "event_type": "request", "text": "warmer?"}
+
+        display_loop._consume_drive_events(ctx, [clarity_req, warmth_req], ack_dir=tmp_path)
+        ack_file = tmp_path / "anima_drive_ack_warmth"
+        assert ack_file.exists()
+        assert float(ack_file.read_text()) == 2000.0
+        assert not (tmp_path / "anima_drive_ack_clarity").exists()
+        assert ("warmth", "request") in ctx.consumed_drive_events
+
+        # While still in SHM next tick, warmth/request is deduplicated
+        display_loop._consume_drive_events(ctx, [clarity_req, warmth_req], ack_dir=tmp_path)
+        assert asked.count("drive: warmth") == 1
+
+        # Once broker pops warmth_req (clarity_req stays), warmth/request is pruned
+        display_loop._consume_drive_events(ctx, [clarity_req], ack_dir=tmp_path)
+        assert ("warmth", "request") not in ctx.consumed_drive_events
+
+        # Within 60s throttle, a fresh warmth/request re-emission does not re-ask; past 60s it does
+        now[0] = 2020.0
+        display_loop._consume_drive_events(ctx, [clarity_req, warmth_req], ack_dir=tmp_path)
+        assert asked.count("drive: warmth") == 1
+
+        now[0] = 2065.0
+        display_loop._consume_drive_events(ctx, [clarity_req, warmth_req], ack_dir=tmp_path)
+        assert asked.count("drive: warmth") == 2
+
+    def test_request_throttle_empty_list_malformed_and_none_ctx(self, tmp_path, monkeypatch):
+        from anima_mcp import display_loop, messages
+
+        now = [1000.0]
+        attempts = []
+        obs = []
+        monkeypatch.setattr(display_loop.time, "time", lambda: now[0])
+        monkeypatch.setattr(messages, "add_question", lambda text, **kw: attempts.append(now[0]) and None)
+        monkeypatch.setattr(messages, "add_observation", lambda text, **kw: obs.append(text) or object())
+
+        req = {"dimension": "clarity", "event_type": "request", "text": "light?"}
+        # None ctx is safe
+        display_loop._consume_drive_events(None, [req], ack_dir=tmp_path)
+
+        ctx = self._make_ctx()
+        # Unhashable/malformed and text-less entries must not crash or suppress valid neighbors
+        display_loop._consume_drive_events(
+            ctx,
+            [
+                req,
+                {"bad": "shape"},
+                {"dimension": ["unhashable"], "event_type": "arose", "text": "x"},
+                {"dimension": "warmth", "event_type": "arose"},
+                {"dimension": "presence", "event_type": "arose", "text": "wanting presence"},
+            ],
+            ack_dir=tmp_path,
+        )
+        assert attempts == [1000.0]
+        assert not (tmp_path / "anima_drive_ack_clarity").exists()
+        assert ("warmth", "arose") not in ctx.consumed_drive_events
+        assert obs == ["wanting presence"]
+
+        now[0] = 1030.0  # within 60s throttle
+        display_loop._consume_drive_events(ctx, [req], ack_dir=tmp_path)
+        assert attempts == [1000.0]
+
+        now[0] = 1061.0  # past 60s throttle
+        display_loop._consume_drive_events(ctx, [req], ack_dir=tmp_path)
+        assert attempts == [1000.0, 1061.0]
+
+        # Non-list snapshot (e.g. None / missing key) preserves dedup state; empty list clears it
+        ctx.consumed_drive_events.add(("warmth", "arose"))
+        display_loop._consume_drive_events(ctx, None, ack_dir=tmp_path)
+        assert ("warmth", "arose") in ctx.consumed_drive_events
+
+        display_loop._consume_drive_events(ctx, [], ack_dir=tmp_path)
+        assert ctx.consumed_drive_events == set()
+
+    def test_ack_write_failure_does_not_abort_and_observation_error_does_not_consume(self, tmp_path, monkeypatch):
+        from anima_mcp import display_loop, messages
+
+        def failing_obs(text, **kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(messages, "add_observation", failing_obs)
+        monkeypatch.setattr(messages, "add_question", lambda *a, **kw: object())
+
+        ctx_ack = self._make_ctx()
+        display_loop._consume_drive_events(
+            ctx_ack,
+            [{"dimension": "warmth", "event_type": "request", "text": "warmer?"}],
+            ack_dir=tmp_path / "nonexistent",
+        )
+        assert ("warmth", "request") in ctx_ack.consumed_drive_events
+
+        # On add_observation error, key stays unconsumed while absent keys still prune in finally
+        ctx = self._make_ctx()
+        ctx.consumed_drive_events.add(("clarity", "arose"))
+        import pytest
+        with pytest.raises(RuntimeError):
+            display_loop._consume_drive_events(
+                ctx,
+                [{"dimension": "warmth", "event_type": "arose", "text": "warm"}],
+                ack_dir=tmp_path,
+            )
+        assert ("warmth", "arose") not in ctx.consumed_drive_events
+        assert ("clarity", "arose") not in ctx.consumed_drive_events
