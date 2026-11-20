@@ -56,12 +56,16 @@ class _UnauthorizedError(Exception):
     """HTTP 401 from UNITARES — hold cooldown until retry window expires."""
 
 
+class _ScopeDeniedError(Exception):
+    """HTTP 403 AgentTokenScope from UNITARES — hold cooldown until config/deploy updates."""
+
+
 def is_rest_tools_url(url: Optional[str]) -> bool:
     """True when URL points to the UNITARES REST ``/v1/tools/call`` endpoint."""
     if not url:
         return False
     parsed = urlparse(str(url).strip())
-    return parsed.path.rstrip("/") == "/v1/tools/call"
+    return parsed.path.rstrip("/").endswith("/v1/tools/call")
 
 
 def is_bearer_transport_safe(url: str) -> bool:
@@ -85,41 +89,55 @@ def sanitize_rest_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _sanitize_probe_error(err: Exception) -> str:
-    """Format an availability-probe exception without leaking URL credentials or tokens."""
-    exc_name = type(err).__name__
-    msg = str(err).strip()
+def _redact_secret(text: Any, token: Optional[str] = None) -> str:
+    """Redact Bearer credentials, query params, URL userinfo, and raw tokens from diagnostics."""
+    msg = str(text or "").strip()
     if not msg:
-        return exc_name
+        return ""
     msg = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/]+@", r"\1***@", msg)
     msg = re.sub(r"(?i)\bBearer\s+[^\s,;\"')]+", "Bearer ***", msg)
     msg = re.sub(r"\?[^\s\"'<>)]+", "?***", msg)
+    if token:
+        msg = msg.replace(token, "***")
+    return msg
+
+
+def _sanitize_probe_error(err: Exception) -> str:
+    """Format an availability-probe exception without leaking URL credentials or tokens."""
+    exc_name = type(err).__name__
+    msg = _redact_secret(err)
+    if not msg:
+        return exc_name
     return f"{exc_name}: {msg}"
 
 
-def _unwrap_rest_result_payload(raw_result: Any) -> Any:
-    """Normalize REST ``result`` into a Python object, unwrapping MCP content blocks if present."""
+def _unwrap_rest_result_payload(raw_result: Any) -> tuple[Any, bool]:
+    """Normalize REST ``result`` into ``(object, outer_is_error)``, unwrapping MCP content blocks."""
     if isinstance(raw_result, dict) and isinstance(raw_result.get("content"), list):
+        outer_is_error = bool(raw_result.get("isError"))
         content = raw_result["content"]
         if content and isinstance(content[0], dict):
             text = content[0].get("text")
             if isinstance(text, str) and text.strip():
                 try:
-                    return json.loads(text)
+                    return json.loads(text), outer_is_error
                 except ValueError:
-                    return {"text": text, "isError": bool(raw_result.get("isError"))}
+                    return {"text": text, "isError": outer_is_error}, outer_is_error
+        return raw_result, outer_is_error
     if isinstance(raw_result, str) and raw_result.strip():
         try:
-            return json.loads(raw_result)
+            return json.loads(raw_result), False
         except ValueError:
-            return raw_result
-    return raw_result
+            return raw_result, False
+    return raw_result, bool(isinstance(raw_result, dict) and raw_result.get("isError"))
 
 
 def parse_rest_tool_response(
     status: int,
     text: str,
     content_type: str = "",
+    *,
+    token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Classify a ``POST /v1/tools/call`` HTTP response across outer & inner layers."""
     if status == 401:
@@ -153,7 +171,7 @@ def parse_rest_tool_response(
                 "error_type": "Forbidden",
                 "recovery": None,
             }
-        snippet = (text or "").strip()[:120]
+        snippet = _redact_secret((text or "").strip()[:120], token=token)
         return {
             "kind": "transport_error",
             "result": None,
@@ -163,13 +181,15 @@ def parse_rest_tool_response(
         }
 
     error_type = payload.get("error_type")
-    err_msg = (
+    err_msg = _redact_secret(
         payload.get("error")
         or payload.get("hint")
         or payload.get("reason")
-        or f"HTTP {status}"
+        or f"HTTP {status}",
+        token=token,
     )
-    recovery = payload.get("recovery")
+    recovery_raw = payload.get("recovery")
+    recovery = _redact_secret(recovery_raw, token=token) if recovery_raw else None
 
     if status == 403 and error_type == "AgentTokenUnbound":
         detail = f"{err_msg} ({recovery})" if recovery else str(err_msg)
@@ -213,7 +233,7 @@ def parse_rest_tool_response(
             "recovery": recovery,
         }
 
-    inner = _unwrap_rest_result_payload(payload.get("result"))
+    inner, outer_is_error = _unwrap_rest_result_payload(payload.get("result"))
     if inner is None:
         return {
             "kind": "refused",
@@ -228,27 +248,41 @@ def parse_rest_tool_response(
             return {
                 "kind": "unbound",
                 "result": inner,
-                "error": str(inner.get("hint") or inner.get("error") or "session binding unresolved"),
+                "error": _redact_secret(
+                    inner.get("hint") or inner.get("error") or "session binding unresolved",
+                    token=token,
+                ),
                 "error_type": inner.get("error_code") or "IdentityRefusal",
                 "recovery": None,
             }
-        if inner.get("isError") or inner.get("success") is False:
-            inner_err = inner.get("error") or inner.get("hint") or inner.get("text") or "tool call refused"
-            if "rate limit" in str(inner_err).lower():
+        if outer_is_error or inner.get("isError") or inner.get("success") is False:
+            inner_err = _redact_secret(
+                inner.get("error") or inner.get("hint") or inner.get("text") or "tool call refused",
+                token=token,
+            )
+            if "rate limit" in inner_err.lower():
                 return {
                     "kind": "rate_limited",
                     "result": inner,
-                    "error": str(inner_err),
+                    "error": inner_err,
                     "error_type": "RateLimited",
                     "recovery": None,
                 }
             return {
                 "kind": "refused",
                 "result": inner,
-                "error": str(inner_err),
+                "error": inner_err,
                 "error_type": inner.get("error_code"),
                 "recovery": None,
             }
+    elif outer_is_error:
+        return {
+            "kind": "refused",
+            "result": inner,
+            "error": _redact_secret(inner, token=token) or "tool call refused",
+            "error_type": "IsError",
+            "recovery": None,
+        }
 
     return {
         "kind": "ok",
@@ -269,7 +303,8 @@ async def post_rest_tool(
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Post a canonical tool invocation to REST ``/v1/tools/call`` with Bearer safety."""
-    if token and not is_bearer_transport_safe(url):
+    target_url = str(url).strip()
+    if token and not is_bearer_transport_safe(target_url):
         raise ValueError("Refusing to send Bearer token over non-loopback HTTP")
 
     headers = {"Content-Type": "application/json"}
@@ -289,10 +324,10 @@ async def post_rest_tool(
         import aiohttp
         post_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
 
-    async with session.post(url, **post_kwargs) as response:
+    async with session.post(target_url, **post_kwargs) as response:
         content_type = response.headers.get("Content-Type", "")
         text = await response.text()
-        return parse_rest_tool_response(response.status, text, content_type)
+        return parse_rest_tool_response(response.status, text, content_type, token=token)
 
 
 def _validated_eisv_vector(candidate: Any) -> Optional[Dict[str, float]]:
@@ -523,13 +558,21 @@ class UnitaresBridge:
                 import aiohttp
                 user, password = auth_str.split(":", 1)
                 self._basic_auth = aiohttp.BasicAuth(user, password)
-        elif self._url and not self._auth_token:
-            parsed_url = urlparse(self._url)
-            if (parsed_url.hostname or "").lower() not in ("localhost", "127.0.0.1", "::1"):
-                logger.warning(
-                    "UNITARES REST URL configured (%s) without UNITARES_HTTP_API_TOKEN",
-                    parsed_url.netloc or self._url,
+        elif self._url:
+            parsed_url = urlparse(self._url.strip())
+            host_label = parsed_url.hostname or "configured URL"
+            if not self._auth_token:
+                if (parsed_url.hostname or "").lower() not in ("localhost", "127.0.0.1", "::1"):
+                    logger.warning(
+                        "UNITARES REST URL configured (%s) without UNITARES_HTTP_API_TOKEN",
+                        host_label,
+                    )
+            elif not is_bearer_transport_safe(self._url):
+                logger.error(
+                    "Refusing UNITARES REST Bearer token over non-loopback HTTP (%s)",
+                    host_label,
                 )
+                self._auth_state = "unauthorized"
         # Governance identity anchor (anima-mcp #97). The bridge is echo-only —
         # it presents a deterministic client_session_id and never re-onboards —
         # so a server-side session-store wipe (2026-06-30 Redis restart) left it
@@ -584,6 +627,15 @@ class UnitaresBridge:
 
     def _is_rest_mode(self) -> bool:
         return is_rest_tools_url(self._url)
+
+    def _open_auth_cooldown(self, auth_state: str, error: Optional[str]) -> None:
+        """Record an auth/binding failure and hold cooldown without extending an open window."""
+        self._auth_state = auth_state
+        self._available = False
+        self._last_availability_error = error
+        now = time.time()
+        if now >= self._circuit_open_until:
+            self._circuit_open_until = now + self._circuit_backoff_max
 
     def _get_mcp_url(self) -> str:
         """Resolve the MCP endpoint URL from the configured base URL."""
@@ -1067,8 +1119,7 @@ class UnitaresBridge:
             except IdentityRefusedError as e:
                 if self._is_rest_mode():
                     logger.error("UNITARES REST session unbound: %s", e)
-                    self._circuit_open_until = time.time() + self._circuit_backoff_max
-                    self._available = False
+                    self._open_auth_cooldown("unbound", str(e))
                     return self._local_governance(
                         anima, readings, body_projection, error=str(e)
                     )
@@ -1103,9 +1154,16 @@ class UnitaresBridge:
                     anima, readings, body_projection, error=str(e)
                 )
             except _UnauthorizedError as e:
-                logger.warning("UNITARES REST unauthorized — opening %ss cooldown: %s", self._circuit_backoff_max, e)
-                self._circuit_open_until = time.time() + self._circuit_backoff_max
-                self._available = False
+                logger.warning("UNITARES REST unauthorized — holding cooldown: %s", e)
+                self._open_auth_cooldown("unauthorized", str(e))
+                return self._local_governance(
+                    anima, readings, body_projection, error=str(e)
+                )
+            except _ScopeDeniedError as e:
+                # Log error once via _call_unitares; avoid resetting breaker or noisy warning spam
+                now = time.time()
+                if now >= self._circuit_open_until:
+                    self._circuit_open_until = now + self._circuit_backoff_max
                 return self._local_governance(
                     anima, readings, body_projection, error=str(e)
                 )
@@ -1301,15 +1359,10 @@ class UnitaresBridge:
                         )
                     return self._build_verdict_from_payload(governance_result, body_projection)
                 if kind == "unauthorized":
-                    self._auth_state = "unauthorized"
-                    self._available = False
-                    self._last_availability_error = rest_resp["error"]
-                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    self._open_auth_cooldown("unauthorized", rest_resp["error"])
                     raise _UnauthorizedError(rest_resp["error"])
                 if kind == "unbound":
-                    self._auth_state = "unbound"
-                    self._available = False
-                    self._last_availability_error = rest_resp["error"]
+                    self._open_auth_cooldown("unbound", rest_resp["error"])
                     raise IdentityRefusedError(rest_resp["error"])
                 if kind == "scope_denied":
                     self._auth_state = "scope_denied"
@@ -1317,7 +1370,7 @@ class UnitaresBridge:
                     if "process_agent_update" not in self._logged_scope_denials:
                         self._logged_scope_denials.add("process_agent_update")
                         logger.error("UNITARES REST token lacks check-in scope: %s", rest_resp["error"])
-                    raise Exception(rest_resp["error"])
+                    raise _ScopeDeniedError(rest_resp["error"])
                 if kind == "rate_limited":
                     raise _RateLimitedError(rest_resp["error"])
                 raise Exception(rest_resp["error"])
@@ -1426,7 +1479,7 @@ class UnitaresBridge:
             raise Exception("aiohttp not installed - cannot connect to UNITARES")
         except asyncio.TimeoutError:
             raise Exception("Timeout connecting to UNITARES server")
-        except (IdentityRefusedError, _RateLimitedError, _UnauthorizedError):
+        except (IdentityRefusedError, _RateLimitedError, _UnauthorizedError, _ScopeDeniedError):
             raise
         except Exception as e:
             raise Exception(f"Error calling UNITARES: {e}")
@@ -1783,6 +1836,8 @@ class UnitaresBridge:
             session = await self._get_session()
 
             if self._is_rest_mode():
+                if self._auth_state in ("unauthorized", "unbound") and time.time() < self._circuit_open_until:
+                    return False
                 rest_resp = await post_rest_tool(
                     session,
                     self._url,
@@ -1797,16 +1852,10 @@ class UnitaresBridge:
                     logger.info("Outcome reported: %s score=%.2f", outcome_type, outcome_score or 0)
                     return True
                 if kind == "unauthorized":
-                    self._auth_state = "unauthorized"
-                    self._available = False
-                    self._last_availability_error = rest_resp["error"]
-                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    self._open_auth_cooldown("unauthorized", rest_resp["error"])
                     logger.warning("Outcome report unauthorized (401): %s", rest_resp["error"])
                 elif kind == "unbound":
-                    self._auth_state = "unbound"
-                    self._available = False
-                    self._last_availability_error = rest_resp["error"]
-                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    self._open_auth_cooldown("unbound", rest_resp["error"])
                     logger.error("Outcome report refused — session unbound: %s", rest_resp["error"])
                 elif kind == "scope_denied":
                     if self._auth_state != "ok":

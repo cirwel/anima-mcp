@@ -75,6 +75,7 @@ def setup_function() -> None:
     uk._session_loop = None
     uk._shared_insights.clear()
     uk._last_share_time = 0.0
+    uk._auth_hold_until = 0.0
 
 
 def teardown_function() -> None:
@@ -228,3 +229,18 @@ def test_rest_mode_refuses_bearer_over_non_loopback_http(monkeypatch, capsys):
     assert res is None
     assert session.requests == []
     assert "non-loopback HTTP" in capsys.readouterr().err
+
+
+def test_rest_mode_unauthorized_holds_cooldown_and_redacts_token(monkeypatch, capsys):
+    monkeypatch.setenv("UNITARES_URL", "https://gov.cirwel.org/v1/tools/call")
+    monkeypatch.setenv("UNITARES_HTTP_API_TOKEN", "raw-secret-tok")
+    session = _PostingSession("{}", status=401)
+    assert _share(session, client_session_id="agent-69a1a4f7-a30") is None
+    assert len(session.requests) == 1
+    assert uk._auth_hold_until > 0.0
+
+    # While cooldown is open, second call skips HTTP POST
+    session2 = _PostingSession("{}", status=200)
+    assert _share(session2, client_session_id="agent-69a1a4f7-a30") is None
+    assert session2.requests == []
+    assert "raw-secret-tok" not in capsys.readouterr().err

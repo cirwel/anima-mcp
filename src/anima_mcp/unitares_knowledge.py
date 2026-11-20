@@ -20,6 +20,7 @@ from datetime import datetime
 # Track what we've already shared to avoid duplicates
 _shared_insights: set = set()
 _last_share_time: float = 0.0
+_auth_hold_until: float = 0.0
 MIN_SHARE_INTERVAL = 60.0  # Don't share more than once per minute
 
 # Reusable session — avoids allocating a new ClientSession per call
@@ -51,7 +52,7 @@ async def share_insight_to_unitares(
         Result dict if successful, None if skipped or failed
     """
     import time
-    global _shared_insights, _last_share_time
+    global _shared_insights, _last_share_time, _auth_hold_until
 
     # Get UNITARES URL
     unitares_url = os.environ.get("UNITARES_URL")
@@ -126,6 +127,8 @@ async def share_insight_to_unitares(
             _session_loop = current_loop
 
         if rest_mode:
+            if now < _auth_hold_until:
+                return None
             token = (os.environ.get("UNITARES_HTTP_API_TOKEN") or "").strip() or None
             rest_resp = await post_rest_tool(
                 _http_session,
@@ -136,6 +139,8 @@ async def share_insight_to_unitares(
                 timeout=5.0,
             )
             if rest_resp["kind"] != "ok":
+                if rest_resp["kind"] in ("unauthorized", "unbound") and time.time() >= _auth_hold_until:
+                    _auth_hold_until = time.time() + 120.0
                 print(
                     f"[UNITARES Knowledge] Share refused ({rest_resp['kind']}): {rest_resp['error']}",
                     file=sys.stderr,
@@ -143,6 +148,7 @@ async def share_insight_to_unitares(
                 )
                 return None
 
+            _auth_hold_until = 0.0
             _shared_insights.add(insight_hash)
             _last_share_time = now
             if len(_shared_insights) > 1000:

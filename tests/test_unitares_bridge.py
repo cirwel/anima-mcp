@@ -935,12 +935,14 @@ def test_rest_url_detection_health_url_and_bearer_transport_safety():
     )
 
     assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call") is True
+    assert is_rest_tools_url("https://gov.cirwel.org/gov/v1/tools/call") is True
     assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call/") is True
     assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call?foo=1") is True
     assert is_rest_tools_url("http://127.0.0.1:8767/mcp/") is False
 
     bridge = UnitaresBridge(unitares_url="https://gov.cirwel.org/v1/tools/call", auth_token="tok")
     assert bridge._get_health_url() == "https://gov.cirwel.org/health"
+    assert UnitaresBridge(unitares_url="https://gov.cirwel.org/gov/v1/tools/call", auth_token="tok")._get_health_url() == "https://gov.cirwel.org/gov/health"
     assert bridge._basic_auth is None
 
     assert is_bearer_transport_safe("https://gov.cirwel.org/v1/tools/call") is True
@@ -1075,6 +1077,23 @@ async def test_rest_check_in_401_403_429_and_html_502_classification():
     assert dec_502["source"] == "local"
     assert bridge._circuit_failures == 1
 
+    # 5. scope_denied opens cooldown without incrementing breaker failures
+    bridge._circuit_open_until = 0.0
+    bridge._circuit_failures = 0
+    mock_session.post = MagicMock(
+        return_value=_mock_http_response(
+            body=json.dumps({"success": False, "error": "lacks checkin scope", "error_type": "AgentTokenScope"}),
+            status=403,
+        )
+    )
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session):
+        dec_scope = await bridge.check_in(create_test_anima(), create_test_readings())
+    assert dec_scope["source"] == "local"
+    assert bridge._auth_state == "scope_denied"
+    assert bridge._circuit_failures == 0
+    assert bridge._circuit_open_until > time.time() + 60.0
+
 
 @pytest.mark.asyncio
 async def test_rest_availability_never_falls_back_to_mcp_tools_list():
@@ -1156,3 +1175,42 @@ async def test_rest_report_outcome_checks_envelope_and_refuses_dirty_payload():
     mcp_session.post = MagicMock(return_value=_mock_http_response(body=_tool_result({"success": False, "error": "denied"})))
     with patch.object(mcp_bridge, "_get_session", return_value=mcp_session):
         assert await mcp_bridge.report_outcome("drawing_completed") is False
+
+
+@pytest.mark.asyncio
+async def test_rest_parse_iserror_json_and_token_redaction_and_outcome_cooldown():
+    import time
+
+    from anima_mcp.unitares_bridge import parse_rest_tool_response
+
+    # Outer isError=True with valid JSON must still classify as refused
+    err_json = json.dumps({
+        "name": "outcome_event",
+        "success": True,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps({"error": "denied", "hint": "blocked"})}],
+            "isError": True,
+        },
+    })
+    parsed = parse_rest_tool_response(200, err_json, token="tok-secret-999")
+    assert parsed["kind"] == "refused"
+
+    # Echoed raw/Bearer tokens are redacted from parsed errors
+    echoed = parse_rest_tool_response(
+        403,
+        json.dumps({"success": False, "error": "bad Bearer tok-secret-999 or tok-secret-999"}),
+        token="tok-secret-999",
+    )
+    assert "tok-secret-999" not in echoed["error"]
+
+    # report_outcome skips HTTP POST during open unauthorized cooldown
+    bridge = UnitaresBridge(unitares_url="https://gov.cirwel.org/v1/tools/call", auth_token="bad-tok")
+    bridge._auth_state = "unauthorized"
+    deadline = time.time() + 90.0
+    bridge._circuit_open_until = deadline
+    mock_session = MagicMock()
+    mock_session.post = MagicMock()
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        assert await bridge.report_outcome("drawing_completed") is False
+    mock_session.post.assert_not_called()
+    assert bridge._circuit_open_until == deadline
