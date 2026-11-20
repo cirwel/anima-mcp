@@ -167,6 +167,75 @@ class TestQuestions:
 
         assert board.add_question("Would an answer reopen the budget?") is None
 
+    def test_reserve_budget_slots_preserves_headroom_for_unreserved_callers(self, board):
+        """Reserved callers yield the final daily slot to unreserved callers."""
+        base_t = time.time() - 3600
+        for i in range(MAX_QUESTIONS_PER_ROLLING_DAY - 1):
+            board._messages.append(
+                Message(
+                    message_id=f"prior{i}",
+                    text=f"Prior {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=base_t - (i + 1) * 1200,
+                    author="lumen",
+                )
+            )
+        board._save()
+
+        # Contemplative-style reserved post yields the final slot.
+        assert (
+            board.add_question(
+                "Quiet wondering?",
+                context="a quiet moment",
+                reserve_budget_slots=1,
+            )
+            is None
+        )
+        # Surprise/drive unreserved post can still claim the final slot.
+        surprise_q = board.add_question("Why did temperature jump?", context="surprise=0.50")
+        assert surprise_q is not None
+
+    def test_max_same_context_per_day_limits_repeated_quiet_prompts(self, board):
+        """A per-context daily cap holds after expiry within 24h and resets past 24h."""
+        old_enough_to_expire = time.time() - (msg_module.QUESTION_EXPIRY_SECONDS + 600)
+        board._messages.append(
+            Message(
+                message_id="quiet-old",
+                text="Everything is steady?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=old_enough_to_expire,
+                author="lumen",
+                context="a quiet moment",
+            )
+        )
+        board._save()
+
+        # Blocked even though the prior quiet question has already expired.
+        assert (
+            board.add_question(
+                "What pattern have I stopped seeing?",
+                context="a quiet moment",
+                max_same_context_per_day=1,
+            )
+            is None
+        )
+        # Different context still posts within the remaining rolling-day budget.
+        assert (
+            board.add_question("Temperature jumped?", context="surprise=0.45")
+            is not None
+        )
+
+        # Once the prior quiet question ages past the 24h window, the context slot reopens.
+        board._messages[0].timestamp = time.time() - (msg_module.QUESTION_BUDGET_WINDOW_SECONDS + 60)
+        board._messages[-1].timestamp = time.time() - (msg_module.MIN_QUESTION_INTERVAL_SECONDS + 60)
+        board._save()
+        reopened = board.add_question(
+            "When the world holds still, what remains?",
+            context="a quiet moment",
+            max_same_context_per_day=1,
+        )
+        assert reopened is not None
+
     def test_questions_similar_public_helper_matches_board_behavior(self, board):
         """Question similarity is available without reaching into MessageBoard internals."""
         q1 = "why is it that I now know that dim light changes my attention?"
