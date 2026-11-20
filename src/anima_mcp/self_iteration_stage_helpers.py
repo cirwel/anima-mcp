@@ -81,6 +81,35 @@ class _StageClaimSpec:
     signature_record: Callable[[dict[str, Any], Any], dict[str, Any]]
     verify_signature: Callable[[dict[str, Any], str, VerifierKey], bool]
 
+    def __post_init__(self) -> None:
+        core_keys = {
+            "schema",
+            "challenge_id",
+            "approval_sha256",
+            "approval_signature",
+            "proposal_id",
+            "candidate_id",
+            "claimed_at",
+            "automatic_retry_allowed",
+            "authority_granted",
+        }
+        custom_names = [
+            self.stage_id_field,
+            self.actor_identity_field,
+            *self.extra_false_fields,
+        ]
+        if self.parent_id_field is not None:
+            custom_names.append(self.parent_id_field)
+        if not self.stage or not self.schema or not self.signature_actor_id_field:
+            raise ValueError("stage claim spec metadata fields must be non-empty")
+        if any(not name for name in custom_names):
+            raise ValueError("stage claim field names must be non-empty")
+        if len(set(custom_names)) != len(custom_names):
+            raise ValueError("stage claim custom field names must be unique")
+        overlap = core_keys.intersection(custom_names)
+        if overlap:
+            raise ValueError(f"stage claim custom fields collide with core keys: {sorted(overlap)}")
+
 
 def _build_stage_claim(
     spec: _StageClaimSpec,
@@ -168,10 +197,10 @@ def _validate_stage_claim(
     if not binding_ok:
         raise SelfIterationError(f"{spec.stage} claim binding is malformed")
     signature = claim["approval_signature"]
+    actor_id = signature[spec.signature_actor_id_field]
+    key_id = signature["key_id"]
     try:
-        key = verifier_key_provider(
-            signature[spec.signature_actor_id_field], signature["key_id"]
-        )
+        key = verifier_key_provider(actor_id, key_id)
     except Exception as exc:
         raise SelfIterationError(spec.key_registry_unavailable_message) from exc
     if not isinstance(key, VerifierKey) or not spec.verify_signature(

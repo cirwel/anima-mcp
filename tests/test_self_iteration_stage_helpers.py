@@ -282,3 +282,99 @@ def test_production_stage_claim_specs_preserve_exact_contracts():
         == "canary reviewer key registry is unavailable"
     )
     assert _CANARY_CLAIM_SPEC.signature_error_type is CanaryError
+
+
+def test_stage_claim_spec_rejects_overlapping_or_empty_field_names():
+    with pytest.raises(ValueError, match="collide with core keys"):
+        _StageClaimSpec(
+            stage="bad",
+            schema="bad.v1",
+            stage_id_field="challenge_id",
+            parent_id_field=None,
+            actor_identity_field="actor_identity",
+            signature_actor_id_field="actor_id",
+            extra_false_fields=(),
+            key_registry_unavailable_message="unavailable",
+            signature_error_type=ValueError,
+            approval_sha256=lambda _a: "sha",
+            signature_record=lambda _a, _s: {},
+            verify_signature=lambda _a, _s, _k: True,
+        )
+    with pytest.raises(ValueError, match="must be unique"):
+        _StageClaimSpec(
+            stage="bad",
+            schema="bad.v1",
+            stage_id_field="stage_id",
+            parent_id_field="stage_id",
+            actor_identity_field="actor_identity",
+            signature_actor_id_field="actor_id",
+            extra_false_fields=(),
+            key_registry_unavailable_message="unavailable",
+            signature_error_type=ValueError,
+            approval_sha256=lambda _a: "sha",
+            signature_record=lambda _a, _s: {},
+            verify_signature=lambda _a, _s, _k: True,
+        )
+
+
+def test_stage_mixins_have_pairwise_disjoint_method_names():
+    """Ensure composing the stage mixins in SelfIterationPipelineMixin shadows nothing."""
+    from anima_mcp.self_iteration_application_stage import SelfIterationApplicationStageMixin
+    from anima_mcp.self_iteration_canary_stage import SelfIterationCanaryStageMixin
+    from anima_mcp.self_iteration_execution_stage import SelfIterationExecutionStageMixin
+    from anima_mcp.self_iteration_pipeline import SelfIterationPipelineMixin
+
+    mixins = [
+        SelfIterationPipelineMixin,
+        SelfIterationExecutionStageMixin,
+        SelfIterationApplicationStageMixin,
+        SelfIterationCanaryStageMixin,
+    ]
+    seen: dict[str, str] = {}
+    collisions: list[tuple[str, str, str]] = []
+    for cls in mixins:
+        for name in cls.__dict__:
+            if name.startswith("__") and name.endswith("__"):
+                continue
+            if name in seen:
+                collisions.append((name, seen[name], cls.__name__))
+            else:
+                seen[name] = cls.__name__
+    assert collisions == [], f"Unexpected mixin method collisions: {collisions}"
+
+
+def test_every_self_iteration_module_is_covered_by_protected_rules():
+    """Any new src/anima_mcp/self_iteration*.py split must appear in _PROTECTED_RULES."""
+    from pathlib import Path
+    from anima_mcp.self_iteration import _PROTECTED_RULES
+
+    src_dir = Path(__file__).resolve().parents[1] / "src" / "anima_mcp"
+    protected_paths = {path for path, _reason in _PROTECTED_RULES}
+    actual_modules = sorted(
+        f"src/anima_mcp/{p.name}" for p in src_dir.glob("self_iteration*.py")
+    )
+    assert actual_modules
+    missing = [p for p in actual_modules if p not in protected_paths]
+    assert missing == [], f"Unprotected self_iteration modules: {missing}"
+
+
+def test_validate_stage_claim_rejects_malformed_signature_types():
+    spec = _make_spec()
+    approval = _sample_approval()
+    base_claim = _build_stage_claim(
+        spec,
+        approval=approval,
+        approval_signature="a" * 64,
+        actor_identity=approval["reviewer_identity"],
+        claimed_at="2026-11-19T00:00:00Z",
+    )
+    for bad_sig in (None, "not-a-dict", [], {}, {"value": 123}):
+        mutated = dict(base_claim)
+        mutated["approval_signature"] = bad_sig
+        with pytest.raises(SelfIterationError, match="claim signature is malformed"):
+            _validate_stage_claim(
+                spec,
+                mutated,
+                approval=approval,
+                verifier_key_provider=lambda _actor, _kid: None,
+            )
