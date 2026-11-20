@@ -192,6 +192,49 @@ class TestExpressionGeneratorWeights:
         assert matched_count == 2
         assert gen.get_weights(shape)[token] == pytest.approx(original + 0.16)
 
+    def test_update_zero_reward_and_clamped_token_return_zero(self):
+        gen = ExpressionGenerator(seed=42)
+        shape = "settled_presence"
+        token = ALL_TOKENS[0]
+        before = gen.get_weights(shape)[token]
+
+        assert gen.update_weights(shape, [token], 0.5) == 0
+        assert gen.update_weights(shape, [token], 0.9, reward=0.0) == 0
+        assert gen.get_weights(shape)[token] == before
+
+        gen._token_weights[shape][token] = 10.0
+        assert gen.update_weights(shape, [token], 1.0, reward=1.0) == 0
+
+    def test_update_explicit_reward_overrides_score(self):
+        gen = ExpressionGenerator(seed=42)
+        shape = "settled_presence"
+        token = ALL_TOKENS[0]
+        before = gen.get_weights(shape)[token]
+
+        assert gen.update_weights(shape, [token], 1.0, reward=-0.5) == 1
+        assert gen.get_weights(shape)[token] == pytest.approx(before - 0.04)
+
+    def test_student_tracks_last_generation_source_on_student_vs_fallback(self):
+        from pathlib import Path
+
+        model_dir = Path(__file__).resolve().parent.parent / "data" / "student_model"
+        if not model_dir.exists():
+            pytest.skip("student_model artifacts absent")
+        gen = StudentExpressionGenerator(str(model_dir), fallback_seed=42)
+        assert gen.is_loaded is True
+
+        gen.generate("settled_presence", window=None)
+        assert gen.last_generation_source == "fallback"
+
+        window = {
+            "states": [
+                {"E": 0.5, "I": 0.8, "S": 0.2, "V": -0.3},
+                {"E": 0.5, "I": 0.8, "S": 0.2, "V": -0.3},
+            ]
+        }
+        gen.generate("settled_presence", window=window)
+        assert gen.last_generation_source == "student"
+
     def test_get_weights_returns_copy(self):
         gen = ExpressionGenerator(seed=42)
         w1 = gen.get_weights("settled_presence")

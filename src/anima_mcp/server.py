@@ -330,6 +330,11 @@ async def _update_display_loop():
                                     _traj.record_eisv_weight_feedback(
                                         _suggestion.get("eisv_tokens", []),
                                         _suggestion_recall,
+                                        shape=_suggestion.get("shape"),
+                                        suggested_count=len(set(_suggested or [])),
+                                        actual_count=len(set(utterance.tokens or [])),
+                                        generator_source=_suggestion.get("generator_source"),
+                                        anchored_recall=True,
                                     )
                                     print(f"[PrimitiveLang] Suggestion recall: {_suggestion_recall:.2f}", file=sys.stderr, flush=True)
                             except Exception as e:

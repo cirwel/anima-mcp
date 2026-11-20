@@ -141,19 +141,34 @@ class ExpressionGenerator:
             return [t1, t2]
         return [self._weighted_token_choice(shape)]
 
-    def update_weights(self, shape: str, tokens: List[str], score: float) -> int:
-        """Update matching token weights and return the number of matches."""
+    def update_weights(
+        self,
+        shape: str,
+        tokens: List[str],
+        score: float,
+        *,
+        reward: Optional[float] = None,
+    ) -> int:
+        """Update matching token weights when reward is non-zero and return changed count."""
         if shape not in self._token_weights:
             return 0
+        raw_reward = reward if reward is not None else (float(score) - 0.5) * 2.0
+        if isinstance(raw_reward, bool) or not isinstance(raw_reward, (int, float)):
+            return 0
+        effective_reward = float(raw_reward)
+        if not math.isfinite(effective_reward) or effective_reward == 0.0:
+            return 0
         lr = 0.08
-        reward = (score - 0.5) * 2.0
-        matched_count = 0
+        updated_count = 0
+        shape_weights = self._token_weights[shape]
         for token in tokens:
-            if token in self._token_weights[shape]:
-                new_w = self._token_weights[shape][token] + lr * reward
-                self._token_weights[shape][token] = max(0.1, min(10.0, new_w))
-                matched_count += 1
-        return matched_count
+            if token in shape_weights:
+                old_w = shape_weights[token]
+                new_w = max(0.1, min(10.0, old_w + lr * effective_reward))
+                if new_w != old_w:
+                    shape_weights[token] = new_w
+                    updated_count += 1
+        return updated_count
 
     def get_weights(self, shape: str) -> Dict[str, float]:
         return dict(self._token_weights.get(shape, {}))
@@ -175,6 +190,7 @@ class StudentExpressionGenerator:
         self._model_dir = model_dir
         self._loaded = False
         self._fallback = ExpressionGenerator(seed=fallback_seed)
+        self.last_generation_source: Optional[str] = None
         self._load_models()
 
     def _load_models(self) -> None:
@@ -315,6 +331,7 @@ class StudentExpressionGenerator:
         Falls back to rule-based generator if model not loaded or window missing.
         """
         if not self._loaded or window is None:
+            self.last_generation_source = "fallback"
             return self._fallback.generate(shape)
 
         try:
@@ -330,6 +347,7 @@ class StudentExpressionGenerator:
             token2_idx = self._predict_forest(self._token2_forest, X_t2)
             token_2 = self._mappings["tokens_with_none"][token2_idx]
 
+            self.last_generation_source = "student"
             if pattern == "SINGLE":
                 return [token_1]
             elif pattern == "REPETITION":
@@ -341,10 +359,18 @@ class StudentExpressionGenerator:
             else:
                 return [token_1]
         except Exception:
+            self.last_generation_source = "fallback"
             return self._fallback.generate(shape)
 
-    def update_weights(self, shape: str, tokens: List[str], score: float) -> int:
-        return self._fallback.update_weights(shape, tokens, score)
+    def update_weights(
+        self,
+        shape: str,
+        tokens: List[str],
+        score: float,
+        *,
+        reward: Optional[float] = None,
+    ) -> int:
+        return self._fallback.update_weights(shape, tokens, score, reward=reward)
 
     def get_weights(self, shape: str) -> Dict[str, float]:
         return self._fallback.get_weights(shape)
