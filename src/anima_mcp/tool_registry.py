@@ -288,11 +288,14 @@ TOOLS = [
     Tool(
         name="diagnostics",
         description=(
-            "Get system diagnostics: LED status, display status, update loop health. "
+            "Get system diagnostics: LED status, display status, update loop health, "
+            "and shadow per-sensor residual z-scores (sensor_residuals). "
             "Pass derive_curiosity=true to also run the read-only per-era curiosity "
             "pivot derivation over drawing_trajectory (off by default — it scans the "
-            "corpus). It reports only. Lumen applies its own derivations weekly; "
-            "the result of the last attempt is always included as self_derivation."
+            "corpus). Pass sensor_residuals_detail=true to read full persisted "
+            "per-sensor baselines, |z| histograms, and correlations. It reports only. "
+            "Lumen applies its own derivations weekly; the result of the last attempt "
+            "is always included as self_derivation."
         ),
         inputSchema={
             "type": "object",
@@ -324,6 +327,15 @@ TOOLS = [
                         "cut on Lumen's own state is still reachable. The payload carries "
                         "a caveat: temperament is not persisted, so these are the raw "
                         "anima it is smoothed from. Default false."
+                    ),
+                },
+                "sensor_residuals_detail": {
+                    "type": "boolean",
+                    "description": (
+                        "Include full persisted shadow sensor residual baselines, "
+                        "sigma floors, |z| histograms, and online correlations vs. "
+                        "current anima dimensions (read-only; writes nothing). "
+                        "Default false."
                     ),
                 },
                 "derive_days": {

@@ -52,6 +52,7 @@ if sys.stdout.encoding != 'utf-8':
 
 from .anima import MoodMomentum
 from .inner_life import InnerLife
+from .sensor_residuals import SensorResidualTracker
 # NOTE: Broker does NOT import or init LEDDisplay — server owns LED hardware.
 # Agency LED brightness is communicated via shared memory.
 from .display.face import derive_face_state, face_to_ascii, EyeState
@@ -210,7 +211,9 @@ def run_creature():
 
     _mood_momentum = MoodMomentum()
     _inner_life = InnerLife()
+    _sensor_residuals = SensorResidualTracker()
     inner_state = None
+    _sensor_residuals_snapshot = None
 
     # Persistent event loop for async calls (governance, cognitive, memory).
     # A single loop runs in a dedicated daemon thread so aiohttp sessions
@@ -354,6 +357,24 @@ def run_creature():
                 _inner_life,
                 last_body_update_at,
             )
+
+            # 2a-i. Shadow-only per-sensor self-relative residual baseline
+            try:
+                _sensor_residuals_snapshot = _sensor_residuals.observe(
+                    readings,
+                    external_light_lux=_external_light_for_environment,
+                    current_warmth=anima.warmth,
+                    current_stability=anima.stability,
+                    current_clarity=anima.clarity,
+                )
+                _sensor_residuals.maybe_save()
+            except Exception as e:
+                _sensor_residuals_snapshot = None
+                print(
+                    f"[SensorResiduals] Observation error: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
             # 2a-ii. Activity State: Determine wakefulness level
             activity_state = None
@@ -525,6 +546,7 @@ def run_creature():
                 adaptive_model,
                 _exp_state,
                 _agency_led_brightness,
+                sensor_residuals=_sensor_residuals_snapshot,
             )
 
             # 4. Render Face (terminal only). Under systemd stdout is the
@@ -638,6 +660,7 @@ def run_creature():
             _bg_thread,
             _bg_executor,
             shm_client,
+            sensor_residuals=_sensor_residuals,
         )
 
 def main():

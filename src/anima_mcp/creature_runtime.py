@@ -1279,6 +1279,7 @@ class CreatureRuntimeMixin:
         adaptive_model: Any,
         _exp_state: dict[str, Any],
         _agency_led_brightness: float,
+        sensor_residuals: Any = None,
     ) -> None:
         # 3b. Write to Shared Memory (Broker) - includes governance and metacognition
         body_anima = anima.to_dict()
@@ -1412,6 +1413,10 @@ class CreatureRuntimeMixin:
         if _agency_led_brightness != 1.0:
             shm_data["agency_led_brightness"] = _agency_led_brightness
 
+        # Shadow-only per-sensor self-relative residual telemetry (#79, #175)
+        if sensor_residuals is not None:
+            shm_data["sensor_residuals"] = sensor_residuals
+
         shm_client.write(shm_data)
 
     def gather_mark_check_inputs(self, identity: Any, self_model: Any, db_path: str) -> tuple[int, dict[str, float], int, int]:
@@ -1466,6 +1471,7 @@ class CreatureRuntimeMixin:
         _bg_thread: Any,
         _bg_executor: Any,
         shm_client: Any,
+        sensor_residuals: Any = None,
     ) -> None:
         # Clean shutdown
         print("[StableCreature] Shutting down...")
@@ -1487,6 +1493,13 @@ class CreatureRuntimeMixin:
                     print("[StableCreature] Saved inner life (temperament + drives)")
             except Exception as e:
                 print(f"[StableCreature] Error saving learning state: {e}")
+
+        if sensor_residuals is not None:
+            try:
+                if sensor_residuals.save():
+                    print("[StableCreature] Saved shadow sensor residuals")
+            except Exception as e:
+                print(f"[StableCreature] Error saving sensor residuals: {e}")
 
         # Save experiential accumulation state
         if exp_filter:

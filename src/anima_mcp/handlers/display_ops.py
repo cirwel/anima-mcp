@@ -513,7 +513,72 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
         result["self_prediction"] = {"available": False,
                                      "reason": f"{type(e).__name__}: {e}"}
 
+    # Always on (from broker SHM): shadow-only per-sensor self-relative
+    # residual telemetry (#79, #175). Never constructs a writer in the server.
+    try:
+        result["sensor_residuals"] = _read_sensor_residuals_from_shm()
+    except Exception as e:
+        result["sensor_residuals"] = {
+            "available": False,
+            "status": "unknown",
+            "authority": "shadow_observation_only",
+            "moves_no_gate": True,
+            "reason": f"{type(e).__name__}: {e}",
+        }
+
+    # Opt-in: full persisted shadow sensor residual baselines, sigma floor
+    # occupancy, |z| histograms, and online correlations (pure read-only).
+    if arguments.get("sensor_residuals_detail"):
+        try:
+            from ..sensor_residuals import load_persisted_sensor_residuals
+            result["sensor_residuals_detail"] = load_persisted_sensor_residuals()
+        except Exception as e:
+            result["sensor_residuals_detail"] = {
+                "available": False,
+                "reason": f"{type(e).__name__}: {e}",
+            }
+
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+def _read_sensor_residuals_from_shm() -> dict:
+    """Read compact shadow sensor residuals from broker SHM with freshness check."""
+    from datetime import datetime
+    from ..accessors import _get_shm_client
+    from ..sensor_residuals import AUTHORITY, MOVES_NO_GATE
+    from ..server_state import SHM_STALE_THRESHOLD_SECONDS
+
+    def _unavailable(reason: str) -> dict:
+        return {
+            "available": False,
+            "status": "unknown",
+            "authority": AUTHORITY,
+            "moves_no_gate": MOVES_NO_GATE,
+            "reason": reason,
+        }
+
+    shm_client = _get_shm_client()
+    shm_data = shm_client.read() if shm_client else None
+    if not isinstance(shm_data, dict):
+        return _unavailable("shm_unavailable")
+
+    ts_str = shm_data.get("timestamp")
+    if not isinstance(ts_str, str) or not ts_str:
+        return _unavailable("shm_stale")
+    try:
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        age_seconds = (datetime.now(ts.tzinfo) - ts).total_seconds()
+    except Exception:
+        return _unavailable("shm_stale")
+
+    if age_seconds > SHM_STALE_THRESHOLD_SECONDS or age_seconds < -5:
+        return _unavailable("shm_stale")
+
+    sr = shm_data.get("sensor_residuals")
+    if not isinstance(sr, dict):
+        return _unavailable("not_in_shm")
+
+    return {"available": True, **sr}
 
 
 async def handle_manage_display(arguments: dict) -> list[TextContent]:
