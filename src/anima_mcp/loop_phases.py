@@ -413,8 +413,7 @@ def handle_surprise_question(metacog, prediction_error) -> bool:
         _note_question_episode(prediction_error.surprise, asked=False,
                                source="surprise_suppressed")
         return False
-    # Surprised but no question generated (for instance when generate_curiosity_question
-    # declines a low-surprise sample below 0.2).
+    # Surprised but no question generated (e.g. surprise below 0.2, or no specific sources below 0.25).
     _note_question_episode(prediction_error.surprise, asked=False,
                            source="surprise_unasked")
     return False

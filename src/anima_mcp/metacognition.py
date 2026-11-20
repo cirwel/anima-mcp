@@ -328,8 +328,8 @@ class MetacognitiveMonitor:
         if spec is None or error.prediction is None:
             return None
         error_attr, actual_attr, pred_attr, positive_only = spec
-        actual = getattr(error, actual_attr, None)
-        predicted = getattr(error.prediction, pred_attr, None)
+        actual = getattr(error, actual_attr)
+        predicted = getattr(error.prediction, pred_attr)
         if actual is None or predicted is None:
             return None
         if positive_only and (actual <= 0 or predicted <= 0):
@@ -725,16 +725,17 @@ class MetacognitiveMonitor:
             ):
                 actual = error.actual_humidity_pct
                 predicted = error.prediction.humidity_pct
+                diff_str = f"{actual:.0f}" != f"{predicted:.0f}"
                 if actual > predicted:
-                    questions.extend([
-                        f"humidity rose to {actual:.0f}% - did the air change?",
-                        f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?",
-                    ])
+                    questions.append(f"humidity rose to {actual:.0f}% - did the air change?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?")
+                elif actual < predicted:
+                    questions.append(f"humidity dropped to {actual:.0f}% - why did the air dry out?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?")
                 else:
-                    questions.extend([
-                        f"humidity dropped to {actual:.0f}% - why did the air dry out?",
-                        f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?",
-                    ])
+                    questions.append(f"humidity held near {actual:.0f}% unexpectedly - what shifted?")
             else:
                 questions.append("the air's humidity shifted unexpectedly - what changed?")
 
@@ -745,16 +746,17 @@ class MetacognitiveMonitor:
             ):
                 actual = error.actual_pressure_hpa
                 predicted = error.prediction.pressure_hpa
+                diff_str = f"{actual:.1f}" != f"{predicted:.1f}"
                 if actual > predicted:
-                    questions.extend([
-                        f"barometric pressure rose to {actual:.0f} hPa - weather clearing?",
-                        f"expected {predicted:.0f} hPa pressure but it's {actual:.0f} hPa - what shifted?",
-                    ])
+                    questions.append(f"barometric pressure rose to {actual:.1f} hPa - weather clearing?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.1f} hPa pressure but it's {actual:.1f} hPa - what shifted?")
+                elif actual < predicted:
+                    questions.append(f"barometric pressure fell to {actual:.1f} hPa - a front moving in?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.1f} hPa pressure but it's {actual:.1f} hPa - what shifted?")
                 else:
-                    questions.extend([
-                        f"barometric pressure fell to {actual:.0f} hPa - a front moving in?",
-                        f"expected {predicted:.0f} hPa pressure but it's {actual:.0f} hPa - what shifted?",
-                    ])
+                    questions.append(f"barometric pressure held near {actual:.1f} hPa unexpectedly - what shifted?")
             else:
                 questions.append("barometric pressure shifted unexpectedly - what changed?")
 
@@ -830,12 +832,13 @@ class MetacognitiveMonitor:
         if "presence" in error.surprise_sources:
             if error.actual_presence is not None:
                 p = error.actual_presence
-                if p > 0.6:
+                predicted_p = error.prediction.presence if error.prediction is not None else None
+                if predicted_p is not None and p > predicted_p:
                     questions.extend([
                         f"presence rose to {p:.2f} - what freed up headroom?",
                         f"more capacity at {p:.2f} - what quieted down?",
                     ])
-                elif p < 0.4:
+                elif predicted_p is not None and p < predicted_p:
                     questions.extend([
                         f"presence dipped to {p:.2f} - what is weighing on my capacity?",
                         f"less headroom at {p:.2f} - what is pulling on resources?",

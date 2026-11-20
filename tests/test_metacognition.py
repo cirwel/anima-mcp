@@ -513,6 +513,8 @@ class TestCuriosity:
     def test_get_domain_error_honest_none_and_measured_zero(self, mm):
         """Unmeasured channels return None even when error_* defaults to 0.0;
         measured exact matches return 0.0."""
+        from anima_mcp.metacognition import _DOMAIN_ERROR_SPECS
+
         blank_error = PredictionError(
             timestamp=datetime.now(),
             prediction=Prediction(timestamp=datetime.now()),
@@ -521,32 +523,133 @@ class TestCuriosity:
             assert mm._get_domain_error(ch, blank_error) is None
         assert mm._get_domain_error("cpu_temp", blank_error) is None
 
-        # Only actual present (prediction None) still returns None.
-        half_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            actual_pressure_hpa=1013.0,
-            error_pressure=0.0,
-        )
-        assert mm._get_domain_error("pressure", half_error) is None
+        # Non-positive light values cannot compute log10 error in observe().
+        for actual_lux, pred_lux in [(10.0, 0.0), (0.0, 10.0), (-1.0, 10.0)]:
+            bad_lux_error = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), light_lux=pred_lux),
+                actual_light_lux=actual_lux,
+                error_light=0.5,
+            )
+            assert mm._get_domain_error("light", bad_lux_error) is None
 
-        # Zero lux cannot compute log10 error in observe(), so treat as unmeasured.
-        zero_lux_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now(), light_lux=0.0),
-            actual_light_lux=10.0,
-            error_light=0.0,
-        )
-        assert mm._get_domain_error("light", zero_lux_error) is None
+        # Verify every channel in SURPRISE_CHANNELS handles measured non-zero,
+        # measured zero (0.0), missing actual, and missing prediction.
+        for ch, (err_attr, actual_attr, pred_attr, _) in _DOMAIN_ERROR_SPECS.items():
+            sample = 100.0 if ch in ("light", "pressure") else 22.0
+            measured = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{actual_attr: sample, err_attr: 0.37},
+            )
+            assert mm._get_domain_error(ch, measured) == pytest.approx(0.37)
 
-        # Exact measured match (predicted == actual == 22.0) returns 0.0.
-        exact_error = PredictionError(
+            exact = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{actual_attr: sample, err_attr: 0.0},
+            )
+            assert mm._get_domain_error(ch, exact) == 0.0
+
+            missing_pred = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now()),
+                **{actual_attr: sample, err_attr: 0.5},
+            )
+            assert mm._get_domain_error(ch, missing_pred) is None
+
+            missing_actual = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{err_attr: 0.5},
+            )
+            assert mm._get_domain_error(ch, missing_actual) is None
+
+    def test_presence_question_direction_matches_prediction(self, mm):
+        """Presence templates compare actual vs prediction rather than absolute cutoffs."""
+        # High value, but lower than predicted -> falling wording (not "rose")
+        err_drop = PredictionError(
             timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now(), ambient_temp_c=22.0),
-            actual_ambient_temp_c=22.0,
-            error_ambient_temp=0.0,
+            prediction=Prediction(timestamp=datetime.now(), presence=0.9),
+            actual_presence=0.7,
+            surprise=0.22,
+            surprise_sources=["presence"],
         )
-        assert mm._get_domain_error("ambient_temp", exact_error) == 0.0
+        for _ in range(10):
+            q = mm.generate_curiosity_question(err_drop)
+            assert q is not None
+            assert "rose" not in q and "more capacity" not in q
+            assert "dipped" in q or "less headroom" in q
+
+        # Low value, but higher than predicted -> rising wording (not "dipped")
+        err_rise = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), presence=0.1),
+            actual_presence=0.3,
+            surprise=0.22,
+            surprise_sources=["presence"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(err_rise)
+            assert q is not None
+            assert "dipped" not in q and "less headroom" not in q
+            assert "rose" in q or "more capacity" in q
+
+        # Equal or missing prediction -> neutral wording
+        for pred_p in (None, 0.7):
+            err_neutral = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), presence=pred_p),
+                actual_presence=0.7,
+                surprise=0.22,
+                surprise_sources=["presence"],
+            )
+            q = mm.generate_curiosity_question(err_neutral)
+            assert q == "presence shifted to 0.70 - what changed in my capacity?"
+
+    def test_humidity_and_pressure_equality_and_rounding_wording(self, mm):
+        """Equal readings use neutral wording and sub-rounding diffs avoid 'expected X ... it's X'."""
+        eq_humidity = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), humidity_pct=45.0),
+            actual_humidity_pct=45.0,
+            surprise=0.22,
+            surprise_sources=["humidity"],
+        )
+        q_h_eq = mm.generate_curiosity_question(eq_humidity)
+        assert q_h_eq is not None and "dropped" not in q_h_eq and "held near" in q_h_eq
+
+        eq_pressure = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), pressure_hpa=1013.2),
+            actual_pressure_hpa=1013.2,
+            surprise=0.22,
+            surprise_sources=["pressure"],
+        )
+        q_p_eq = mm.generate_curiosity_question(eq_pressure)
+        assert q_p_eq is not None and "fell" not in q_p_eq and "held near 1013.2 hPa" in q_p_eq
+
+        sub_humidity = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), humidity_pct=45.1),
+            actual_humidity_pct=45.4,
+            surprise=0.22,
+            surprise_sources=["humidity"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(sub_humidity)
+            assert "expected 45% humidity but it's 45%" not in q
+
+        sub_pressure = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), pressure_hpa=1013.21),
+            actual_pressure_hpa=1013.24,
+            surprise=0.22,
+            surprise_sources=["pressure"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(sub_pressure)
+            assert "expected 1013.2 hPa pressure but it's 1013.2 hPa" not in q
 
     def test_curiosity_handles_zero_celsius_temp(self, mm):
         """0.0°C is a valid temperature, not missing data."""

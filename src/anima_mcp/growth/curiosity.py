@@ -5,7 +5,6 @@ Handles adding, retrieving, and marking curiosities as explored.
 """
 
 import sys
-import sqlite3
 from datetime import datetime
 from typing import Optional
 import random
@@ -25,19 +24,16 @@ class CuriosityMixin:
             return False
 
         conn = self._connect()
-        try:
-            cursor = conn.execute("""
-                INSERT OR IGNORE INTO curiosities (question, created_at)
-                VALUES (?, ?)
-            """, (question, datetime.now().isoformat()))
-            conn.commit()
-            if cursor.rowcount > 0:
-                self._curiosities.append(question)
-                print(f"[Growth] New curiosity: {question}", file=sys.stderr, flush=True)
-                return True
-            return False
-        except sqlite3.IntegrityError:
-            return False  # Already exists
+        cursor = conn.execute("""
+            INSERT OR IGNORE INTO curiosities (question, created_at)
+            VALUES (?, ?)
+        """, (question, datetime.now().isoformat()))
+        conn.commit()
+        if cursor.rowcount > 0:
+            self._curiosities.append(question)
+            print(f"[Growth] New curiosity: {question}", file=sys.stderr, flush=True)
+            return True
+        return False
 
     def get_random_curiosity(self) -> Optional[str]:
         """Get a random unexplored curiosity."""

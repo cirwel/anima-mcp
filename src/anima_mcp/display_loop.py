@@ -443,7 +443,7 @@ def run_quiet_world_contemplation(metacog: Any) -> None:
             posted = add_question(contemplative, author="lumen", context="a quiet moment")
         except Exception as e:
             logger.debug("[Metacog] contemplative add_question error: %s", e)
-        if posted:
+        if posted is not None:
             try:
                 from .accessors import _get_growth
                 growth = _get_growth()
@@ -451,7 +451,7 @@ def run_quiet_world_contemplation(metacog: Any) -> None:
                     growth.add_curiosity(contemplative)
             except Exception as e:
                 logger.debug("[Growth] contemplative add_curiosity error: %s", e)
-        logger.debug("[Metacog] Contemplative wondering: %s", contemplative)
+            logger.debug("[Metacog] Contemplative wondering: %s", contemplative)
 
 
 def capture_led_proprioception(ctx, readings) -> None:
