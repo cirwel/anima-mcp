@@ -91,6 +91,274 @@ class TestNextStepsExtended:
         assert data["current_state"]["unitares_connected"] is False
         assert "error:" in data["current_state"]["unitares_status"]
 
+    async def test_next_steps_fresh_live_governance_skips_bridge_probe(self):
+        import time
+        from anima_mcp.handlers.workflows import handle_next_steps
+
+        class UnreachableBridge:
+            _available = False
+            _last_availability_error = "health: TimeoutError: "
+
+            async def check_availability(self):
+                raise AssertionError("fallback bridge probe should not run when SHM governance is fresh")
+
+        advocate = SimpleNamespace(
+            analyze_current_state=lambda **kwargs: [],
+            get_next_steps_summary=lambda: {
+                "next_action": {},
+                "total_steps": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "all_steps": [],
+            },
+        )
+        anima = SimpleNamespace(warmth=0.6, clarity=0.8, stability=0.8, presence=0.7)
+        readings = SimpleNamespace()
+        display = SimpleNamespace(is_available=lambda: True)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
+        attention_system = SimpleNamespace(
+            attention=lambda **_: {"items": [], "active_count": 0}
+        )
+        live_ctx = SimpleNamespace(
+            last_governance_decision={"source": "unitares_ex"},
+            last_unitares_success_time=time.time() - 45.0,
+        )
+
+        with patch("anima_mcp.ctx_ref.get_ctx", return_value=live_ctx), \
+             patch("anima_mcp.accessors._get_store", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_display", return_value=display), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_server_bridge", return_value=UnreachableBridge()), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=None), \
+             patch("anima_mcp.next_steps_advocate.get_advocate", return_value=advocate), \
+             patch("anima_mcp.self_iteration.get_self_iteration_system", return_value=attention_system), \
+             patch("anima_mcp.eisv_mapper.anima_to_body_eisv_projection", return_value=eisv):
+            data = parse_result(await handle_next_steps({}))
+
+        state = data["current_state"]
+        assert state["unitares_connected"] is True
+        assert state["unitares_status"] == "connected"
+        assert state["governance_source"] == "unitares_ex"
+        assert 40.0 <= state["governance_age_seconds"] <= 55.0
+        assert state["fallback_bridge_status"] == "unavailable"
+        assert state["fallback_bridge_error"] == "health: TimeoutError: "
+
+    async def test_next_steps_stale_live_governance_falls_back_to_bridge(self):
+        import time
+        from anima_mcp.handlers.workflows import handle_next_steps
+
+        class ProbeBridge:
+            def __init__(self):
+                self.probed = False
+                self._last_availability_error = "health: TimeoutError: timed out"
+
+            async def check_availability(self):
+                self.probed = True
+                return False
+
+        bridge = ProbeBridge()
+        advocate = SimpleNamespace(
+            analyze_current_state=lambda **kwargs: [],
+            get_next_steps_summary=lambda: {
+                "next_action": {},
+                "total_steps": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "all_steps": [],
+            },
+        )
+        anima = SimpleNamespace(warmth=0.6, clarity=0.8, stability=0.8, presence=0.7)
+        readings = SimpleNamespace()
+        display = SimpleNamespace(is_available=lambda: True)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
+        attention_system = SimpleNamespace(
+            attention=lambda **_: {"items": [], "active_count": 0}
+        )
+        stale_ctx = SimpleNamespace(
+            last_governance_decision={"source": "unitares_ex"},
+            last_unitares_success_time=time.time() - 360.0,
+        )
+
+        with patch("anima_mcp.ctx_ref.get_ctx", return_value=stale_ctx), \
+             patch("anima_mcp.accessors._get_store", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_display", return_value=display), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_server_bridge", return_value=bridge), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=None), \
+             patch("anima_mcp.next_steps_advocate.get_advocate", return_value=advocate), \
+             patch("anima_mcp.self_iteration.get_self_iteration_system", return_value=attention_system), \
+             patch("anima_mcp.eisv_mapper.anima_to_body_eisv_projection", return_value=eisv):
+            data = parse_result(await handle_next_steps({}))
+
+        assert bridge.probed is True
+        state = data["current_state"]
+        assert state["unitares_connected"] is False
+        assert state["unitares_status"] == "unavailable"
+        assert state["governance_source"] == "unitares_ex"
+        assert state["governance_age_seconds"] >= 359.0
+        assert state["fallback_bridge_status"] == "unavailable"
+        assert state["fallback_bridge_error"] == "health: TimeoutError: timed out"
+
+    @pytest.mark.parametrize(
+        "age,source,expected_connected,expected_status,expected_probed",
+        [
+            (300.0, "unitares_ex", True, "connected", False),
+            (300.04, "unitares_ex", False, "unavailable", True),
+            (-5.0, "unitares_ex", False, "unavailable", True),
+            (10.0, "local", False, "unavailable", True),
+        ],
+    )
+    async def test_next_steps_governance_freshness_boundaries_and_local_source(
+        self, age, source, expected_connected, expected_status, expected_probed
+    ):
+        from anima_mcp.handlers.workflows import handle_next_steps
+
+        class ProbeBridge:
+            _available = False
+            _last_availability_error = "health: TimeoutError"
+
+            def __init__(self):
+                self.probed = False
+
+            async def check_availability(self):
+                self.probed = True
+                return False
+
+        bridge = ProbeBridge()
+        advocate = SimpleNamespace(
+            analyze_current_state=lambda **kwargs: [],
+            get_next_steps_summary=lambda: {
+                "next_action": {},
+                "total_steps": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "all_steps": [],
+            },
+        )
+        anima = SimpleNamespace(warmth=0.6, clarity=0.8, stability=0.8, presence=0.7)
+        readings = SimpleNamespace()
+        display = SimpleNamespace(is_available=lambda: True)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
+        attention_system = SimpleNamespace(
+            attention=lambda **_: {"items": [], "active_count": 0}
+        )
+        now = 1_700_000_000.0
+        ctx = SimpleNamespace(
+            last_governance_decision={"source": source},
+            last_unitares_success_time=now - age,
+        )
+
+        with patch("anima_mcp.handlers.workflows.time.time", return_value=now), \
+             patch("anima_mcp.ctx_ref.get_ctx", return_value=ctx), \
+             patch("anima_mcp.accessors._get_store", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_display", return_value=display), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_server_bridge", return_value=bridge), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=None), \
+             patch("anima_mcp.next_steps_advocate.get_advocate", return_value=advocate), \
+             patch("anima_mcp.self_iteration.get_self_iteration_system", return_value=attention_system), \
+             patch("anima_mcp.eisv_mapper.anima_to_body_eisv_projection", return_value=eisv):
+            data = parse_result(await handle_next_steps({}))
+
+        state = data["current_state"]
+        assert bridge.probed is expected_probed
+        assert state["unitares_connected"] is expected_connected
+        assert state["unitares_status"] == expected_status
+
+    async def test_next_steps_stale_shm_without_bridge_reports_stale_not_unconfigured(self):
+        from anima_mcp.handlers.workflows import handle_next_steps
+        from anima_mcp.next_steps_advocate import NextStepsAdvocate
+
+        now = 1_700_000_000.0
+        stale_ctx = SimpleNamespace(
+            last_governance_decision={"source": "unitares_ex"},
+            last_unitares_success_time=now - 450.0,
+        )
+        advocate = NextStepsAdvocate()
+        anima = SimpleNamespace(warmth=0.6, clarity=0.8, stability=0.8, presence=0.7)
+        readings = SimpleNamespace()
+        display = SimpleNamespace(is_available=lambda: True)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5}, entropy=0.2)
+        attention_system = SimpleNamespace(
+            attention=lambda **_: {"items": [], "active_count": 0}
+        )
+
+        with patch("anima_mcp.handlers.workflows.time.time", return_value=now), \
+             patch("anima_mcp.ctx_ref.get_ctx", return_value=stale_ctx), \
+             patch("anima_mcp.accessors._get_store", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_display", return_value=display), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_server_bridge", return_value=None), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=None), \
+             patch("anima_mcp.accessors._get_growth", return_value=SimpleNamespace(_goals={}, _curiosities=[])), \
+             patch("anima_mcp.next_steps_advocate.get_advocate", return_value=advocate), \
+             patch("anima_mcp.self_iteration.get_self_iteration_system", return_value=attention_system), \
+             patch("anima_mcp.eisv_mapper.anima_to_body_eisv_projection", return_value=eisv):
+            data = parse_result(await handle_next_steps({}))
+
+        state = data["current_state"]
+        assert state["unitares_connected"] is False
+        assert state["unitares_status"] == "stale"
+        assert state["fallback_bridge_status"] == "not_configured"
+        assert data["summary"]["action"] == "Check UNITARES connectivity and broker governance status"
+
+    async def test_next_steps_live_governance_with_bridge_getter_exception(self):
+        from anima_mcp.handlers.workflows import handle_next_steps
+
+        now = 1_700_000_000.0
+        live_ctx = SimpleNamespace(
+            last_governance_decision={"source": "unitares_ex"},
+            last_unitares_success_time=now - 30.0,
+        )
+        advocate = SimpleNamespace(
+            analyze_current_state=lambda **kwargs: [],
+            get_next_steps_summary=lambda: {
+                "next_action": {},
+                "total_steps": 0,
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "all_steps": [],
+            },
+        )
+        anima = SimpleNamespace(warmth=0.6, clarity=0.8, stability=0.8, presence=0.7)
+        readings = SimpleNamespace()
+        display = SimpleNamespace(is_available=lambda: True)
+        eisv = SimpleNamespace(to_dict=lambda: {"E": 0.5})
+        attention_system = SimpleNamespace(
+            attention=lambda **_: {"items": [], "active_count": 0}
+        )
+
+        with patch("anima_mcp.handlers.workflows.time.time", return_value=now), \
+             patch("anima_mcp.ctx_ref.get_ctx", return_value=live_ctx), \
+             patch("anima_mcp.accessors._get_store", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_sensors", return_value=SimpleNamespace()), \
+             patch("anima_mcp.accessors._get_display", return_value=display), \
+             patch("anima_mcp.accessors._get_readings_and_anima", return_value=(readings, anima)), \
+             patch("anima_mcp.accessors._get_server_bridge", side_effect=TimeoutError()), \
+             patch("anima_mcp.accessors._get_last_shm_data", return_value=None), \
+             patch("anima_mcp.next_steps_advocate.get_advocate", return_value=advocate), \
+             patch("anima_mcp.self_iteration.get_self_iteration_system", return_value=attention_system), \
+             patch("anima_mcp.eisv_mapper.anima_to_body_eisv_projection", return_value=eisv):
+            data = parse_result(await handle_next_steps({}))
+
+        state = data["current_state"]
+        assert state["unitares_connected"] is True
+        assert state["unitares_status"] == "connected"
+        assert state["fallback_bridge_status"] == "error: TimeoutError"
+        assert state["fallback_bridge_error"] == "TimeoutError"
+
 
 @pytest.mark.asyncio
 class TestSetCalibrationExtended:

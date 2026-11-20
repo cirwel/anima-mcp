@@ -5,6 +5,7 @@ Handlers: unified_workflow, next_steps, set_calibration, get_lumen_context, lear
 
 import json
 import sys
+import time
 from typing import Any
 
 from mcp.types import TextContent
@@ -141,16 +142,65 @@ async def handle_next_steps(arguments: dict) -> list[TextContent]:
     brain_hat_hardware_available = (
         display_available  # BrainCraft HAT = display hardware (not EEG)
     )
-    # Check UNITARES (use shared server bridge)
+    # Check UNITARES — prefer the live Elixir/SHM governance check-in path
+    # (matching display_ops.py's 300s freshness threshold), and only fall back
+    # to probing the Python server bridge when live governance is absent/stale.
+    from ..unitares_bridge import _sanitize_probe_error
+
     unitares_connected = False
     unitares_status = "not_configured"
+    live_gov_source = None
+    live_gov_age = None
+    live_gov_connected = False
+    bridge = None
+    fallback_bridge_status = "not_checked"
+    fallback_bridge_error = None
+
+    try:
+        from ..ctx_ref import get_ctx
+
+        _c = get_ctx()
+        last_dec = getattr(_c, "last_governance_decision", None) if _c is not None else None
+        if not isinstance(last_dec, dict):
+            last_dec = {}
+        last_ok = getattr(_c, "last_unitares_success_time", None) if _c is not None else None
+        if isinstance(last_ok, (int, float)) and not isinstance(last_ok, bool) and last_ok > 0:
+            raw_live_gov_age = time.time() - float(last_ok)
+            live_gov_age = round(raw_live_gov_age, 1)
+            src = last_dec.get("source")
+            live_gov_source = src if isinstance(src, str) else None
+            live_gov_connected = (0.0 <= raw_live_gov_age <= 300.0) and (
+                live_gov_source != "local"
+            )
+    except Exception as e:
+        print(f"[Diagnostics] Live governance check failed: {_sanitize_probe_error(e)}", file=sys.stderr, flush=True)
+
     try:
         from ..accessors import _get_server_bridge
 
         bridge = _get_server_bridge()
-        if bridge is not None:
+        if live_gov_connected:
+            unitares_connected = True
+            unitares_status = "connected"
+            if bridge is None:
+                fallback_bridge_status = "not_configured"
+            else:
+                cached_available = getattr(bridge, "_available", None)
+                if cached_available is True:
+                    fallback_bridge_status = "connected"
+                elif cached_available is False:
+                    fallback_bridge_status = "unavailable"
+                    raw_err = getattr(bridge, "_last_availability_error", None)
+                    fallback_bridge_error = raw_err if isinstance(raw_err, str) else None
+                else:
+                    fallback_bridge_status = "not_checked"
+        elif bridge is not None:
             unitares_connected = await bridge.check_availability()
             unitares_status = "connected" if unitares_connected else "unavailable"
+            fallback_bridge_status = unitares_status
+            if not unitares_connected:
+                raw_err = getattr(bridge, "_last_availability_error", None)
+                fallback_bridge_error = raw_err if isinstance(raw_err, str) else None
             if unitares_connected:
                 print(
                     "[Diagnostics] UNITARES connected via shared bridge",
@@ -164,11 +214,26 @@ async def handle_next_steps(arguments: dict) -> list[TextContent]:
                     flush=True,
                 )
         else:
-            unitares_status = "not_configured"
-            print("[Diagnostics] UNITARES_URL not set", file=sys.stderr, flush=True)
+            fallback_bridge_status = "not_configured"
+            if live_gov_age is not None:
+                unitares_status = "stale"
+                print("[Diagnostics] Broker UNITARES governance stale and fallback bridge not configured", file=sys.stderr, flush=True)
+            else:
+                unitares_status = "not_configured"
+                print("[Diagnostics] UNITARES_URL not set", file=sys.stderr, flush=True)
     except Exception as e:
-        unitares_status = f"error: {str(e)}"
-        print(f"[Diagnostics] UNITARES check failed: {e}", file=sys.stderr, flush=True)
+        safe_err = _sanitize_probe_error(e)
+        if live_gov_connected:
+            unitares_connected = True
+            unitares_status = "connected"
+            fallback_bridge_status = f"error: {safe_err}"
+            fallback_bridge_error = safe_err
+            print(f"[Diagnostics] Fallback bridge check failed: {safe_err}", file=sys.stderr, flush=True)
+        else:
+            unitares_status = f"error: {safe_err}"
+            fallback_bridge_status = unitares_status
+            fallback_bridge_error = safe_err
+            print(f"[Diagnostics] UNITARES check failed: {safe_err}", file=sys.stderr, flush=True)
 
     # Get advocate recommendations (with actual drives from SHM)
     from ..accessors import _get_last_shm_data
@@ -256,6 +321,7 @@ async def handle_next_steps(arguments: dict) -> list[TextContent]:
         display_available=display_available,
         brain_hat_available=brain_hat_hardware_available,
         unitares_connected=unitares_connected,
+        unitares_status=unitares_status,
         drives=_il.get("drives"),
         strongest_drive=_il.get("strongest_drive"),
         wants=_il.get("wants"),
@@ -304,6 +370,10 @@ async def handle_next_steps(arguments: dict) -> list[TextContent]:
             "brain_hat_hardware_available": brain_hat_hardware_available,
             "unitares_connected": unitares_connected,
             "unitares_status": unitares_status,
+            "governance_source": live_gov_source,
+            "governance_age_seconds": live_gov_age,
+            "fallback_bridge_status": fallback_bridge_status,
+            "fallback_bridge_error": fallback_bridge_error,
             "body_anima": {
                 "warmth": anima.warmth,
                 "clarity": anima.clarity,

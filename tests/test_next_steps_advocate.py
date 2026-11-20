@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from conftest import make_anima, make_readings
 
 from anima_mcp.next_steps_advocate import (
@@ -149,6 +151,27 @@ class TestUnitaresBranch:
         steps = adv.analyze_current_state(unitares_connected=True)
         integration = [s for s in steps if s.category == StepCategory.INTEGRATION]
         assert len(integration) == 0
+
+    def test_unitares_unavailable_reports_connectivity_guidance(self):
+        adv = NextStepsAdvocate()
+        steps = adv.analyze_current_state(
+            unitares_connected=False, unitares_status="unavailable"
+        )
+        integration = [s for s in steps if s.category == StepCategory.INTEGRATION]
+        assert len(integration) == 1
+        assert integration[0].action == "Check UNITARES connectivity and broker governance status"
+        assert "unavailable" in integration[0].reason
+
+    @pytest.mark.parametrize("status", [None, "not_configured"])
+    def test_unitares_not_configured_keeps_url_config_guidance(self, status):
+        adv = NextStepsAdvocate()
+        steps = adv.analyze_current_state(
+            unitares_connected=False, unitares_status=status
+        )
+        integration = [s for s in steps if s.category == StepCategory.INTEGRATION]
+        assert len(integration) == 1
+        assert integration[0].action == "Check UNITARES_URL configuration"
+        assert integration[0].reason == "Self-monitoring requires governance"
 
 
 # ---------------------------------------------------------------------------
