@@ -24,6 +24,7 @@ FILES=(
     anima_config.json
     trajectory_genesis.json
     day_summaries.json
+    sensor_residuals.json
 )
 
 COUNT=0
