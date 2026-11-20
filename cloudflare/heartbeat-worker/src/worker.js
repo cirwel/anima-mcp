@@ -33,6 +33,11 @@ const NOTIFY_TIMEOUT_MS = 5_000;
 const MIN_TOKEN_LENGTH = 16;
 const MAX_OUTBOX = 50;
 const DELAY_NOTE_MS = 2 * MINUTE;
+// Posts per step, so a ping never waits behind a long drain.
+const FLUSH_BUDGET = 5;
+// Discord rejects content over 2000 characters, and a notice that can never be
+// accepted would block every notice behind it.
+const MAX_CONTENT = 1900;
 
 export function readConfig(env) {
   return {
@@ -118,8 +123,9 @@ function reminderMessage(cfg, current, state, now) {
 function enqueue(state, at, message) {
   state.outbox.push({ at, text: message });
   if (state.outbox.length > MAX_OUTBOX) {
-    state.outbox.shift();
+    const gone = state.outbox.shift();
     state.dropped = (state.dropped || 0) + 1;
+    state.droppedSince ||= gone.at;
   }
 }
 
@@ -154,28 +160,36 @@ export function observe(state, now, cfg) {
   return current;
 }
 
-// Deliver the outbox oldest first, stopping at the first rejection. Delivery is
+// Deliver the outbox oldest first, stopping at the first rejection or when the
+// step's budget is spent. Returns "done", "failed" or "more". Delivery is
 // at-least-once: a crash after a post and before the state is stored repeats it.
-export async function flush(state, now, notify) {
+export async function flush(state, clock, notify) {
+  let posts = 0;
   while (state.outbox.length > 0) {
+    if (posts >= FLUSH_BUDGET) return "more";
+    const now = clock();
     const item = state.outbox[0];
     let message = item.text;
     if (now - item.at >= DELAY_NOTE_MS) {
       message += ` (Delayed notice: this happened at ${utc(item.at)}.)`;
     }
     if (state.dropped) {
-      message += ` (${state.dropped} earlier notices were dropped undelivered.)`;
+      message +=
+        ` (${state.dropped} earlier notices, from ${utc(state.droppedSince)} on, were dropped ` +
+        `undelivered: the state changed repeatedly while this webhook was unreachable.)`;
     }
-    if (!(await notify(message))) return false;
+    posts += 1;
+    if (!(await notify(message))) return "failed";
     state.outbox.shift();
     state.dropped = 0;
+    state.droppedSince = null;
     state.notifiedAt = now;
   }
-  return true;
+  return "done";
 }
 
 // When the alarm should next fire, or null.
-export function nextWakeup(state, now, cfg, current, delivered) {
+export function nextWakeup(state, now, cfg, current, outcome) {
   const wakeups = [];
   if (current === "up" || current === "fail") wakeups.push(state.lastContactAt + cfg.graceMs);
   if (isDown(current) && cfg.remindMs > 0) {
@@ -184,7 +198,8 @@ export function nextWakeup(state, now, cfg, current, delivered) {
   // A deadline already due has been handled or is waiting on delivery. Waiting
   // on it again would spin; the retry interval replaces it.
   const future = wakeups.filter((t) => t > now);
-  if (!delivered) future.push(now + RETRY_MS);
+  if (outcome === "failed") future.push(now + RETRY_MS);
+  if (outcome === "more") future.push(now + 1000);
   if (future.length > 0) return Math.min(...future);
   return wakeups.length > 0 ? now + 1000 : null;
 }
@@ -211,7 +226,10 @@ export function webhookTarget(raw) {
 
 async function postWebhook(cfg, content) {
   if (!cfg.webhook) return false;
-  const body = JSON.stringify({ content: cfg.mention ? `${cfg.mention} ${content}` : content });
+  const full = cfg.mention ? `${cfg.mention} ${content}` : content;
+  const body = JSON.stringify({
+    content: full.length > MAX_CONTENT ? `${full.slice(0, MAX_CONTENT - 1)}…` : full,
+  });
   try {
     const res = await fetch(webhookTarget(cfg.webhook), {
       method: "POST",
@@ -265,11 +283,20 @@ export class HeartbeatSwitch {
     }
     const now = Date.now();
     const current = observe(state, now, cfg);
-    const delivered = await flush(state, now, (m) => postWebhook(cfg, m));
-    const next = nextWakeup(state, now, cfg, current, delivered);
-    // Alarm and state together, with no await between them, so the platform
-    // commits both or neither. State stored without its alarm would be a
-    // switch that cannot fire.
+    let outcome = "done";
+    if (state.outbox.length > 0) {
+      // Store the notices, with a retry alarm, before posting any of them. If
+      // the object restarts mid-post the notice is still owed, not forgotten.
+      await this.commit(state, nextWakeup(state, now, cfg, current, "failed"));
+      outcome = await flush(state, Date.now, (m) => postWebhook(cfg, m));
+    }
+    await this.commit(state, nextWakeup(state, Date.now(), cfg, current, outcome));
+  }
+
+  // Alarm and state together, with no await between them, so the platform
+  // commits both or neither. State stored without its alarm would be a switch
+  // that cannot fire.
+  async commit(state, next) {
     const alarm = next === null ? this.storage.deleteAlarm() : this.storage.setAlarm(next);
     await Promise.all([alarm, this.storage.put("state", state)]);
   }

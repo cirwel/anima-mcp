@@ -70,6 +70,7 @@ function harness(vars = {}) {
       (await worker.fetch(new Request(`https://hb.invalid/${TOKEN}/status`), env)).json(),
     alarmAt: () => alarmAt,
     object,
+    stored: () => structuredClone(store.get("state")),
     // Move the clock without firing the alarm, as when the platform runs an
     // alarm late.
     skip: (ms) => void (now += ms),
@@ -342,7 +343,54 @@ test("the outbox is bounded and says what it dropped", async () => {
   webhookUp = true;
   await h.advance(6 * MIN);
   assert.equal((await h.status()).undelivered_notices, 0);
-  assert.equal(sent.filter((m) => m.includes("30 earlier notices were dropped undelivered")).length, 1);
+  // The first outage began at 12:01; its DOWN was dropped, and the notice says so.
+  const note = sent.filter((m) => m.includes("earlier notices"));
+  assert.equal(note.length, 1);
+  assert.match(note[0], /\(30 earlier notices, from 2026-01-01T12:01:00Z on, were dropped undelivered/);
+});
+
+test("a long drain is spread over steps so pings are not held up", async () => {
+  const h = harness({ REMIND_HOURS: "0" });
+  await h.ping();
+  webhookUp = false;
+  for (let i = 0; i < 6; i++) {
+    await h.advance(MIN);
+    await h.fail();
+    await h.advance(MIN);
+    await h.ping();
+  }
+  webhookUp = true;
+  const before = requests.length;
+  await h.advance(MIN);
+  await h.ping(); // one step: at most five posts
+  assert.equal(requests.length - before, 5);
+  assert.equal((await h.status()).undelivered_notices, 7);
+  await h.advance(10_000); // the alarm finishes the drain within seconds
+  assert.equal((await h.status()).undelivered_notices, 0);
+});
+
+test("a notice is stored before it is posted", async () => {
+  const h = harness();
+  await h.ping();
+  await h.advance(5 * MIN);
+  let release;
+  gate = new Promise((r) => (release = r));
+  const failing = h.fail();
+  await settle(); // DOWN post in flight; a restart here must not lose it
+  const mid = h.stored();
+  assert.equal(mid.observed, "fail");
+  assert.equal(mid.outbox.length, 1);
+  assert.equal(h.alarmAt(), T0 + 5 * MIN + 5 * MIN); // retry alarm already set
+  gate = null;
+  release();
+  await failing;
+  assert.equal(h.stored().outbox.length, 0);
+});
+
+test("an over-long notice is truncated, not left to block the queue", async () => {
+  const h = harness({ SWITCH_NAME: "x".repeat(3000) });
+  await h.ping();
+  assert.equal(JSON.parse(requests[0].init.body).content.length, 1900);
 });
 
 test("a ping that arrives during a slow alarm post is not overwritten", async () => {
