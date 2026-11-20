@@ -704,7 +704,7 @@ def run_http_server(host: str, port: int):
             # Local and Tailscale clients (Cursor, Claude Code) skip auth.
             # Shared with the REST gate so one hostname list governs both
             # surfaces; they drifted apart once already.
-            from .rest_api import _EXTERNAL_HOSTS
+            from .rest_api import _host_is_external
             _auth_protected = _AuthMW(
                 _AuthCtx(
                     RequireAuthMiddleware(
@@ -720,8 +720,13 @@ def run_http_server(host: str, port: int):
                 """Route to auth or no-auth based on Host header."""
                 if scope.get("type") == "http":
                     headers = dict(scope.get("headers", []))
-                    host = headers.get(b"host", b"").decode().split(":")[0]
-                    if host in _EXTERNAL_HOSTS:
+                    # An undecodable Host is not a LAN address we recognise:
+                    # send it to the gate, not the open app.
+                    try:
+                        external = _host_is_external(headers.get(b"host", b"").decode("ascii"))
+                    except UnicodeDecodeError:
+                        external = True
+                    if external:
                         await _auth_protected(scope, receive, send)
                         return
                 await streamable_mcp_asgi(scope, receive, send)
