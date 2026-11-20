@@ -925,6 +925,27 @@ class TestContemplativeRotation:
             assert q != coldest_but_answered
             assert q in pool[1:]
 
+    def test_run_quiet_world_contemplation_gates_growth_on_posted(self, mm):
+        """Contemplative prompts only seed growth curiosities when posted to the board."""
+        from unittest.mock import MagicMock, patch
+        from anima_mcp.display_loop import run_quiet_world_contemplation
+
+        mm._contemplative_curiosity_rate = 1.0
+        growth = MagicMock()
+        with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \
+             patch("anima_mcp.messages.get_answered_question_texts", return_value=set()), \
+             patch("anima_mcp.messages.add_question", return_value=None), \
+             patch("anima_mcp.accessors._get_growth", return_value=growth):
+            run_quiet_world_contemplation(mm)
+        growth.add_curiosity.assert_not_called()
+
+        with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \
+             patch("anima_mcp.messages.get_answered_question_texts", return_value=set()), \
+             patch("anima_mcp.messages.add_question", return_value=object()) as add_q, \
+             patch("anima_mcp.accessors._get_growth", return_value=growth):
+            run_quiet_world_contemplation(mm)
+        growth.add_curiosity.assert_called_once_with(add_q.call_args.args[0])
+
 
 class TestClarityQuestionCoverage:
     """Lumen has to be able to name what surprised it.
