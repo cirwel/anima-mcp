@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import worker, { HeartbeatSwitch, condition } from "../src/worker.js";
+import worker, { HeartbeatSwitch, condition, webhookTarget } from "../src/worker.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -14,6 +14,8 @@ let sent;
 let webhookUp;
 let realFetch;
 let realNow;
+let requests;
+let gate;
 
 beforeEach(() => {
   now = T0;
@@ -22,7 +24,11 @@ beforeEach(() => {
   realNow = Date.now;
   realFetch = globalThis.fetch;
   Date.now = () => now;
-  globalThis.fetch = async (_url, init) => {
+  requests = [];
+  gate = null;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (gate) await gate;
     if (!webhookUp) return new Response("rate limited", { status: 429 });
     sent.push(JSON.parse(init.body).content);
     return new Response(null, { status: 204 });
@@ -58,6 +64,10 @@ function harness(vars = {}) {
     status: async () =>
       (await worker.fetch(new Request(`https://hb.invalid/${TOKEN}/status`), env)).json(),
     alarmAt: () => alarmAt,
+    object,
+    // Move the clock without firing the alarm, as when the platform runs an
+    // alarm late.
+    skip: (ms) => void (now += ms),
     // Advance the clock, firing the alarm each time it comes due, as the
     // platform would.
     async advance(ms) {
@@ -223,6 +233,102 @@ test("condition: silence outranks a reported failure", () => {
   assert.equal(condition({}, T0, g), "new");
   assert.equal(condition({ lastContactAt: T0, lastOkAt: T0 }, T0 + g - 1, g), "up");
   assert.equal(condition({ lastContactAt: T0, lastOkAt: T0 }, T0 + g, g), "late");
-  assert.equal(condition({ lastContactAt: T0, lastFailAt: T0, lastOkAt: T0 - 1 }, T0 + 1, g), "fail");
-  assert.equal(condition({ lastContactAt: T0, lastFailAt: T0, lastOkAt: T0 - 1 }, T0 + g, g), "late");
+  assert.equal(condition({ lastContactAt: T0, lastKind: "fail" }, T0 + 1, g), "fail");
+  assert.equal(condition({ lastContactAt: T0, lastKind: "fail" }, T0 + g, g), "late");
+});
+
+test("a /fail in the same millisecond as a healthy ping still alerts", async () => {
+  const h = harness();
+  await h.ping();
+  await h.fail();
+  assert.match(sent.at(-1), /^DOWN: Lumen reports it is not healthy/);
+});
+
+test("a ping that beats a late alarm does not erase the breach", async () => {
+  const h = harness();
+  await h.ping();
+  h.skip(20 * MIN + 10_000); // the alarm is overdue and has not run
+  await h.ping();
+  assert.match(sent.at(-2), /^DOWN: Lumen is silent\. No heartbeat for 20 min/);
+  assert.match(sent.at(-1), /^RECOVERED: Lumen is healthy again after 20 min down\./);
+});
+
+test("an outage whose alert never got out is reported after recovery", async () => {
+  const h = harness();
+  await h.ping();
+  await h.advance(5 * MIN);
+  webhookUp = false;
+  await h.fail();
+  assert.deepEqual((await h.status()).unreported_outage, { kind: "fail", since: "2026-01-01T12:05:00Z" });
+  await h.advance(5 * MIN);
+  await h.ping(); // recovered, webhook still down
+  assert.equal(sent.length, 1);
+  webhookUp = true;
+  await h.advance(6 * MIN);
+  assert.match(
+    sent.at(-1),
+    /^MISSED: Lumen was reporting failure for 5 min from 2026-01-01T12:05:00Z\. The alert could not be delivered/,
+  );
+  assert.equal((await h.status()).unreported_outage, null);
+  await h.advance(60 * MIN);
+  assert.equal(sent.filter((m) => m.startsWith("MISSED")).length, 1);
+});
+
+test("a ping that arrives during a slow alarm post is not overwritten", async () => {
+  const h = harness({ REMIND_HOURS: "0" });
+  await h.ping();
+  now = T0 + 20 * MIN;
+  let release;
+  gate = new Promise((r) => (release = r));
+  const alarm = h.object.alarm(); // DOWN post is now in flight
+  await new Promise((r) => setImmediate(r));
+  now += 1000;
+  const ping = h.ping(); // must queue behind the alarm, not interleave
+  await new Promise((r) => setImmediate(r));
+  gate = null;
+  release();
+  await Promise.all([alarm, ping]);
+  const s = await h.status();
+  assert.equal(s.condition, "up");
+  assert.equal(s.announced, "up");
+  assert.equal(s.last_ok, "2026-01-01T12:20:01Z");
+  assert.equal(h.alarmAt(), T0 + 20 * MIN + 1000 + 20 * MIN);
+  assert.match(sent.at(-1), /^RECOVERED/);
+});
+
+test("a rejected reminder retries every five minutes, not every second", async () => {
+  const h = harness();
+  await h.ping();
+  await h.advance(21 * MIN); // DOWN sent
+  webhookUp = false;
+  const before = requests.length;
+  await h.advance(24 * HOUR + HOUR);
+  const attempts = requests.length - before;
+  assert.ok(attempts >= 10 && attempts <= 14, `attempts=${attempts}`);
+});
+
+test("a dead webhook costs a ping at most one post", async () => {
+  const h = harness();
+  await h.ping();
+  h.skip(30 * MIN);
+  webhookUp = false;
+  const before = requests.length;
+  await h.ping();
+  assert.equal(requests.length - before, 1);
+});
+
+test("Discord webhooks are asked to confirm storage; redirects are not followed", async () => {
+  assert.equal(
+    webhookTarget("https://discord.com/api/webhooks/1/abc"),
+    "https://discord.com/api/webhooks/1/abc?wait=true",
+  );
+  assert.equal(
+    webhookTarget("https://discord.com/api/webhooks/1/abc?wait=false"),
+    "https://discord.com/api/webhooks/1/abc?wait=false",
+  );
+  assert.equal(webhookTarget("https://hooks.example.org/x"), "https://hooks.example.org/x");
+  assert.equal(webhookTarget("https://notdiscord.com/x"), "https://notdiscord.com/x");
+  const h = harness();
+  await h.ping();
+  assert.equal(requests[0].init.redirect, "manual");
 });

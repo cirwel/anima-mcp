@@ -10,19 +10,26 @@
 //   GET /<PING_TOKEN>/status   JSON view of the switch, for verification
 //
 // The state lives in one Durable Object. Its alarm is the dead-man timer: each
-// ping moves the alarm to "last contact + grace", so the alarm only ever fires
-// when the pings have stopped. No cron, and no storage ids to configure.
+// ping moves the silence deadline to "last contact + grace". The same alarm
+// also carries reminders and delivery retries. No cron, and no storage ids to
+// configure.
+//
+// The token is in the URL path because that is the protocol the Pi script
+// speaks. Do not turn on Workers invocation logs for this Worker: they record
+// request URLs.
 //
 // Failure direction: a notification that cannot be delivered is never recorded
 // as delivered. The announced status stays behind the real condition and the
-// alarm retries until the webhook accepts the post.
+// alarm retries until the webhook accepts the post. An outage whose alert never
+// got out before the recovery is still reported, afterwards, as MISSED.
 //
 // This file has no imports so the same code runs under `node --test`.
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const RETRY_MS = 5 * MINUTE;
-const NOTIFY_TIMEOUT_MS = 10_000;
+// Well under the Pi's `curl -m 10`: a ping can wait behind one webhook post.
+const NOTIFY_TIMEOUT_MS = 5_000;
 const MIN_TOKEN_LENGTH = 16;
 
 export function readConfig(env) {
@@ -59,8 +66,7 @@ function nonNegative(value, fallback) {
 export function condition(state, now, graceMs) {
   if (!state.lastContactAt) return "new";
   if (now - state.lastContactAt >= graceMs) return "late";
-  if ((state.lastFailAt || 0) > (state.lastOkAt || 0)) return "fail";
-  return "up";
+  return state.lastKind === "fail" ? "fail" : "up";
 }
 
 function duration(ms) {
@@ -99,6 +105,15 @@ export function transitionMessage(cfg, from, to, state, now) {
   );
 }
 
+function missedMessage(cfg, state) {
+  const { kind, since } = state.unreported;
+  const what = kind === "late" ? "silent" : "reporting failure";
+  return (
+    `MISSED: ${cfg.name} was ${what} for ${duration((state.lastOkAt || since) - since)} ` +
+    `from ${utc(since)}. The alert could not be delivered at the time. It is healthy now.`
+  );
+}
+
 function reminderMessage(cfg, current, state, now) {
   const what = current === "late" ? "silent" : "reporting failure";
   return `STILL DOWN: ${cfg.name} has been ${what} for ${duration(now - (state.since || now))}.`;
@@ -119,11 +134,21 @@ export async function reconcile(state, now, cfg, notify) {
       else if (!state.since || state.status === "up" || !state.status) {
         state.since = current === "late" ? state.lastContactAt : now;
       }
+      if (current !== "up") state.unreported = null;
       state.status = current;
       state.notifiedAt = now;
     } else {
       pending = true;
+      // Remember the outage itself, not just that a post failed: if Lumen
+      // recovers before the retry lands, condition and announced status are
+      // both "up" again and there would be nothing left to send.
+      if (current !== "up" && state.status !== "late" && state.status !== "fail" && !state.unreported) {
+        state.unreported = { kind: current, since: current === "late" ? state.lastContactAt : now };
+      }
     }
+  } else if (current === "up" && state.unreported) {
+    if (await notify(missedMessage(cfg, state))) state.unreported = null;
+    else pending = true;
   } else if (
     (current === "late" || current === "fail") &&
     cfg.remindMs > 0 &&
@@ -136,30 +161,48 @@ export async function reconcile(state, now, cfg, notify) {
   state.pendingNotify = pending;
 
   const wakeups = [];
-  if (pending) wakeups.push(now + RETRY_MS);
   if (current === "up" || current === "fail") wakeups.push(state.lastContactAt + cfg.graceMs);
   if ((state.status === "late" || state.status === "fail") && cfg.remindMs > 0) {
     wakeups.push((state.notifiedAt || now) + cfg.remindMs);
   }
-  if (wakeups.length === 0) return null;
-  // Never schedule in the past: an overdue wakeup means "run again soon".
-  return Math.max(Math.min(...wakeups), now + 1000);
+  // A deadline that is already due is what the failed post was for. Waiting on
+  // it again would retry immediately, forever; the retry interval replaces it.
+  const future = wakeups.filter((t) => t > now);
+  if (pending) future.push(now + RETRY_MS);
+  if (future.length > 0) return Math.min(...future);
+  return wakeups.length > 0 ? now + 1000 : null;
 }
 
 export function recordPing(state, kind, now) {
   state.lastContactAt = now;
+  state.lastKind = kind;
   if (kind === "fail") state.lastFailAt = now;
   else state.lastOkAt = now;
+}
+
+// Discord answers 204 before it has stored the message unless asked to wait.
+export function webhookTarget(raw) {
+  try {
+    const url = new URL(raw);
+    const discord = /(^|\.)discord(app)?\.com$/.test(url.hostname);
+    if (discord && !url.searchParams.has("wait")) url.searchParams.set("wait", "true");
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 async function postWebhook(cfg, content) {
   if (!cfg.webhook) return false;
   const body = JSON.stringify({ content: cfg.mention ? `${cfg.mention} ${content}` : content });
   try {
-    const res = await fetch(cfg.webhook, {
+    const res = await fetch(webhookTarget(cfg.webhook), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
+      // A redirect (a login page, say) must not end in a 200 that reads as
+      // delivered.
+      redirect: "manual",
       signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
     });
     return res.ok;
@@ -172,14 +215,38 @@ export class HeartbeatSwitch {
   constructor(ctx, env) {
     this.storage = ctx.storage;
     this.env = env;
+    this.queue = Promise.resolve();
   }
 
-  async run(kind) {
+  // One step at a time. A webhook post is a network wait, and the platform
+  // delivers other events during it; without this a slow alarm could write its
+  // older snapshot over a ping that had already been answered 200.
+  run(kind) {
+    const job = this.queue.then(() => this.step(kind));
+    this.queue = job.catch(() => {});
+    return job;
+  }
+
+  async step(kind) {
     const cfg = readConfig(this.env);
     const now = Date.now();
     const state = (await this.storage.get("state")) || {};
-    if (kind) recordPing(state, kind, now);
-    const next = await reconcile(state, now, cfg, (m) => postWebhook(cfg, m));
+    // At most one failed post per step, so a dead webhook costs one timeout.
+    let webhookDown = false;
+    const notify = async (message) => {
+      if (webhookDown) return false;
+      const ok = await postWebhook(cfg, message);
+      webhookDown = !ok;
+      return ok;
+    };
+    if (kind) {
+      // Judge the silence that ends with this ping before the ping erases it.
+      // Alarms can run late; a ping arriving just past the deadline would
+      // otherwise reset the clock and the breach would never be reported.
+      if (state.lastContactAt) await reconcile(state, now, cfg, notify);
+      recordPing(state, kind, now);
+    }
+    const next = await reconcile(state, now, cfg, notify);
     await this.storage.put("state", state);
     if (next === null) await this.storage.deleteAlarm();
     else await this.storage.setAlarm(next);
@@ -205,6 +272,9 @@ export class HeartbeatSwitch {
         condition: condition(state, now, cfg.graceMs),
         announced: state.status || null,
         pending_notification: Boolean(state.pendingNotify),
+        unreported_outage: state.unreported
+          ? { kind: state.unreported.kind, since: utc(state.unreported.since) }
+          : null,
         last_ok: utc(state.lastOkAt),
         last_fail: utc(state.lastFailAt),
         last_contact: utc(state.lastContactAt),

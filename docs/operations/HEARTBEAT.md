@@ -126,7 +126,8 @@ except the URL. It still runs off both machines, which is the property the
 switch depends on; what it removes is the extra vendor.
 
 One Durable Object holds the state, and its alarm is the timer: every ping moves
-the alarm to *last contact + grace*, so it fires only when the pings stop.
+the silence deadline to *last contact + grace*. The same alarm carries the daily
+reminder and delivery retries.
 
 | event | webhook post |
 |---|---|
@@ -135,9 +136,11 @@ the alarm to *last contact + grace*, so it fires only when the pings stop.
 | a `/fail` ping | `DOWN: ... reports it is not healthy` |
 | healthy ping after either | `RECOVERED` |
 | still down after `REMIND_HOURS` (default 24, `0` disables) | `STILL DOWN` |
+| recovered before the `DOWN` post could be delivered | `MISSED` |
 
 A post the webhook does not accept is not recorded as sent. The receiver retries
-every 5 minutes until it lands. With either secret missing it answers 503, so
+every 5 minutes until it lands, and an outage that ends before its alert got
+out is reported afterwards as `MISSED`. With either secret missing it answers 503, so
 the Pi logs `provider unreachable` and does not ping into a receiver that cannot
 alert.
 
@@ -155,7 +158,13 @@ The webhook receives `{"content": "<message>"}`, which is Discord's format. Set
 on every message.
 
 The Pi's URL is then `https://heartbeat.example.org/<PING_TOKEN>`. Treat it like
-any provider ping URL: it is the secret.
+any provider ping URL: it is the secret. Two consequences:
+
+- Leave Workers invocation logs off for this Worker (they are off unless
+  `[observability]` is added to `wrangler.toml`). They record request URLs.
+- If `anima.env` sets `ANIMA_HEARTBEAT_FAIL_URL`, remove it or point it at
+  `<url>/fail` on the receiver. A leftover override sends failures to the old
+  provider, and the receiver never hears them.
 
 Verify with `curl https://heartbeat.example.org/<PING_TOKEN>/status`, which
 shows the last contact, the announced state and the next alarm. The `ARMED`
