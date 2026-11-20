@@ -720,8 +720,13 @@ def run_http_server(host: str, port: int):
                 """Route to auth or no-auth based on Host header."""
                 if scope.get("type") == "http":
                     headers = dict(scope.get("headers", []))
-                    host = headers.get(b"host", b"").decode("latin-1")
-                    if _host_is_external(host):
+                    # An undecodable Host is not a LAN address we recognise:
+                    # send it to the gate, not the open app.
+                    try:
+                        external = _host_is_external(headers.get(b"host", b"").decode("ascii"))
+                    except UnicodeDecodeError:
+                        external = True
+                    if external:
                         await _auth_protected(scope, receive, send)
                         return
                 await streamable_mcp_asgi(scope, receive, send)

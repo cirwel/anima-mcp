@@ -208,14 +208,14 @@ _ANIMA_TOKEN_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
 def _normalize_host(raw_host: str) -> str:
-    """Hostname from a Host header value, port and case stripped.
+    """Hostname from a Host header value; port, case and root dot stripped.
 
     Hostnames are case-insensitive, and ``_EXTERNAL_HOSTS`` is stored
     lowercased, so every gate that asks "is this the public hostname?" has to
     fold case the same way. The MCP mount once compared the raw header and so
     let ``LUMEN.cirwel.org`` past the OAuth gate that ``lumen.cirwel.org`` hits.
     """
-    return (raw_host or "").split(":")[0].strip().lower()
+    return (raw_host or "").split(":")[0].strip().lower().rstrip(".")
 
 
 def _host_is_external(raw_host: str) -> bool:

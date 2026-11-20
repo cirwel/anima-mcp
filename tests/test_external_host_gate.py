@@ -25,6 +25,8 @@ def external_hosts(monkeypatch):
         "Lumen.Cirwel.Org",
         "LUMEN.CIRWEL.ORG:443",
         " lumen.cirwel.org ",
+        "lumen.cirwel.org.",
+        "LUMEN.cirwel.org.:443",
     ],
 )
 def test_public_hostname_is_external_in_any_case(external_hosts, raw_host):
@@ -48,5 +50,7 @@ def test_mcp_mount_routes_through_the_shared_check():
     """The MCP endpoint is a closure, so pin its wiring at the source level:
     it must call the shared check, never compare a raw Host to the set."""
     src = inspect.getsource(server)
-    assert "_host_is_external(host)" in src
+    assert "_host_is_external(" in src
+    # A Host that will not decode goes to the gate, not the open app.
+    assert "except UnicodeDecodeError:\n                        external = True" in src
     assert "host in _EXTERNAL_HOSTS" not in src
