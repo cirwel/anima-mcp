@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -314,9 +315,24 @@ def test_extracted_pipeline_and_reflection_modules_are_protected_surfaces(system
         "src/anima_mcp/self_iteration_ledger.py",
         "src/anima_mcp/self_iteration_attention.py",
         "src/anima_mcp/self_iteration_pipeline.py",
+        "src/anima_mcp/self_iteration_stage_helpers.py",
+        "src/anima_mcp/self_iteration_execution_stage.py",
+        "src/anima_mcp/self_iteration_application_stage.py",
+        "src/anima_mcp/self_iteration_canary_stage.py",
         "src/anima_mcp/self_reflection_analyzers.py",
     ):
         classified = system.classify_target(rel_path)
         assert classified["boundary"] == "protected_core"
         assert classified["auto_implementation_eligible"] is False
+
+
+def test_every_self_iteration_module_on_disk_is_protected_core(system):
+    package_dir = Path(__file__).resolve().parents[1] / "src" / "anima_mcp"
+    module_paths = sorted(package_dir.glob("self_iteration*.py"))
+    assert module_paths
+    for path in module_paths:
+        rel_path = f"src/anima_mcp/{path.name}"
+        classified = system.classify_target(rel_path)
+        assert classified["boundary"] == "protected_core", rel_path
+        assert classified["auto_implementation_eligible"] is False, rel_path
 

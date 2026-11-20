@@ -201,15 +201,28 @@ _PROTECTED_RULES: tuple[tuple[str, str], ...] = (
         "src/anima_mcp/self_iteration_application.py",
         "reviewed Git application boundary",
     ),
+    (
+        "src/anima_mcp/self_iteration_application_stage.py",
+        "reviewed Git application boundary",
+    ),
     ("src/anima_mcp/self_iteration_attention.py", "self-iteration evaluator"),
     (
         "src/anima_mcp/self_iteration_canary.py",
         "transient canary supervisor boundary",
     ),
+    (
+        "src/anima_mcp/self_iteration_canary_stage.py",
+        "transient canary supervisor boundary",
+    ),
     ("src/anima_mcp/self_iteration_execution.py", "isolated execution boundary"),
+    (
+        "src/anima_mcp/self_iteration_execution_stage.py",
+        "isolated execution boundary",
+    ),
     ("src/anima_mcp/self_iteration_ledger.py", "self-iteration evaluator"),
     ("src/anima_mcp/self_iteration_pipeline.py", "self-iteration evaluator"),
     ("src/anima_mcp/self_iteration_sandbox.py", "self-iteration evaluator"),
+    ("src/anima_mcp/self_iteration_stage_helpers.py", "self-iteration evaluator"),
     ("src/anima_mcp/self_iteration_verification.py", "self-iteration evaluator"),
     ("src/anima_mcp/handlers/self_iteration.py", "self-iteration evaluator"),
     ("src/anima_mcp/anima.py", "embodied self-measurement boundary"),
