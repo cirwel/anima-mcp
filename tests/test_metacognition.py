@@ -7,8 +7,7 @@ Covers:
   - Observation and surprise calculation
   - should_reflect gating (surprise, cooldown, sustained, multi-source)
   - reflect() assembly
-  - Curiosity question generation and domain weighting
-  - Curiosity effectiveness tracking (_evaluate_curiosity_outcomes)
+  - Curiosity question generation
   - Surprise trend and prediction accuracy
   - Baseline persistence (save/load)
 """
@@ -20,6 +19,7 @@ from datetime import datetime
 
 from anima_mcp.metacognition import (
     MetacognitiveMonitor, Prediction, PredictionError, Reflection,
+    SURPRISE_CHANNELS,
 )
 from anima_mcp.sensors.base import SensorReadings
 from anima_mcp.anima import Anima
@@ -447,7 +447,7 @@ class TestReflect:
 # ==================== Curiosity ====================
 
 class TestCuriosity:
-    """Test curiosity question generation and domain weighting."""
+    """Test curiosity question generation."""
 
     def test_no_curiosity_low_surprise(self, mm):
         """Low surprise produces no curiosity question."""
@@ -510,69 +510,237 @@ class TestCuriosity:
         q = mm.generate_curiosity_question(error)
         assert q is not None
 
-    def test_record_curiosity(self, mm):
-        """record_curiosity stores domain error snapshot in log."""
+    def test_get_domain_error_honest_none_and_measured_zero(self, mm):
+        """Unmeasured channels return None even when error_* defaults to 0.0;
+        measured exact matches return 0.0."""
+        from anima_mcp.metacognition import _DOMAIN_ERROR_SPECS
+
+        blank_error = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now()),
+        )
+        for ch in SURPRISE_CHANNELS:
+            assert mm._get_domain_error(ch, blank_error) is None
+        assert mm._get_domain_error("cpu_temp", blank_error) is None
+
+        # Non-positive light values cannot compute log10 error in observe().
+        for actual_lux, pred_lux in [(10.0, 0.0), (0.0, 10.0), (-1.0, 10.0)]:
+            bad_lux_error = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), light_lux=pred_lux),
+                actual_light_lux=actual_lux,
+                error_light=0.5,
+            )
+            assert mm._get_domain_error("light", bad_lux_error) is None
+
+        # Verify every channel in SURPRISE_CHANNELS handles measured non-zero,
+        # measured zero (0.0), missing actual, and missing prediction.
+        for ch, (err_attr, actual_attr, pred_attr, _) in _DOMAIN_ERROR_SPECS.items():
+            sample = 100.0 if ch in ("light", "pressure") else 22.0
+            measured = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{actual_attr: sample, err_attr: 0.37},
+            )
+            assert mm._get_domain_error(ch, measured) == pytest.approx(0.37)
+
+            exact = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{actual_attr: sample, err_attr: 0.0},
+            )
+            assert mm._get_domain_error(ch, exact) == 0.0
+
+            missing_pred = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now()),
+                **{actual_attr: sample, err_attr: 0.5},
+            )
+            assert mm._get_domain_error(ch, missing_pred) is None
+
+            missing_actual = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), **{pred_attr: sample}),
+                **{err_attr: 0.5},
+            )
+            assert mm._get_domain_error(ch, missing_actual) is None
+
+    def test_presence_question_direction_matches_prediction(self, mm):
+        """Presence templates compare actual vs prediction rather than absolute cutoffs."""
+        # High value, but lower than predicted -> falling wording (not "rose")
+        err_drop = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), presence=0.9),
+            actual_presence=0.7,
+            surprise=0.22,
+            surprise_sources=["presence"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(err_drop)
+            assert q is not None
+            assert "rose" not in q and "more capacity" not in q
+            assert "dipped" in q or "less headroom" in q
+
+        # Low value, but higher than predicted -> rising wording (not "dipped")
+        err_rise = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), presence=0.1),
+            actual_presence=0.3,
+            surprise=0.22,
+            surprise_sources=["presence"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(err_rise)
+            assert q is not None
+            assert "dipped" not in q and "less headroom" not in q
+            assert "rose" in q or "more capacity" in q
+
+        # Equal or missing prediction -> neutral wording
+        for pred_p in (None, 0.7):
+            err_neutral = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now(), presence=pred_p),
+                actual_presence=0.7,
+                surprise=0.22,
+                surprise_sources=["presence"],
+            )
+            q = mm.generate_curiosity_question(err_neutral)
+            assert q == "presence shifted to 0.70 - what changed in my capacity?"
+
+    def test_humidity_and_pressure_equality_and_rounding_wording(self, mm):
+        """Equal readings use neutral wording and sub-rounding diffs avoid 'expected X ... it's X'."""
+        eq_humidity = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), humidity_pct=45.0),
+            actual_humidity_pct=45.0,
+            surprise=0.22,
+            surprise_sources=["humidity"],
+        )
+        q_h_eq = mm.generate_curiosity_question(eq_humidity)
+        assert q_h_eq is not None and "dropped" not in q_h_eq and "held near" in q_h_eq
+
+        eq_pressure = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), pressure_hpa=1013.2),
+            actual_pressure_hpa=1013.2,
+            surprise=0.22,
+            surprise_sources=["pressure"],
+        )
+        q_p_eq = mm.generate_curiosity_question(eq_pressure)
+        assert q_p_eq is not None and "fell" not in q_p_eq and "held near 1013.2 hPa" in q_p_eq
+
+        sub_humidity = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), humidity_pct=45.1),
+            actual_humidity_pct=45.4,
+            surprise=0.22,
+            surprise_sources=["humidity"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(sub_humidity)
+            assert "expected 45% humidity but it's 45%" not in q
+
+        sub_pressure = PredictionError(
+            timestamp=datetime.now(),
+            prediction=Prediction(timestamp=datetime.now(), pressure_hpa=1013.21),
+            actual_pressure_hpa=1013.24,
+            surprise=0.22,
+            surprise_sources=["pressure"],
+        )
+        for _ in range(10):
+            q = mm.generate_curiosity_question(sub_pressure)
+            assert "expected 1013.2 hPa pressure but it's 1013.2 hPa" not in q
+
+    def test_curiosity_handles_zero_celsius_temp(self, mm):
+        """0.0°C is a valid temperature, not missing data."""
         error = PredictionError(
             timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_light=0.3, error_ambient_temp=0.1,
+            prediction=Prediction(timestamp=datetime.now(), ambient_temp_c=5.0),
+            actual_ambient_temp_c=0.0,
+            surprise=0.22,
+            surprise_sources=["ambient_temp"],
         )
-        mm.record_curiosity(["light", "ambient_temp"], error)
-        assert len(mm._curiosity_log) == 1
-        assert "light" in mm._curiosity_log[0]["domains"]
+        q = mm.generate_curiosity_question(error)
+        assert q is not None and "0.0°C" in q
 
-    def test_evaluate_curiosity_outcomes_reward(self, mm, monkeypatch):
-        """When prediction improves after curiosity, domain weight increases.
+    def test_surprise_channel_parity_across_observe_phrasing_and_templates(self, tmp_path):
+        """Every channel observe() can tag has phrasing in _SURPRISE_PHRASING and
+        a channel-specific question template in generate_curiosity_question()."""
+        from anima_mcp.loop_phases import _SURPRISE_PHRASING
 
-        Weight movement is parked by default (#189 revival review); these
-        tests arm it to keep the rule mechanics pinned for the redesign."""
-        monkeypatch.setenv("ANIMA_CURIOSITY_WEIGHTS_ENABLED", "1")
-        # Record curiosity with high initial error
-        initial_error = PredictionError(
+        assert set(_SURPRISE_PHRASING.keys()) == set(SURPRISE_CHANNELS)
+
+        observed_channels = set()
+        channel_spikes = [
+            ("ambient_temp", make_readings(ambient_temp_c=30.0), {}),
+            ("humidity", make_readings(humidity_pct=75.0), {}),
+            ("light", make_readings(light_lux=5000.0, led_brightness=0.5), {}),
+            ("pressure", make_readings(pressure_hpa=1030.0), {}),
+            ("warmth", make_readings(), {"warmth": 0.9}),
+            ("clarity", make_readings(), {"clarity": 0.2}),
+            ("stability", make_readings(), {"stability": 0.2}),
+            ("presence", make_readings(), {"presence": 0.2}),
+        ]
+        for ch, spike_readings, anima_overrides in channel_spikes:
+            mon = MetacognitiveMonitor(data_dir=str(tmp_path / ch))
+            base_readings = make_readings(led_brightness=0.5)
+            base_anima = make_anima()
+            for _ in range(mon._led_stable_min_samples):
+                mon.predict(led_brightness=0.5)
+                mon.observe(base_readings, base_anima)
+            mon.predict(led_brightness=0.5)
+            err = mon.observe(
+                spike_readings,
+                make_anima(**anima_overrides) if anima_overrides else base_anima,
+            )
+            assert ch in err.surprise_sources
+            observed_channels.add(ch)
+
+        assert observed_channels == set(SURPRISE_CHANNELS)
+
+        # Every channel produces a question at surprise=0.22 (< 0.25 generic fallback)
+        # both with full values and with value-free fallback.
+        pred = Prediction(
             timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.5,
+            ambient_temp_c=22.0,
+            humidity_pct=45.0,
+            light_lux=100.0,
+            pressure_hpa=1013.0,
+            warmth=0.5,
+            clarity=0.7,
+            stability=0.7,
+            presence=0.7,
         )
-        mm._save_counter = 10
-        mm.record_curiosity(["ambient_temp"], initial_error)
+        for ch in SURPRISE_CHANNELS:
+            populated = PredictionError(
+                timestamp=datetime.now(),
+                prediction=pred,
+                actual_ambient_temp_c=28.0,
+                actual_humidity_pct=60.0,
+                actual_light_lux=500.0,
+                actual_pressure_hpa=1025.0,
+                actual_warmth=0.8,
+                actual_clarity=0.3,
+                actual_stability=0.3,
+                actual_presence=0.3,
+                surprise=0.22,
+                surprise_sources=[ch],
+            )
+            q_pop = MetacognitiveMonitor(data_dir=str(tmp_path / f"q_{ch}")).generate_curiosity_question(populated)
+            assert q_pop is not None, f"missing populated template for {ch}"
+            if ch == "presence":
+                import re
+                assert any(w in q_pop.lower() for w in ("presence", "headroom", "capacity"))
+                assert not re.search(r"\broom\b", q_pop.lower())
 
-        # Fast forward observations past eval horizon
-        mm._save_counter = 10 + mm._eval_horizon + 1
-
-        # Current error is much lower — improvement
-        current_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.1,
-        )
-        mm._evaluate_curiosity_outcomes(current_error)
-
-        # Domain weight should have increased
-        assert mm._domain_weights.get("ambient_temp", 1.0) > 1.0
-
-    def test_evaluate_curiosity_outcomes_penalty(self, mm, monkeypatch):
-        """When prediction worsens after curiosity, domain weight decreases."""
-        monkeypatch.setenv("ANIMA_CURIOSITY_WEIGHTS_ENABLED", "1")
-        initial_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.1,
-        )
-        mm._save_counter = 10
-        mm.record_curiosity(["ambient_temp"], initial_error)
-
-        mm._save_counter = 10 + mm._eval_horizon + 1
-
-        # Current error is higher — prediction worsened
-        current_error = PredictionError(
-            timestamp=datetime.now(),
-            prediction=Prediction(timestamp=datetime.now()),
-            error_ambient_temp=0.5,
-        )
-        mm._evaluate_curiosity_outcomes(current_error)
-
-        # Domain weight should have decreased
-        assert mm._domain_weights.get("ambient_temp", 1.0) < 1.0
+            value_free = PredictionError(
+                timestamp=datetime.now(),
+                prediction=Prediction(timestamp=datetime.now()),
+                surprise=0.22,
+                surprise_sources=[ch],
+            )
+            q_vf = MetacognitiveMonitor(data_dir=str(tmp_path / f"vf_{ch}")).generate_curiosity_question(value_free)
+            assert q_vf is not None, f"missing value-free fallback for {ch}"
 
 
 # ==================== Surprise Trend & Accuracy ====================
@@ -618,7 +786,8 @@ class TestSurpriseTrendAndAccuracy:
         assert acc["mean_surprise"] == pytest.approx(0.2)
         assert acc["mean_temp_error"] == pytest.approx(0.1)
         assert "reflection_count" in acc
-        assert "domain_weights" in acc
+        assert "domain_weights" not in acc
+        assert "pending_curiosity_evals" not in acc
 
 
 # ==================== Persistence ====================
@@ -634,12 +803,6 @@ class TestPersistence:
         mm1._baseline_light = 100.0
         mm1._baseline_pressure = 1013.0
         mm1._diurnal_temp[14] = [25.0, 26.0]
-        mm1._domain_weights = {"light": 1.5, "ambient_temp": 0.8}
-        mm1._curiosity_log = [{
-            "domains": ["light"],
-            "errors_at_time": {"light": 0.4},
-            "obs_count": 12,
-        }]
         mm1._save_counter = 17
         assert mm1.save() is True
 
@@ -648,10 +811,26 @@ class TestPersistence:
         assert mm2._baseline_humidity == pytest.approx(45.0)
         assert mm2._baseline_light == pytest.approx(100.0)
         assert mm2._diurnal_temp[14] == [25.0, 26.0]
-        assert mm2._domain_weights.get("light") == pytest.approx(1.5)
-        assert mm2._domain_weights.get("ambient_temp") == pytest.approx(0.8)
-        assert mm2._curiosity_log == mm1._curiosity_log
         assert mm2._save_counter == 17
+
+    def test_load_tolerates_legacy_curiosity_keys_and_drops_on_save(self, tmp_path):
+        """Legacy domain_weights and curiosity_log load cleanly and drop on save."""
+        data_file = tmp_path / "metacognition_baselines.json"
+        data_file.write_text(json.dumps({
+            "baseline_ambient_temp": 22.5,
+            "domain_weights": {"light": 1.5, "ambient_temp": 0.8},
+            "curiosity_log": [{"domains": ["light"], "errors_at_time": {"light": 0.4}, "obs_count": 12}],
+            "observation_count": 17,
+        }))
+
+        mm = MetacognitiveMonitor(data_dir=str(tmp_path))
+        assert mm._baseline_ambient_temp == pytest.approx(22.5)
+        assert mm._save_counter == 17
+        assert mm.save() is True
+
+        saved = json.loads(data_file.read_text())
+        assert "domain_weights" not in saved
+        assert "curiosity_log" not in saved
 
     def test_read_only_observer_never_overwrites_snapshot(self, tmp_path):
         writer = MetacognitiveMonitor(data_dir=str(tmp_path))
@@ -849,6 +1028,27 @@ class TestContemplativeRotation:
             )
             assert q != coldest_but_answered
             assert q in pool[1:]
+
+    def test_run_quiet_world_contemplation_gates_growth_on_posted(self, mm):
+        """Contemplative prompts only seed growth curiosities when posted to the board."""
+        from unittest.mock import MagicMock, patch
+        from anima_mcp.display_loop import run_quiet_world_contemplation
+
+        mm._contemplative_curiosity_rate = 1.0
+        growth = MagicMock()
+        with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \
+             patch("anima_mcp.messages.get_answered_question_texts", return_value=set()), \
+             patch("anima_mcp.messages.add_question", return_value=None), \
+             patch("anima_mcp.accessors._get_growth", return_value=growth):
+            run_quiet_world_contemplation(mm)
+        growth.add_curiosity.assert_not_called()
+
+        with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \
+             patch("anima_mcp.messages.get_answered_question_texts", return_value=set()), \
+             patch("anima_mcp.messages.add_question", return_value=object()) as add_q, \
+             patch("anima_mcp.accessors._get_growth", return_value=growth):
+            run_quiet_world_contemplation(mm)
+        growth.add_curiosity.assert_called_once_with(add_q.call_args.args[0])
 
 
 class TestClarityQuestionCoverage:

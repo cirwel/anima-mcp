@@ -720,16 +720,42 @@ class TestAutobiographyAndCuriosity:
         assert "learned to draw circles" in result.lower()
 
     def test_add_curiosity(self, growth):
-        """Adding a question puts it in _curiosities."""
-        growth.add_curiosity("what is consciousness")
+        """Adding a question puts it in _curiosities and returns True."""
+        assert growth.add_curiosity("what is consciousness") is True
         assert "what is consciousness" in growth._curiosities
 
     def test_curiosity_dedup(self, growth):
         """Adding the same question twice results in only one entry."""
-        growth.add_curiosity("why do I exist")
-        growth.add_curiosity("why do I exist")
+        assert growth.add_curiosity("why do I exist") is True
+        assert growth.add_curiosity("why do I exist") is False
         count = growth._curiosities.count("why do I exist")
         assert count == 1
+
+    def test_add_curiosity_ignores_already_explored_in_db(self, tmp_path):
+        """INSERT OR IGNORE against an explored=1 row must not re-add to _curiosities."""
+        db_path = str(tmp_path / "curiosity_explored.db")
+        gs1 = GrowthSystem(db_path=db_path)
+        prompt = "when the world holds still, what question remains in me?"
+        assert gs1.add_curiosity(prompt) is True
+        gs1.mark_curiosity_explored(prompt, notes="resolved earlier")
+        assert prompt not in gs1._curiosities
+
+        # Attempting to re-add the explored prompt must return False and leave
+        # both in-memory cache and SQLite explored=1 untouched.
+        assert gs1.add_curiosity(prompt) is False
+        assert prompt not in gs1._curiosities
+        row = gs1._connect().execute(
+            "SELECT explored, exploration_notes FROM curiosities WHERE question = ?",
+            (prompt,),
+        ).fetchone()
+        assert row["explored"] == 1
+        assert row["exploration_notes"] == "resolved earlier"
+        gs1.close()
+
+        # Reloading from the same SQLite DB preserves the same clean state.
+        gs2 = GrowthSystem(db_path=db_path)
+        assert prompt not in gs2._curiosities
+        gs2.close()
 
     def test_mark_curiosity_explored(self, growth):
         """Marking a curiosity as explored removes it from _curiosities."""

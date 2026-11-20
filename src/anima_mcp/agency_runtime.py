@@ -129,14 +129,13 @@ def execute_action(
 
     elif action.action_type == ActionType.FOCUS_ATTENTION:
         sensor = action.parameters.get("sensor")
-        if sensor and metacog and prediction_error:
+        if sensor:
             action_selector.set_attention_focus(sensor)
-            metacog.record_curiosity([sensor], prediction_error)
             action.execution_succeeded = True
-            action.execution_detail = f"curiosity tracking focused on {sensor}"
+            action.execution_detail = f"attention focused on {sensor}"
             print(f"[Agency] Focusing attention on: {sensor}", file=sys.stderr, flush=True)
         else:
-            action.execution_detail = "focus lacked a sensor or prediction error"
+            action.execution_detail = "focus lacked a sensor"
 
     elif action.action_type == ActionType.ADJUST_SENSITIVITY:
         direction = action.parameters.get("direction", "increase")
@@ -282,7 +281,7 @@ def run_agency_phase(
         shm_data=_get_last_shm_data(),
         self_model=self_model,
         pathways=pathways,
-        can_focus=metacog is not None and prediction_error is not None,
+        can_focus=True,
         can_reflect=metacog is not None,
         can_led=led_available,
         can_speak=False,

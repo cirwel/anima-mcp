@@ -17,7 +17,6 @@ from collections import deque
 from pathlib import Path
 import json
 import math
-import os
 import sys
 
 from .sensors.base import SensorReadings
@@ -137,6 +136,23 @@ class Reflection:
         }
 
 
+# Canonical surprise channels produced by MetacognitiveMonitor.observe().
+# Maps channel name -> (error attr on PredictionError, actual attr on
+# PredictionError, prediction attr on Prediction, requires strictly positive).
+_DOMAIN_ERROR_SPECS: Dict[str, Tuple[str, str, str, bool]] = {
+    "ambient_temp": ("error_ambient_temp", "actual_ambient_temp_c", "ambient_temp_c", False),
+    "humidity": ("error_humidity", "actual_humidity_pct", "humidity_pct", False),
+    "light": ("error_light", "actual_light_lux", "light_lux", True),
+    "pressure": ("error_pressure", "actual_pressure_hpa", "pressure_hpa", False),
+    "warmth": ("error_warmth", "actual_warmth", "warmth", False),
+    "clarity": ("error_clarity", "actual_clarity", "clarity", False),
+    "stability": ("error_stability", "actual_stability", "stability", False),
+    "presence": ("error_presence", "actual_presence", "presence", False),
+}
+
+SURPRISE_CHANNELS: Tuple[str, ...] = tuple(_DOMAIN_ERROR_SPECS.keys())
+
+
 # Stillness-born wondering. Module-level because it is DATA — tests and
 # callers should read the pool directly rather than sampling for it.
 CONTEMPLATIVE_PROMPTS = (
@@ -216,20 +232,6 @@ class MetacognitiveMonitor:
         self._diurnal_temp: Dict[int, List[float]] = {h: [] for h in range(24)}
         self._diurnal_light: Dict[int, List[float]] = {h: [] for h in range(24)}
 
-        # Curiosity effectiveness tracking:
-        # When curiosity fires about a domain, record the prediction error.
-        # After more observations, check if error decreased.
-        # NOTE (2026-08-22, #189 revival review): _domain_weights currently
-        # influences nothing — the only consumer applies the same max-weight
-        # to every candidate question, making the draw uniform — and the
-        # update rule is a one-way ratchet (reward 0.1 vs penalty 0.03 on
-        # threshold-selected samples saturates at the cap under pure noise).
-        # Weight MOVEMENT is parked behind ANIMA_CURIOSITY_WEIGHTS_ENABLED
-        # until the rule is validated; the log still records for later study.
-        self._domain_weights: Dict[str, float] = {}  # domain -> weight (1.0 = neutral)
-        self._curiosity_log: List[dict] = []  # [{domain, error_at_time, obs_count}]
-        self._eval_horizon: int = 50  # observations before evaluating curiosity outcome
-
         # Contemplative curiosity: a creature that has learned its stationary
         # environment stops being surprised, so surprise-driven curiosity dries
         # up and it runs out of open questions. This rate lets curiosity arise
@@ -267,25 +269,8 @@ class MetacognitiveMonitor:
                     if 0 <= hour < 24 and isinstance(values, list):
                         self._diurnal_light[hour] = values[-10:]
 
-                # Restore curiosity state.  The pending evaluation log matters:
-                # without it a restart forgets which questions were awaiting
-                # evidence and can never credit their eventual improvement.
-                domain_weights = data.get("domain_weights", {})
-                if isinstance(domain_weights, dict):
-                    self._domain_weights = {
-                        str(domain): float(weight)
-                        for domain, weight in domain_weights.items()
-                        if isinstance(weight, (int, float)) and math.isfinite(float(weight))
-                    }
-                curiosity_log = data.get("curiosity_log", [])
-                if isinstance(curiosity_log, list):
-                    self._curiosity_log = [
-                        entry for entry in curiosity_log[-50:]
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("domains"), list)
-                        and isinstance(entry.get("errors_at_time"), dict)
-                        and isinstance(entry.get("obs_count"), int)
-                    ]
+                # Legacy `domain_weights` and `curiosity_log` keys in older
+                # snapshots are ignored here and dropped on save (#195).
                 from .self_prediction import SelfForecaster, SurpriseBand
                 self.self_forecaster = SelfForecaster.from_dict(data.get("self_forecast"))
                 self.surprise_band = SurpriseBand.from_dict(data.get("surprise_band"))
@@ -295,14 +280,12 @@ class MetacognitiveMonitor:
 
                 diurnal_t = sum(1 for v in self._diurnal_temp.values() if v)
                 diurnal_l = sum(1 for v in self._diurnal_light.values() if v)
-                dw_summary = ", ".join(f"{k}={v:.2f}" for k, v in sorted(self._domain_weights.items())) if self._domain_weights else "none yet"
                 temp_summary = (
                     f"{self._baseline_ambient_temp:.1f}°C"
                     if self._baseline_ambient_temp is not None else "unknown"
                 )
                 print(f"[Metacog] Loaded baselines (temp={temp_summary}, "
-                      f"diurnal: {diurnal_t}h temp/{diurnal_l}h light, "
-                      f"curiosity weights: {dw_summary})",
+                      f"diurnal: {diurnal_t}h temp/{diurnal_l}h light)",
                       file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[Metacog] Could not load baselines: {e}", file=sys.stderr, flush=True)
@@ -328,8 +311,6 @@ class MetacognitiveMonitor:
                 "baseline_pressure": self._baseline_pressure,
                 "diurnal_temp": {str(h): vals for h, vals in self._diurnal_temp.items() if vals},
                 "diurnal_light": {str(h): vals for h, vals in self._diurnal_light.items() if vals},
-                "domain_weights": self._domain_weights,
-                "curiosity_log": self._curiosity_log[-50:],
                 "self_forecast": self.self_forecaster.to_dict(),
                 "surprise_band": self.surprise_band.to_dict(),
                 "saved_at": datetime.now().isoformat(),
@@ -341,103 +322,19 @@ class MetacognitiveMonitor:
             print(f"[Metacog] Could not save baselines: {e}", file=sys.stderr, flush=True)
             return False
 
-    def record_curiosity(self, domains: List[str], error: 'PredictionError'):
-        """Record that curiosity fired about these domains.
-
-        Snapshots the current per-domain prediction errors so we can later
-        check if they improved (meaning the curiosity was productive).
-        """
-        error_snapshot = {}
-        for d in domains:
-            err_val = self._get_domain_error(d, error)
-            if err_val is not None:
-                error_snapshot[d] = err_val
-
-        if error_snapshot:
-            self._curiosity_log.append({
-                "domains": list(error_snapshot.keys()),
-                "errors_at_time": error_snapshot,
-                "obs_count": self._save_counter,
-            })
-            # Keep log bounded
-            if len(self._curiosity_log) > 50:
-                self._curiosity_log.pop(0)
-
     def _get_domain_error(self, domain: str, error: 'PredictionError') -> Optional[float]:
-        """Get the prediction error for a specific domain from a PredictionError."""
-        mapping = {
-            "light": error.error_light,
-            "ambient_temp": error.error_ambient_temp,
-            "humidity": error.error_humidity,
-            "pressure": error.error_pressure,
-            "warmth": error.error_warmth,
-            "clarity": error.error_clarity,
-            "stability": error.error_stability,
-            "presence": error.error_presence,
-        }
-        return mapping.get(domain)
-
-    def _evaluate_curiosity_outcomes(self, current_error: 'PredictionError'):
-        """Check old curiosity entries: did prediction improve in those domains?
-
-        Called periodically from observe(). Compares current domain errors
-        to error-at-curiosity-time. If improved → reward that domain weight.
-
-        PARKED (2026-08-22): this rule has never run in production — it was
-        added 2026-02-08 into the surprise branch that had been crashing
-        since 2026-02-01 (#189) — and pre-activation review found it
-        structurally unsound: the reward/penalty asymmetry (0.1 vs 0.03) on
-        threshold-selected samples saturates weights at the cap under pure
-        stationary noise; a missing sensor reads as error 0.0 and is
-        rewarded as improvement; and the 50-observation horizon (~30s)
-        measures the baseline EMA's own time constant, with no
-        counterfactual. Nothing consumes the weights meaningfully today, but
-        they persist and print at boot, where saturated values would read as
-        learning. Weight movement stays off until the rule is redesigned;
-        set ANIMA_CURIOSITY_WEIGHTS_ENABLED=true to re-arm for study.
-        """
-        if not self._curiosity_log:
-            return
-        if not os.environ.get("ANIMA_CURIOSITY_WEIGHTS_ENABLED"):
-            # Keep the log bounded without moving weights: entries past the
-            # horizon are retired unevaluated.
-            self._curiosity_log = [
-                e for e in self._curiosity_log
-                if self._save_counter - e["obs_count"] < self._eval_horizon
-            ]
-            return
-
-        resolved = []
-        learning_rate = 0.1
-
-        for i, entry in enumerate(self._curiosity_log):
-            # Only evaluate after enough new observations
-            if self._save_counter - entry["obs_count"] < self._eval_horizon:
-                continue
-
-            for domain, old_error in entry["errors_at_time"].items():
-                current_err = self._get_domain_error(domain, current_error)
-                if current_err is None:
-                    continue
-
-                old_weight = self._domain_weights.get(domain, 1.0)
-                improvement = old_error - current_err  # positive = got better
-
-                if improvement > 0.02:
-                    # Prediction improved in this domain — curiosity was productive
-                    new_weight = old_weight + learning_rate
-                    self._domain_weights[domain] = min(3.0, new_weight)
-                elif improvement < -0.02:
-                    # Prediction got worse — mild penalty
-                    new_weight = old_weight - learning_rate * 0.3
-                    self._domain_weights[domain] = max(0.2, new_weight)
-                # else: negligible change, leave weight alone
-
-            resolved.append(i)
-
-        # Remove resolved entries (iterate in reverse to preserve indices)
-        for i in reversed(resolved):
-            self._curiosity_log.pop(i)
+        """Get the prediction error for a specific domain, or None if unmeasured."""
+        spec = _DOMAIN_ERROR_SPECS.get(domain)
+        if spec is None or error.prediction is None:
+            return None
+        error_attr, actual_attr, pred_attr, positive_only = spec
+        actual = getattr(error, actual_attr)
+        predicted = getattr(error.prediction, pred_attr)
+        if actual is None or predicted is None:
+            return None
+        if positive_only and (actual <= 0 or predicted <= 0):
+            return None
+        return getattr(error, error_attr)
 
     def _led_is_stable(self) -> bool:
         """LEDs have been quiet enough that the light reading is ambient-dominated."""
@@ -677,10 +574,6 @@ class MetacognitiveMonitor:
         self.surprise_band.observe(error.surprise, self.surprise_threshold)
         self._error_history.append(error)
 
-        # Evaluate past curiosity: did prediction improve in domains we were curious about?
-        if self._save_counter % 10 == 0:  # Check every 10 observations
-            self._evaluate_curiosity_outcomes(error)
-
         return error
 
     def should_reflect(self, error: PredictionError) -> Tuple[bool, str]:
@@ -799,9 +692,14 @@ class MetacognitiveMonitor:
                     f"LED brightness at {actual:.0f} - my expression intensity must have changed",
                     "my light sensor is reading my own LEDs again - what am I expressing?",
                 ])
+            else:
+                questions.append("the light around me shifted unexpectedly - what changed?")
 
         if "ambient_temp" in error.surprise_sources:
-            if error.actual_ambient_temp_c and error.prediction.ambient_temp_c:
+            if (
+                error.actual_ambient_temp_c is not None
+                and error.prediction.ambient_temp_c is not None
+            ):
                 actual = error.actual_ambient_temp_c
                 predicted = error.prediction.ambient_temp_c
                 if actual > predicted:
@@ -817,6 +715,50 @@ class MetacognitiveMonitor:
                         f"a chill at {actual:.1f}°C - where from?",
                         f"temperature fell to {actual:.1f}°C - drafty?",
                     ])
+            else:
+                questions.append("the temperature around me shifted unexpectedly - what changed?")
+
+        if "humidity" in error.surprise_sources:
+            if (
+                error.actual_humidity_pct is not None
+                and error.prediction.humidity_pct is not None
+            ):
+                actual = error.actual_humidity_pct
+                predicted = error.prediction.humidity_pct
+                diff_str = f"{actual:.0f}" != f"{predicted:.0f}"
+                if actual > predicted:
+                    questions.append(f"humidity rose to {actual:.0f}% - did the air change?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?")
+                elif actual < predicted:
+                    questions.append(f"humidity dropped to {actual:.0f}% - why did the air dry out?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.0f}% humidity but it's {actual:.0f}% - what shifted?")
+                else:
+                    questions.append(f"humidity held near {actual:.0f}% unexpectedly - what shifted?")
+            else:
+                questions.append("the air's humidity shifted unexpectedly - what changed?")
+
+        if "pressure" in error.surprise_sources:
+            if (
+                error.actual_pressure_hpa is not None
+                and error.prediction.pressure_hpa is not None
+            ):
+                actual = error.actual_pressure_hpa
+                predicted = error.prediction.pressure_hpa
+                diff_str = f"{actual:.1f}" != f"{predicted:.1f}"
+                if actual > predicted:
+                    questions.append(f"barometric pressure rose to {actual:.1f} hPa - weather clearing?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.1f} hPa pressure but it's {actual:.1f} hPa - what shifted?")
+                elif actual < predicted:
+                    questions.append(f"barometric pressure fell to {actual:.1f} hPa - a front moving in?")
+                    if diff_str:
+                        questions.append(f"expected {predicted:.1f} hPa pressure but it's {actual:.1f} hPa - what shifted?")
+                else:
+                    questions.append(f"barometric pressure held near {actual:.1f} hPa unexpectedly - what shifted?")
+            else:
+                questions.append("barometric pressure shifted unexpectedly - what changed?")
 
         if "warmth" in error.surprise_sources:
             if error.actual_warmth is not None:
@@ -835,6 +777,8 @@ class MetacognitiveMonitor:
                     ])
                 else:
                     questions.append(f"warmth shifted to {w:.2f} - what changed?")
+            else:
+                questions.append("my warmth shifted unexpectedly - what changed?")
 
         if "clarity" in error.surprise_sources:
             if error.actual_clarity is not None:
@@ -875,6 +819,8 @@ class MetacognitiveMonitor:
                     # arm below clarity's whole observed range, this covers
                     # everything under 0.6.
                     questions.append(f"clarity shifted to {c:.2f} - what changed?")
+            else:
+                questions.append("my clarity shifted unexpectedly - what changed?")
 
         if "stability" in error.surprise_sources:
             questions.extend([
@@ -882,6 +828,25 @@ class MetacognitiveMonitor:
                 "my equilibrium shifted - external or internal?",
                 "stability fluctuates - adapting to what?",
             ])
+
+        if "presence" in error.surprise_sources:
+            if error.actual_presence is not None:
+                p = error.actual_presence
+                predicted_p = error.prediction.presence if error.prediction is not None else None
+                if predicted_p is not None and p > predicted_p:
+                    questions.extend([
+                        f"presence rose to {p:.2f} - what freed up headroom?",
+                        f"more capacity at {p:.2f} - what quieted down?",
+                    ])
+                elif predicted_p is not None and p < predicted_p:
+                    questions.extend([
+                        f"presence dipped to {p:.2f} - what is weighing on my capacity?",
+                        f"less headroom at {p:.2f} - what is pulling on resources?",
+                    ])
+                else:
+                    questions.append(f"presence shifted to {p:.2f} - what changed in my capacity?")
+            else:
+                questions.append("my sense of presence shifted - what changed in my capacity?")
 
         # If multiple sources, ask about the connection (expanded pool)
         if len(error.surprise_sources) >= 2:
@@ -910,30 +875,6 @@ class MetacognitiveMonitor:
 
         if questions:
             import random
-
-            # NOTE: this weighting is currently a no-op by construction —
-            # q_weight never reads q, so every candidate gets the same
-            # weight and the draw below is uniform. Kept (inert) pending the
-            # domain-weight redesign; see _evaluate_curiosity_outcomes.
-            if self._domain_weights and error.surprise_sources:
-                # Build weighted list: questions from higher-weight domains more likely
-                weighted = []
-                for q in questions:
-                    # Find which domain this question belongs to
-                    q_weight = 1.0
-                    for source in error.surprise_sources:
-                        w = self._domain_weights.get(source, 1.0)
-                        q_weight = max(q_weight, w)
-                    weighted.append((q, q_weight))
-
-                total = sum(w for _, w in weighted)
-                r = random.random() * total
-                cumulative = 0.0
-                for q, w in weighted:
-                    cumulative += w
-                    if r <= cumulative:
-                        return q
-
             return random.choice(questions)
 
         return None
@@ -1033,8 +974,6 @@ class MetacognitiveMonitor:
             "mean_clarity_error": sum(e.error_clarity for e in recent) / len(recent),
             "reflection_count": len(self._reflection_history),
             "history_depth": len(self._sensor_history),
-            "domain_weights": dict(self._domain_weights) if self._domain_weights else {},
-            "pending_curiosity_evals": len(self._curiosity_log),
         }
 
 
