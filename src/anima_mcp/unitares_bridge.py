@@ -14,6 +14,7 @@ import re
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from .identity.store import CreatureIdentity
@@ -34,6 +35,54 @@ from .sensors.base import SensorReadings
 logger = logging.getLogger(__name__)
 
 _EISV_KEYS = ("E", "I", "S", "V")
+_FORBIDDEN_AGENT_TOKEN_KEYS = frozenset(
+    {
+        "agent_id",
+        "agent_uuid",
+        "continuity_token",
+        "session_id",
+        "kwargs",
+        "arguments",
+        "params",
+    }
+)
+
+
+class _RateLimitedError(Exception):
+    """Rate limit from UNITARES — falls back locally without tripping breaker."""
+
+
+class _UnauthorizedError(Exception):
+    """HTTP 401 from UNITARES — hold cooldown until retry window expires."""
+
+
+def is_rest_tools_url(url: Optional[str]) -> bool:
+    """True when URL points to the UNITARES REST ``/v1/tools/call`` endpoint."""
+    if not url:
+        return False
+    parsed = urlparse(str(url).strip())
+    return parsed.path.rstrip("/") == "/v1/tools/call"
+
+
+def is_bearer_transport_safe(url: str) -> bool:
+    """Allow Bearer tokens only over HTTPS or loopback HTTP."""
+    parsed = urlparse(str(url).strip())
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        return True
+    if scheme == "http":
+        host = (parsed.hostname or "").lower()
+        return host in ("localhost", "127.0.0.1", "::1")
+    return False
+
+
+def sanitize_rest_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip keys forbidden on scoped agent-token REST calls."""
+    return {
+        k: v
+        for k, v in arguments.items()
+        if k not in _FORBIDDEN_AGENT_TOKEN_KEYS
+    }
 
 
 def _sanitize_probe_error(err: Exception) -> str:
@@ -43,8 +92,207 @@ def _sanitize_probe_error(err: Exception) -> str:
     if not msg:
         return exc_name
     msg = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/]+@", r"\1***@", msg)
+    msg = re.sub(r"(?i)\bBearer\s+[^\s,;\"')]+", "Bearer ***", msg)
     msg = re.sub(r"\?[^\s\"'<>)]+", "?***", msg)
     return f"{exc_name}: {msg}"
+
+
+def _unwrap_rest_result_payload(raw_result: Any) -> Any:
+    """Normalize REST ``result`` into a Python object, unwrapping MCP content blocks if present."""
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("content"), list):
+        content = raw_result["content"]
+        if content and isinstance(content[0], dict):
+            text = content[0].get("text")
+            if isinstance(text, str) and text.strip():
+                try:
+                    return json.loads(text)
+                except ValueError:
+                    return {"text": text, "isError": bool(raw_result.get("isError"))}
+    if isinstance(raw_result, str) and raw_result.strip():
+        try:
+            return json.loads(raw_result)
+        except ValueError:
+            return raw_result
+    return raw_result
+
+
+def parse_rest_tool_response(
+    status: int,
+    text: str,
+    content_type: str = "",
+) -> Dict[str, Any]:
+    """Classify a ``POST /v1/tools/call`` HTTP response across outer & inner layers."""
+    if status == 401:
+        return {
+            "kind": "unauthorized",
+            "result": None,
+            "error": "HTTP 401: unauthorized",
+            "error_type": "Unauthorized",
+            "recovery": None,
+        }
+    if status == 429:
+        return {
+            "kind": "rate_limited",
+            "result": None,
+            "error": "HTTP 429: rate limited",
+            "error_type": "RateLimited",
+            "recovery": None,
+        }
+
+    try:
+        payload = json.loads(text) if text else None
+    except ValueError:
+        payload = None
+
+    if not isinstance(payload, dict):
+        if status == 403:
+            return {
+                "kind": "refused",
+                "result": None,
+                "error": "HTTP 403: forbidden",
+                "error_type": "Forbidden",
+                "recovery": None,
+            }
+        snippet = (text or "").strip()[:120]
+        return {
+            "kind": "transport_error",
+            "result": None,
+            "error": f"HTTP {status}: non-JSON response ({snippet or 'empty'})",
+            "error_type": "NonJsonResponse",
+            "recovery": None,
+        }
+
+    error_type = payload.get("error_type")
+    err_msg = (
+        payload.get("error")
+        or payload.get("hint")
+        or payload.get("reason")
+        or f"HTTP {status}"
+    )
+    recovery = payload.get("recovery")
+
+    if status == 403 and error_type == "AgentTokenUnbound":
+        detail = f"{err_msg} ({recovery})" if recovery else str(err_msg)
+        return {
+            "kind": "unbound",
+            "result": None,
+            "error": detail,
+            "error_type": "AgentTokenUnbound",
+            "recovery": recovery,
+        }
+    if status == 403 and error_type == "AgentTokenScope":
+        return {
+            "kind": "scope_denied",
+            "result": None,
+            "error": str(err_msg),
+            "error_type": "AgentTokenScope",
+            "recovery": recovery,
+        }
+    if status >= 500:
+        return {
+            "kind": "transport_error",
+            "result": None,
+            "error": f"HTTP {status}: {err_msg}",
+            "error_type": error_type or "ServerError",
+            "recovery": recovery,
+        }
+    if status != 200 or payload.get("success") is False:
+        if "rate limit" in str(err_msg).lower():
+            return {
+                "kind": "rate_limited",
+                "result": None,
+                "error": str(err_msg),
+                "error_type": error_type or "RateLimited",
+                "recovery": recovery,
+            }
+        return {
+            "kind": "refused",
+            "result": None,
+            "error": str(err_msg),
+            "error_type": error_type,
+            "recovery": recovery,
+        }
+
+    inner = _unwrap_rest_result_payload(payload.get("result"))
+    if inner is None:
+        return {
+            "kind": "refused",
+            "result": None,
+            "error": "REST envelope returned result=None",
+            "error_type": "EmptyResult",
+            "recovery": None,
+        }
+
+    if isinstance(inner, dict):
+        if _is_identity_refusal(inner):
+            return {
+                "kind": "unbound",
+                "result": inner,
+                "error": str(inner.get("hint") or inner.get("error") or "session binding unresolved"),
+                "error_type": inner.get("error_code") or "IdentityRefusal",
+                "recovery": None,
+            }
+        if inner.get("isError") or inner.get("success") is False:
+            inner_err = inner.get("error") or inner.get("hint") or inner.get("text") or "tool call refused"
+            if "rate limit" in str(inner_err).lower():
+                return {
+                    "kind": "rate_limited",
+                    "result": inner,
+                    "error": str(inner_err),
+                    "error_type": "RateLimited",
+                    "recovery": None,
+                }
+            return {
+                "kind": "refused",
+                "result": inner,
+                "error": str(inner_err),
+                "error_type": inner.get("error_code"),
+                "recovery": None,
+            }
+
+    return {
+        "kind": "ok",
+        "result": inner,
+        "error": None,
+        "error_type": None,
+        "recovery": None,
+    }
+
+
+async def post_rest_tool(
+    session: Any,
+    url: str,
+    token: Optional[str],
+    tool_name: str,
+    arguments: Dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Post a canonical tool invocation to REST ``/v1/tools/call`` with Bearer safety."""
+    if token and not is_bearer_transport_safe(url):
+        raise ValueError("Refusing to send Bearer token over non-loopback HTTP")
+
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    body = {
+        "name": tool_name,
+        "arguments": sanitize_rest_arguments(arguments),
+    }
+    post_kwargs: Dict[str, Any] = {
+        "json": body,
+        "headers": headers,
+        "allow_redirects": False,
+    }
+    if timeout is not None:
+        import aiohttp
+        post_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
+
+    async with session.post(url, **post_kwargs) as response:
+        content_type = response.headers.get("Content-Type", "")
+        text = await response.text()
+        return parse_rest_tool_response(response.status, text, content_type)
 
 
 def _validated_eisv_vector(candidate: Any) -> Optional[Dict[str, float]]:
@@ -230,20 +478,26 @@ class UnitaresBridge:
         self,
         unitares_url: Optional[str] = None,
         agent_id: Optional[str] = None,
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        auth_token: Optional[str] = None,
     ):
         """
         Initialize bridge.
 
         Args:
-            unitares_url: URL to UNITARES governance server (e.g., "http://127.0.0.1:8767/mcp/")
-                         If None, will use local governance only
+            unitares_url: URL to UNITARES governance server (e.g., "http://127.0.0.1:8767/mcp/"
+                         or "https://gov.cirwel.org/v1/tools/call"). If None, uses local governance.
             agent_id: Agent ID for UNITARES (auto-generated if None)
             timeout: Request timeout in seconds
+            auth_token: Optional per-agent Bearer token (defaults to UNITARES_HTTP_API_TOKEN)
         """
         self._url = unitares_url
         self._agent_id = agent_id
         self._timeout = timeout
+        raw_token = auth_token if auth_token is not None else os.environ.get("UNITARES_HTTP_API_TOKEN")
+        self._auth_token: Optional[str] = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+        self._auth_state: str = "unknown"  # unknown | ok | unauthorized | unbound | scope_denied
+        self._logged_scope_denials: set[str] = set()
         self._session_id = None
         self._available = None  # None = not checked, True/False = checked
         self._last_availability_check = None  # Timestamp of last check
@@ -261,13 +515,21 @@ class UnitaresBridge:
         self._prev_anima = None        # Previous Anima snapshot (warmth, clarity, stability, presence)
         self._prev_readings = None     # Previous sensor readings
         self._prev_complexity = None   # Previous complexity value
-        # Basic auth for remote tunnels (format: "user:password")
+        # Basic auth only for legacy /mcp/ tunnels (format: "user:password")
         self._basic_auth = None
-        auth_str = os.environ.get("UNITARES_AUTH")
-        if auth_str and ":" in auth_str:
-            import aiohttp
-            user, password = auth_str.split(":", 1)
-            self._basic_auth = aiohttp.BasicAuth(user, password)
+        if not self._is_rest_mode():
+            auth_str = os.environ.get("UNITARES_AUTH")
+            if auth_str and ":" in auth_str:
+                import aiohttp
+                user, password = auth_str.split(":", 1)
+                self._basic_auth = aiohttp.BasicAuth(user, password)
+        elif self._url and not self._auth_token:
+            parsed_url = urlparse(self._url)
+            if (parsed_url.hostname or "").lower() not in ("localhost", "127.0.0.1", "::1"):
+                logger.warning(
+                    "UNITARES REST URL configured (%s) without UNITARES_HTTP_API_TOKEN",
+                    parsed_url.netloc or self._url,
+                )
         # Governance identity anchor (anima-mcp #97). The bridge is echo-only —
         # it presents a deterministic client_session_id and never re-onboards —
         # so a server-side session-store wipe (2026-06-30 Redis restart) left it
@@ -320,6 +582,9 @@ class UnitaresBridge:
         self._session_loop = current_loop
         return self._http_session
 
+    def _is_rest_mode(self) -> bool:
+        return is_rest_tools_url(self._url)
+
     def _get_mcp_url(self) -> str:
         """Resolve the MCP endpoint URL from the configured base URL."""
         base = self._url.rstrip("/")
@@ -330,7 +595,11 @@ class UnitaresBridge:
         return f"{base}/mcp/"
 
     def _get_health_url(self) -> str:
-        """Resolve UNITARES health URL from either base, /mcp, or legacy /sse URL."""
+        """Resolve UNITARES health URL from either REST /v1/tools/call, /mcp, or /sse URL."""
+        if is_rest_tools_url(self._url):
+            parsed = urlparse(self._url.strip())
+            prefix = parsed.path.rstrip("/")[:-len("/v1/tools/call")]
+            return parsed._replace(path=f"{prefix}/health", params="", query="", fragment="").geturl()
         base = self._url.rstrip("/")
         if "/mcp" in base:
             base = base.split("/mcp", 1)[0]
@@ -416,14 +685,22 @@ class UnitaresBridge:
             session = await self._get_session()
             errors: list[str] = []
 
-            # Try health check or list_tools endpoint
+            # Try health check endpoint
             health_url = self._get_health_url()
             try:
                 import aiohttp
                 async with session.get(health_url, timeout=aiohttp.ClientTimeout(total=self._timeout)) as response:
                     if response.status == 200:
+                        if self._is_rest_mode() and self._auth_state in ("unauthorized", "unbound"):
+                            # Liveness /health is unauthenticated; clear auth-error hold
+                            # only when cooldown expires so next real call can probe recovery.
+                            self._auth_state = "unknown"
                         self._available = True
-                        self._last_availability_error = None
+                        self._last_availability_error = (
+                            self._last_availability_error
+                            if self._auth_state == "scope_denied"
+                            else None
+                        )
                         self._circuit_failures = 0
                         self._circuit_current_backoff = self._circuit_backoff_base
                         self._last_availability_check = current_time
@@ -445,10 +722,25 @@ class UnitaresBridge:
                         errors.append(err)
                         logger.debug("UNITARES health probe failed: %s", err)
             except Exception as e:
-                # Network/timeout errors - record and try MCP probe
+                # Network/timeout errors - record and (for MCP mode) try MCP probe
                 err = f"health: {_sanitize_probe_error(e)}"
                 errors.append(err)
                 logger.debug("UNITARES health probe failed: %s", err)
+
+            # In REST /v1/tools/call mode, /health is the only liveness probe;
+            # never fall back to probing POST /mcp/ tools/list.
+            if self._is_rest_mode():
+                self._available = False
+                self._last_availability_error = "; ".join(errors) if errors else "availability probes failed"
+                if prev_available is not False or prev_error != self._last_availability_error:
+                    logger.warning("UNITARES REST bridge unavailable: %s", self._last_availability_error)
+                else:
+                    logger.debug("UNITARES REST bridge unavailable: %s", self._last_availability_error)
+                self._circuit_failures += 1
+                self._last_availability_check = current_time
+                self._maybe_open_circuit(current_time)
+                await self._reset_session()
+                return False
 
             # If health check fails, try MCP endpoint
             mcp_url = self._get_mcp_url()
@@ -612,6 +904,8 @@ class UnitaresBridge:
         """While the binding is healthy, capture {uuid, continuity_token} from
         identity() so a future store-wipe is recoverable. Cheap, best-effort,
         refreshed daily so the stored token stays recent."""
+        if self._is_rest_mode():
+            return  # Scoped agent tokens cannot call identity(); broker owns anchor harvest
         fresh = (
             self._anchor is not None
             and (time.time() - float(self._anchor.get("saved_at", 0))) < self._anchor_refresh_s
@@ -634,6 +928,12 @@ class UnitaresBridge:
     async def _try_reanchor(self) -> bool:
         """Spend the stored anchor on a resume=true rebind after an identity
         refusal. Rate-limited; returns True when the server re-bound us."""
+        if self._is_rest_mode():
+            logger.error(
+                "REST agent-token session unbound — skipping identity(resume=true); "
+                "operator recovery required"
+            )
+            return False
         # Re-read the file first: broker and server share the anchor, and a
         # sibling process may have already healed + rotated it.
         self._anchor = self._load_anchor() or self._anchor
@@ -765,6 +1065,13 @@ class UnitaresBridge:
                 await self._harvest_anchor()
                 return result
             except IdentityRefusedError as e:
+                if self._is_rest_mode():
+                    logger.error("UNITARES REST session unbound: %s", e)
+                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    self._available = False
+                    return self._local_governance(
+                        anima, readings, body_projection, error=str(e)
+                    )
                 # Server-side binding lost (e.g. session-store wipe). Spend the
                 # anchor on a resume=true rebind, then retry ONCE this cycle.
                 logger.warning("Identity refused — attempting re-anchor: %s", e)
@@ -786,6 +1093,19 @@ class UnitaresBridge:
                         logger.warning("Post-re-anchor retry failed: %s", retry_err)
                 self._circuit_failures += 1
                 self._maybe_open_circuit(time.time())
+                return self._local_governance(
+                    anima, readings, body_projection, error=str(e)
+                )
+            except _RateLimitedError as e:
+                # 429 / tool rate-limit: fall back locally without tripping breaker
+                logger.warning("UNITARES rate limited, using local governance: %s", e)
+                return self._local_governance(
+                    anima, readings, body_projection, error=str(e)
+                )
+            except _UnauthorizedError as e:
+                logger.warning("UNITARES REST unauthorized — opening %ss cooldown: %s", self._circuit_backoff_max, e)
+                self._circuit_open_until = time.time() + self._circuit_backoff_max
+                self._available = False
                 return self._local_governance(
                     anima, readings, body_projection, error=str(e)
                 )
@@ -957,6 +1277,51 @@ class UnitaresBridge:
                 # Non-blocking - trajectory is optional enhancement
                 logger.debug("Trajectory not available: %s", e)
 
+            # Use shared session for connection pooling
+            session = await self._get_session()
+
+            if self._is_rest_mode():
+                rest_resp = await post_rest_tool(
+                    session,
+                    self._url,
+                    self._auth_token,
+                    "process_agent_update",
+                    update_arguments,
+                    timeout=self._timeout,
+                )
+                kind = rest_resp["kind"]
+                if kind == "ok":
+                    self._auth_state = "ok"
+                    self._last_availability_error = None
+                    governance_result = rest_resp["result"]
+                    if not isinstance(governance_result, dict):
+                        raise Exception(
+                            "UNITARES check-in returned a non-object payload "
+                            f"({type(governance_result).__name__}); not a verdict"
+                        )
+                    return self._build_verdict_from_payload(governance_result, body_projection)
+                if kind == "unauthorized":
+                    self._auth_state = "unauthorized"
+                    self._available = False
+                    self._last_availability_error = rest_resp["error"]
+                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    raise _UnauthorizedError(rest_resp["error"])
+                if kind == "unbound":
+                    self._auth_state = "unbound"
+                    self._available = False
+                    self._last_availability_error = rest_resp["error"]
+                    raise IdentityRefusedError(rest_resp["error"])
+                if kind == "scope_denied":
+                    self._auth_state = "scope_denied"
+                    self._last_availability_error = rest_resp["error"]
+                    if "process_agent_update" not in self._logged_scope_denials:
+                        self._logged_scope_denials.add("process_agent_update")
+                        logger.error("UNITARES REST token lacks check-in scope: %s", rest_resp["error"])
+                    raise Exception(rest_resp["error"])
+                if kind == "rate_limited":
+                    raise _RateLimitedError(rest_resp["error"])
+                raise Exception(rest_resp["error"])
+
             # MCP JSON-RPC request
             mcp_request = {
                 "jsonrpc": "2.0",
@@ -981,8 +1346,6 @@ class UnitaresBridge:
             if self._agent_id:
                 headers["X-Agent-Id"] = self._agent_id
 
-            # Use shared session for connection pooling
-            session = await self._get_session()
             async with session.post(
                 mcp_url,
                 json=mcp_request,
@@ -1043,46 +1406,7 @@ class UnitaresBridge:
                             logger.warning("UNITARES check-in rejected: code=%s msg=%s", error_code, error_msg)
                             raise Exception(f"UNITARES check-in failed [{error_code}]: {error_msg}")
 
-                        logger.debug("Response keys: %s", list(governance_result.keys()))
-                        # Log agent binding info from UNITARES
-                        bound_id = governance_result.get("resolved_agent_id") or governance_result.get("agent_signature", {}).get("agent_id") or governance_result.get("agent_signature", {}).get("uuid")
-                        logger.debug("Bound to agent: %s", bound_id[:8] if bound_id else 'not specified')
-
-                        # Extract action and margin from UNITARES response
-                        # UNITARES returns: {"action": "proceed", "margin": "comfortable", ...}
-                        #
-                        # No defaults (2026-11-12). This used to read
-                        # .get("action", "proceed") / .get("margin", "comfortable"),
-                        # so `{}`, an unrecognised refusal shape or a plain-text
-                        # body all came back as a healthy verdict with
-                        # source="unitares" — which reset the breaker, advanced
-                        # the server's last-UNITARES-success clock, marked
-                        # governance connected and heartbeat its health. A
-                        # payload without an action is not a verdict: fail the
-                        # check-in so the breaker and the local fallback handle
-                        # it, as the Elixir client does. A margin the server did
-                        # not send stays None — unknown, not "comfortable".
-                        action = governance_result.get("action")
-                        if not isinstance(action, str) or not action.strip():
-                            raise Exception(
-                                "UNITARES check-in returned no action "
-                                f"(keys: {sorted(str(k) for k in governance_result)}); "
-                                "not a verdict"
-                            )
-                        margin = governance_result.get("margin")
-                        if not isinstance(margin, str) or not margin.strip():
-                            margin = None
-                        return {
-                            "action": action,
-                            "margin": margin,
-                            "reason": governance_result.get("reason", "Governance check completed"),
-                            "source": "unitares",
-                            "unitares_agent_id": bound_id,  # For display identification
-                            "raw_response": governance_result,
-                            **_state_space_fields(
-                                body_projection, governance_result
-                            ),
-                        }
+                        return self._build_verdict_from_payload(governance_result, body_projection)
                     elif "error" in result:
                         raise Exception(f"MCP error: {result['error']}")
                     else:
@@ -1102,10 +1426,44 @@ class UnitaresBridge:
             raise Exception("aiohttp not installed - cannot connect to UNITARES")
         except asyncio.TimeoutError:
             raise Exception("Timeout connecting to UNITARES server")
-        except IdentityRefusedError:
-            raise  # typed — check_in attempts the re-anchor rescue
+        except (IdentityRefusedError, _RateLimitedError, _UnauthorizedError):
+            raise
         except Exception as e:
             raise Exception(f"Error calling UNITARES: {e}")
+
+    def _build_verdict_from_payload(
+        self,
+        governance_result: Dict[str, Any],
+        body_projection: BodyEISVProjection,
+    ) -> Dict[str, Any]:
+        """Validate action/margin from a decoded UNITARES check-in payload."""
+        logger.debug("Response keys: %s", list(governance_result.keys()))
+        bound_id = (
+            governance_result.get("resolved_agent_id")
+            or governance_result.get("agent_signature", {}).get("agent_id")
+            or governance_result.get("agent_signature", {}).get("uuid")
+        )
+        logger.debug("Bound to agent: %s", bound_id[:8] if bound_id else "not specified")
+
+        action = governance_result.get("action")
+        if not isinstance(action, str) or not action.strip():
+            raise Exception(
+                "UNITARES check-in returned no action "
+                f"(keys: {sorted(str(k) for k in governance_result)}); "
+                "not a verdict"
+            )
+        margin = governance_result.get("margin")
+        if not isinstance(margin, str) or not margin.strip():
+            margin = None
+        return {
+            "action": action,
+            "margin": margin,
+            "reason": governance_result.get("reason", "Governance check completed"),
+            "source": "unitares",
+            "unitares_agent_id": bound_id,
+            "raw_response": governance_result,
+            **_state_space_fields(body_projection, governance_result),
+        }
     
     def _local_governance(
         self,
@@ -1198,8 +1556,8 @@ class UnitaresBridge:
         Returns:
             Verified display name string, or None if unavailable.
         """
-        if not self._url or self._available is False:
-            return None  # Skip when UNITARES known unavailable
+        if not self._url or self._available is False or self._is_rest_mode():
+            return None  # Skip when unavailable or in scoped REST agent-token mode
 
         sid = session_id or self._session_id
         if not sid:
@@ -1262,7 +1620,7 @@ class UnitaresBridge:
         Returns:
             True if synced successfully, False otherwise
         """
-        if not self._url or not self._agent_id:
+        if not self._url or not self._agent_id or self._is_rest_mode():
             return False
         
         try:
@@ -1325,7 +1683,7 @@ class UnitaresBridge:
         Returns:
             True if synced successfully, False otherwise
         """
-        if not self._url or not self._agent_id:
+        if not self._url or not self._agent_id or self._is_rest_mode():
             return False
 
         try:
@@ -1395,7 +1753,8 @@ class UnitaresBridge:
         """
         Report an outcome event to UNITARES for EISV validation.
 
-        Fire-and-forget, non-blocking. Non-fatal on failure.
+        Fire-and-forget, non-blocking. Non-fatal on failure. Single attempt
+        on timeout to avoid duplicate outcome rows.
 
         Args:
             outcome_type: e.g. "drawing_completed", "task_completed"
@@ -1406,7 +1765,7 @@ class UnitaresBridge:
         Returns:
             True if reported successfully, False otherwise
         """
-        if not self._url or not self._agent_id:
+        if not self._url or (not self._agent_id and not self._is_rest_mode()):
             return False
 
         try:
@@ -1420,6 +1779,47 @@ class UnitaresBridge:
                 arguments["is_bad"] = is_bad
             if detail:
                 arguments["detail"] = detail
+
+            session = await self._get_session()
+
+            if self._is_rest_mode():
+                rest_resp = await post_rest_tool(
+                    session,
+                    self._url,
+                    self._auth_token,
+                    "outcome_event",
+                    arguments,
+                    timeout=self._timeout,
+                )
+                kind = rest_resp["kind"]
+                if kind == "ok":
+                    self._auth_state = "ok"
+                    logger.info("Outcome reported: %s score=%.2f", outcome_type, outcome_score or 0)
+                    return True
+                if kind == "unauthorized":
+                    self._auth_state = "unauthorized"
+                    self._available = False
+                    self._last_availability_error = rest_resp["error"]
+                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    logger.warning("Outcome report unauthorized (401): %s", rest_resp["error"])
+                elif kind == "unbound":
+                    self._auth_state = "unbound"
+                    self._available = False
+                    self._last_availability_error = rest_resp["error"]
+                    self._circuit_open_until = time.time() + self._circuit_backoff_max
+                    logger.error("Outcome report refused — session unbound: %s", rest_resp["error"])
+                elif kind == "scope_denied":
+                    if self._auth_state != "ok":
+                        self._auth_state = "scope_denied"
+                    if "outcome_event" not in self._logged_scope_denials:
+                        self._logged_scope_denials.add("outcome_event")
+                        logger.error(
+                            "UNITARES REST token lacks 'outcome' scope (deploy/config update needed): %s",
+                            rest_resp["error"],
+                        )
+                else:
+                    logger.debug("Outcome report refused (%s): %s", kind, rest_resp["error"])
+                return False
 
             mcp_request = {
                 "jsonrpc": "2.0",
@@ -1440,13 +1840,12 @@ class UnitaresBridge:
             if self._agent_id:
                 headers["X-Agent-Id"] = self._agent_id
 
-            session = await self._get_session()
             async with session.post(mcp_url, json=mcp_request, headers=headers) as response:
                 if response.status == 200:
                     content_type = response.headers.get("Content-Type", "")
                     text = await response.text()
                     result = self._parse_mcp_response(text, content_type)
-                    if result and "result" in result and "error" not in result:
+                    if mcp_tool_refusal(result) is None:
                         logger.info("Outcome reported: %s score=%.2f", outcome_type, outcome_score or 0)
                         return True
             return False

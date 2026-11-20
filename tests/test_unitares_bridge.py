@@ -920,3 +920,239 @@ async def test_response_with_neither_result_nor_error_is_a_failure():
     with patch.object(bridge, "_get_session", return_value=mock_session):
         with pytest.raises(Exception, match="neither result nor error"):
             await bridge._call_unitares(create_test_anima(), create_test_readings(), eisv)
+
+
+# ---------------------------------------------------------------------------
+# Scoped Bearer REST (/v1/tools/call) mode
+# ---------------------------------------------------------------------------
+
+
+def test_rest_url_detection_health_url_and_bearer_transport_safety():
+    from anima_mcp.unitares_bridge import (
+        is_bearer_transport_safe,
+        is_rest_tools_url,
+        sanitize_rest_arguments,
+    )
+
+    assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call") is True
+    assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call/") is True
+    assert is_rest_tools_url("https://gov.cirwel.org/v1/tools/call?foo=1") is True
+    assert is_rest_tools_url("http://127.0.0.1:8767/mcp/") is False
+
+    bridge = UnitaresBridge(unitares_url="https://gov.cirwel.org/v1/tools/call", auth_token="tok")
+    assert bridge._get_health_url() == "https://gov.cirwel.org/health"
+    assert bridge._basic_auth is None
+
+    assert is_bearer_transport_safe("https://gov.cirwel.org/v1/tools/call") is True
+    assert is_bearer_transport_safe("http://127.0.0.1:8767/v1/tools/call") is True
+    assert is_bearer_transport_safe("http://localhost:8767/v1/tools/call") is True
+    assert is_bearer_transport_safe("http://gov.cirwel.org/v1/tools/call") is False
+
+    cleaned = sanitize_rest_arguments({
+        "client_session_id": "agent-123",
+        "outcome_type": "task_completed",
+        "agent_id": "bad",
+        "agent_uuid": "bad",
+        "continuity_token": "bad",
+        "session_id": "bad",
+        "kwargs": {"x": 1},
+    })
+    assert cleaned == {"client_session_id": "agent-123", "outcome_type": "task_completed"}
+
+
+@pytest.mark.asyncio
+async def test_rest_check_in_success_and_out_of_scope_skips():
+    bridge = UnitaresBridge(
+        unitares_url="https://gov.cirwel.org/v1/tools/call",
+        agent_id="agent-123",
+        auth_token="tok-abc",
+    )
+    bridge._anchor = {"uuid": "u-1", "continuity_token": "ct-1", "client_session_id": "agent-69a1a4f7-a30", "saved_at": 0}
+
+    posted = []
+
+    def fake_post(url, **kwargs):
+        posted.append((url, kwargs))
+        return _mock_http_response(
+            body=json.dumps({
+                "name": "process_agent_update",
+                "success": True,
+                "result": {"action": "proceed", "margin": "comfortable", "reason": "ok"},
+            })
+        )
+
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=_mock_http_response(body='{"status":"ok"}', status=200))
+    mock_session.post = MagicMock(side_effect=fake_post)
+
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        # Out-of-scope helpers must make 0 HTTP calls in REST mode
+        assert await bridge.resolve_caller_identity("sess") is None
+        assert await bridge.sync_name("Lumen") is False
+        assert await bridge.sync_identity_metadata(MagicMock()) is False
+        assert posted == []
+
+        decision = await bridge.check_in(create_test_anima(), create_test_readings())
+
+    assert decision["source"] == "unitares"
+    assert decision["action"] == "proceed"
+    assert bridge._auth_state == "ok"
+    assert len(posted) == 1
+    url, kwargs = posted[0]
+    assert url == "https://gov.cirwel.org/v1/tools/call"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok-abc"
+    assert "X-Agent-Id" not in kwargs["headers"]
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["json"]["name"] == "process_agent_update"
+    for forbidden in ("agent_id", "agent_uuid", "continuity_token", "session_id", "kwargs"):
+        assert forbidden not in kwargs["json"]["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_rest_check_in_401_403_429_and_html_502_classification():
+    import time
+
+    from anima_mcp.unitares_bridge import _sanitize_probe_error
+
+    assert "secret-xyz" not in _sanitize_probe_error(Exception("Bearer secret-xyz failed"))
+
+    bridge = UnitaresBridge(
+        unitares_url="https://gov.cirwel.org/v1/tools/call",
+        agent_id="agent-123",
+        auth_token="bad-tok",
+    )
+
+    # 1. 401 unauthorized sets long backoff and marks auth_state
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=_mock_http_response(body='{"error":"Unauthorized"}', status=401))
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()):
+        decision = await bridge.check_in(create_test_anima(), create_test_readings())
+    assert decision["source"] == "local"
+    assert bridge._auth_state == "unauthorized"
+    assert bridge._circuit_open_until > time.time() + 60.0
+
+    # 2. 403 AgentTokenUnbound sets local fallback without attempting _try_reanchor
+    bridge._circuit_open_until = 0.0
+    mock_session.post = MagicMock(
+        return_value=_mock_http_response(
+            body=json.dumps({
+                "success": False,
+                "error": "No live session binding",
+                "error_type": "AgentTokenUnbound",
+                "recovery": "operator: rebind",
+            }),
+            status=403,
+        )
+    )
+    reanchor = AsyncMock(return_value=False)
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_try_reanchor", reanchor):
+        dec_unbound = await bridge.check_in(create_test_anima(), create_test_readings())
+    assert dec_unbound["source"] == "local"
+    assert "No live session binding" in dec_unbound["reason"]
+    assert bridge._auth_state == "unbound"
+    reanchor.assert_not_awaited()
+
+    # 3. 429 rate_limited falls back locally WITHOUT incrementing breaker failures
+    bridge._circuit_open_until = 0.0
+    bridge._circuit_failures = 0
+    mock_session.post = MagicMock(return_value=_mock_http_response(body='{"error":"too fast"}', status=429))
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session):
+        dec_429 = await bridge.check_in(create_test_anima(), create_test_readings())
+    assert dec_429["source"] == "local"
+    assert bridge._circuit_failures == 0
+
+    # 4. HTML 502 proxy body returns local fallback and trips failure counter
+    mock_session.post = MagicMock(return_value=_mock_http_response(body="<html>502 Bad Gateway</html>", status=502))
+    with patch.object(bridge, "check_availability", AsyncMock(return_value=True)), \
+         patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()):
+        dec_502 = await bridge.check_in(create_test_anima(), create_test_readings())
+    assert dec_502["source"] == "local"
+    assert bridge._circuit_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_rest_availability_never_falls_back_to_mcp_tools_list():
+    bridge = UnitaresBridge(unitares_url="https://gov.cirwel.org/v1/tools/call", auth_token="tok")
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=_mock_http_response(body="down", status=503))
+    mock_session.post = MagicMock()
+    with patch.object(bridge, "_get_session", return_value=mock_session), \
+         patch.object(bridge, "_reset_session", AsyncMock()):
+        ok = await bridge.check_availability()
+    assert ok is False
+    mock_session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rest_report_outcome_checks_envelope_and_refuses_dirty_payload():
+    bridge = UnitaresBridge(
+        unitares_url="https://gov.cirwel.org/v1/tools/call",
+        agent_id="agent-123",
+        auth_token="tok-outcome",
+    )
+    posted = []
+
+    def capture_post(url, **kwargs):
+        posted.append(kwargs)
+        return _mock_http_response(
+            body=json.dumps({"name": "outcome_event", "success": True, "result": {"outcome_id": "o-1"}}),
+            status=200,
+        )
+
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(side_effect=capture_post)
+    with patch.object(bridge, "_get_session", return_value=mock_session):
+        assert await bridge.report_outcome("drawing_completed", outcome_score=0.92, detail={"mark_count": 100}) is True
+        # Outer or inner refusal returns False even on HTTP 200
+        mock_session.post = MagicMock(
+            return_value=_mock_http_response(
+                body=json.dumps({"name": "outcome_event", "success": True, "result": {"success": False, "error": "refused"}}),
+                status=200,
+            )
+        )
+        assert await bridge.report_outcome("drawing_completed", outcome_score=0.92) is False
+
+        # Scope denied logs once without clobbering an already-healthy check-in auth state
+        mock_session.post = MagicMock(
+            return_value=_mock_http_response(
+                body=json.dumps({"success": False, "error": "lacks outcome scope", "error_type": "AgentTokenScope"}),
+                status=403,
+            )
+        )
+        assert await bridge.report_outcome("drawing_completed", outcome_score=0.92) is False
+    assert bridge._auth_state == "ok"
+    assert "outcome_event" in bridge._logged_scope_denials
+
+    scoped_bridge = UnitaresBridge(
+        unitares_url="https://gov.cirwel.org/v1/tools/call",
+        agent_id="agent-123",
+        auth_token="tok-checkin-only",
+    )
+    scoped_session = MagicMock()
+    scoped_session.post = MagicMock(
+        return_value=_mock_http_response(
+            body=json.dumps({"success": False, "error": "lacks outcome scope", "error_type": "AgentTokenScope"}),
+            status=403,
+        )
+    )
+    with patch.object(scoped_bridge, "_get_session", return_value=scoped_session):
+        assert await scoped_bridge.report_outcome("drawing_completed", outcome_score=0.92) is False
+    assert scoped_bridge._auth_state == "scope_denied"
+    args = posted[0]["json"]["arguments"]
+    assert args["outcome_type"] == "drawing_completed"
+    for forbidden in ("agent_id", "agent_uuid", "continuity_token", "session_id", "kwargs"):
+        assert forbidden not in args
+    assert "X-Agent-Id" not in posted[0]["headers"]
+
+    # Also verify MCP mode refuses {"success": False} instead of returning True
+    mcp_bridge = UnitaresBridge(unitares_url="http://localhost:8767/mcp", agent_id="agent-123")
+    mcp_session = MagicMock()
+    mcp_session.post = MagicMock(return_value=_mock_http_response(body=_tool_result({"success": False, "error": "denied"})))
+    with patch.object(mcp_bridge, "_get_session", return_value=mcp_session):
+        assert await mcp_bridge.report_outcome("drawing_completed") is False

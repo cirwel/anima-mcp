@@ -75,61 +75,42 @@ async def share_insight_to_unitares(
 
     try:
         import aiohttp
-        
-        # Get agent ID from identity or environment
-        agent_id = None
-        if identity and hasattr(identity, 'creature_id'):
-            agent_id = identity.creature_id
-        else:
-            agent_id = os.environ.get("ANIMA_ID")
-        
-        if not agent_id:
-            return None
-        
+        from .unitares_bridge import (
+            UnitaresBridge,
+            is_rest_tools_url,
+            mcp_tool_refusal,
+            post_rest_tool,
+        )
+
         # Build tags
         final_tags = ["lumen", "embodied", "autonomous"]
         if tags:
             final_tags.extend(tags)
-        
-        # store_knowledge_graph is a pre-consolidation name that /mcp/ does
-        # not resolve ("Unknown tool", isError) — every share was refused.
-        # `details` is the canonical field; `content` only reached it through
-        # a parameter alias.
-        mcp_request = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "knowledge",
-                "arguments": {
-                    "action": "store",
-                    "client_session_id": client_session_id,
-                    "summary": insight,
-                    "discovery_type": discovery_type,
-                    "tags": final_tags,
-                    "details": json.dumps({
-                        "source": "lumen_autonomous",
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                }
-            }
+
+        store_arguments = {
+            "action": "store",
+            "client_session_id": client_session_id,
+            "summary": insight,
+            "discovery_type": discovery_type,
+            "tags": final_tags,
+            "severity": "low",
+            "details": json.dumps({
+                "source": "lumen_autonomous",
+                "timestamp": datetime.now().isoformat(),
+            }),
         }
-        
-        # Determine endpoint URL
-        if '/mcp' in unitares_url:
-            mcp_url = unitares_url
-        elif '/sse' in unitares_url:
-            mcp_url = unitares_url.replace('/sse', '/mcp')
-        else:
-            mcp_url = f"{unitares_url}/mcp"
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "X-Agent-Id": agent_id,
-            "X-Session-ID": f"anima-{agent_id[:8]}"
-        }
-        
+
+        rest_mode = is_rest_tools_url(unitares_url)
+        agent_id = None
+        if not rest_mode:
+            # Legacy /mcp/ path requires agent_id header
+            if identity and hasattr(identity, 'creature_id'):
+                agent_id = identity.creature_id
+            else:
+                agent_id = os.environ.get("ANIMA_ID")
+            if not agent_id:
+                return None
+
         global _http_session, _session_loop
 
         # Reuse session if still valid for this event loop
@@ -144,7 +125,58 @@ async def share_insight_to_unitares(
             )
             _session_loop = current_loop
 
-        from .unitares_bridge import UnitaresBridge, mcp_tool_refusal
+        if rest_mode:
+            token = (os.environ.get("UNITARES_HTTP_API_TOKEN") or "").strip() or None
+            rest_resp = await post_rest_tool(
+                _http_session,
+                unitares_url,
+                token,
+                "knowledge",
+                store_arguments,
+                timeout=5.0,
+            )
+            if rest_resp["kind"] != "ok":
+                print(
+                    f"[UNITARES Knowledge] Share refused ({rest_resp['kind']}): {rest_resp['error']}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return None
+
+            _shared_insights.add(insight_hash)
+            _last_share_time = now
+            if len(_shared_insights) > 1000:
+                _shared_insights.clear()
+            return rest_resp["result"]
+
+        # store_knowledge_graph is a pre-consolidation name that /mcp/ does
+        # not resolve ("Unknown tool", isError) — every share was refused.
+        # `details` is the canonical field; `content` only reached it through
+        # a parameter alias.
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "knowledge",
+                "arguments": {k: v for k, v in store_arguments.items() if k != "severity"},
+            }
+        }
+
+        # Determine endpoint URL
+        if '/mcp' in unitares_url:
+            mcp_url = unitares_url
+        elif '/sse' in unitares_url:
+            mcp_url = unitares_url.replace('/sse', '/mcp')
+        else:
+            mcp_url = f"{unitares_url}/mcp"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "X-Agent-Id": agent_id,
+            "X-Session-ID": f"anima-{agent_id[:8]}"
+        }
 
         async with _http_session.post(mcp_url, json=mcp_request, headers=headers) as response:
             if response.status != 200:
