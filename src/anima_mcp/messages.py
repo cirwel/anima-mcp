@@ -28,6 +28,7 @@ MAX_UNANSWERED_QUESTIONS_SOFT_CAP = 6  # hold new questions until backlog shrink
 MAX_QUESTIONS_PER_ROLLING_DAY = 3  # hard curiosity budget, independent of replies
 QUESTION_EXPIRY_SECONDS = 14_400  # 4 hours before stale unanswered questions expire
 QUESTION_BUDGET_WINDOW_SECONDS = 86_400
+CONTEXT_QUIET_MOMENT = "a quiet moment"
 
 _QUESTION_BOILERPLATE_PREFIXES = (
     "why is it that i now know that ",
@@ -579,13 +580,27 @@ class MessageBoard:
             self._save()
         return expired_any
 
-    def add_question(self, text: str, author: str = "lumen", context: Optional[str] = None) -> Optional[Message]:
+    def add_question(
+        self,
+        text: str,
+        author: str = "lumen",
+        context: Optional[str] = None,
+        *,
+        reserve_budget_slots: int = 0,
+        max_same_context_per_day: Optional[int] = None,
+    ) -> Optional[Message]:
         """Add a question from Lumen - seeking response from agents/user.
 
         Args:
             text: The question text
             author: Who is asking (default: "lumen")
             context: What triggered this question (e.g., "light dropped suddenly")
+            reserve_budget_slots: Leave at least this many slots of the rolling
+                24h question budget and unanswered soft cap unclaimed for
+                unreserved callers (admitted questions still count toward the
+                shared rolling budget).
+            max_same_context_per_day: Cap questions with this exact ``context``
+                within the rolling 24h budget window (no-op if ``context`` is None).
         """
         import time
 
@@ -593,19 +608,28 @@ class MessageBoard:
         self._expire_old_questions(now)
 
         recent_questions = [m for m in self._messages if m.msg_type == MESSAGE_TYPE_QUESTION]
-
-        questions_in_budget_window = sum(
-            1 for m in recent_questions
+        recent_in_window = [
+            m for m in recent_questions
             if m.timestamp > now - QUESTION_BUDGET_WINDOW_SECONDS
-        )
-        if questions_in_budget_window >= MAX_QUESTIONS_PER_ROLLING_DAY:
+        ]
+        reserved = max(0, reserve_budget_slots)
+        effective_daily_budget = max(0, MAX_QUESTIONS_PER_ROLLING_DAY - reserved)
+        if len(recent_in_window) >= effective_daily_budget:
             return None
+
+        if max_same_context_per_day is not None and context is not None:
+            same_context_in_window = sum(
+                1 for m in recent_in_window if m.context == context
+            )
+            if same_context_in_window >= max(0, max_same_context_per_day):
+                return None
 
         unanswered_ct = sum(
             1 for m in recent_questions
             if not m.answered and m.expired_at is None
         )
-        if unanswered_ct >= MAX_UNANSWERED_QUESTIONS_SOFT_CAP:
+        effective_unanswered_cap = max(0, MAX_UNANSWERED_QUESTIONS_SOFT_CAP - reserved)
+        if unanswered_ct >= effective_unanswered_cap:
             return None
 
         if recent_questions:
@@ -815,9 +839,22 @@ def add_agent_message(text: str, agent_name: str = "agent", responds_to: Optiona
     return get_board().add_agent_message(text, agent_name, responds_to)
 
 
-def add_question(text: str, author: str = "lumen", context: Optional[str] = None) -> Optional[Message]:
+def add_question(
+    text: str,
+    author: str = "lumen",
+    context: Optional[str] = None,
+    *,
+    reserve_budget_slots: int = 0,
+    max_same_context_per_day: Optional[int] = None,
+) -> Optional[Message]:
     """Convenience: add a question from Lumen with optional context."""
-    return get_board().add_question(text, author=author, context=context)
+    return get_board().add_question(
+        text,
+        author=author,
+        context=context,
+        reserve_budget_slots=reserve_budget_slots,
+        max_same_context_per_day=max_same_context_per_day,
+    )
 
 
 def get_unanswered_questions(limit: int = 5) -> List[Message]:

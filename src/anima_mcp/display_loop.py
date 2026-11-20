@@ -439,8 +439,14 @@ def run_quiet_world_contemplation(metacog: Any) -> None:
     if contemplative:
         posted = None
         try:
-            from .messages import add_question
-            posted = add_question(contemplative, author="lumen", context="a quiet moment")
+            from .messages import CONTEXT_QUIET_MOMENT, add_question
+            posted = add_question(
+                contemplative,
+                author="lumen",
+                context=CONTEXT_QUIET_MOMENT,
+                reserve_budget_slots=1,
+                max_same_context_per_day=1,
+            )
         except Exception as e:
             logger.debug("[Metacog] contemplative add_question error: %s", e)
         if posted is not None:

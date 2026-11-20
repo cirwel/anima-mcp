@@ -1030,7 +1030,7 @@ class TestContemplativeRotation:
             assert q in pool[1:]
 
     def test_run_quiet_world_contemplation_gates_growth_on_posted(self, mm):
-        """Contemplative prompts only seed growth curiosities when posted to the board."""
+        """Contemplative prompts reserve board headroom and only seed growth when posted."""
         from unittest.mock import MagicMock, patch
         from anima_mcp.display_loop import run_quiet_world_contemplation
 
@@ -1038,9 +1038,16 @@ class TestContemplativeRotation:
         growth = MagicMock()
         with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \
              patch("anima_mcp.messages.get_answered_question_texts", return_value=set()), \
-             patch("anima_mcp.messages.add_question", return_value=None), \
+             patch("anima_mcp.messages.add_question", return_value=None) as add_q_suppressed, \
              patch("anima_mcp.accessors._get_growth", return_value=growth):
             run_quiet_world_contemplation(mm)
+        add_q_suppressed.assert_called_once()
+        assert add_q_suppressed.call_args.kwargs == {
+            "author": "lumen",
+            "context": "a quiet moment",
+            "reserve_budget_slots": 1,
+            "max_same_context_per_day": 1,
+        }
         growth.add_curiosity.assert_not_called()
 
         with patch("anima_mcp.messages.get_recent_questions", return_value=[]), \

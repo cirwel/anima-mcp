@@ -167,6 +167,171 @@ class TestQuestions:
 
         assert board.add_question("Would an answer reopen the budget?") is None
 
+    def test_reserve_budget_slots_preserves_headroom_for_unreserved_callers(self, board):
+        """Reserved callers yield the final daily slot to unreserved callers."""
+        base_t = time.time() - 3600
+        for i in range(MAX_QUESTIONS_PER_ROLLING_DAY - 1):
+            board._messages.append(
+                Message(
+                    message_id=f"prior{i}",
+                    text=f"Prior {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=base_t - (i + 1) * 1200,
+                    author="lumen",
+                )
+            )
+        board._save()
+
+        # Contemplative-style reserved post yields the final slot.
+        assert (
+            board.add_question(
+                "Quiet wondering?",
+                context="a quiet moment",
+                reserve_budget_slots=1,
+            )
+            is None
+        )
+        # Surprise/drive unreserved post can still claim the final slot.
+        surprise_q = board.add_question("Why did temperature jump?", context="surprise=0.50")
+        assert surprise_q is not None
+
+    def test_max_same_context_per_day_limits_repeated_quiet_prompts(self, board):
+        """A per-context daily cap holds after expiry within 24h and resets past 24h."""
+        old_enough_to_expire = time.time() - (msg_module.QUESTION_EXPIRY_SECONDS + 600)
+        board._messages.append(
+            Message(
+                message_id="quiet-old",
+                text="Everything is steady?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=old_enough_to_expire,
+                author="lumen",
+                context="a quiet moment",
+            )
+        )
+        board._save()
+
+        # Blocked even though the prior quiet question has already expired.
+        assert (
+            board.add_question(
+                "What pattern have I stopped seeing?",
+                context="a quiet moment",
+                max_same_context_per_day=1,
+            )
+            is None
+        )
+        # Different context still posts within the remaining rolling-day budget.
+        assert (
+            board.add_question("Temperature jumped?", context="surprise=0.45")
+            is not None
+        )
+
+        # Once the prior quiet question ages past the 24h window, the context slot reopens.
+        board._messages[0].timestamp = time.time() - (msg_module.QUESTION_BUDGET_WINDOW_SECONDS + 60)
+        board._messages[-1].timestamp = time.time() - (msg_module.MIN_QUESTION_INTERVAL_SECONDS + 60)
+        board._save()
+        reopened = board.add_question(
+            "When the world holds still, what remains?",
+            context="a quiet moment",
+            max_same_context_per_day=1,
+        )
+        assert reopened is not None
+
+    def test_mixed_order_quiet_first_and_rolling_window_recovery(self, board):
+        """Quiet first + 2 priority posts fill the 3/day budget cleanly without starvation or bypass."""
+        q_quiet = board.add_question(
+            "Everything is steady?",
+            context=msg_module.CONTEXT_QUIET_MOMENT,
+            reserve_budget_slots=1,
+            max_same_context_per_day=1,
+        )
+        assert q_quiet is not None
+        q_quiet.timestamp = time.time() - 3 * 3600
+
+        q_p1 = board.add_question("Why did light spike?", context="surprise=0.50")
+        assert q_p1 is not None
+        q_p1.timestamp = time.time() - 2 * 3600
+
+        # A second quiet attempt in the same day is blocked, leaving the 3rd slot free.
+        assert (
+            board.add_question(
+                "Room is quiet again?",
+                context=msg_module.CONTEXT_QUIET_MOMENT,
+                reserve_budget_slots=1,
+                max_same_context_per_day=1,
+            )
+            is None
+        )
+
+        # Second priority post claims the 3rd daily slot.
+        q_p2 = board.add_question("Temperature jumped?", context="surprise=0.45")
+        assert q_p2 is not None
+        q_p2.timestamp = time.time() - 3600
+
+        # Budget of 3 is now full until the oldest question ages past 24h.
+        assert board.add_question("Third priority too soon?", context="surprise=0.60") is None
+
+        q_quiet.timestamp = time.time() - (msg_module.QUESTION_BUDGET_WINDOW_SECONDS + 60)
+        q_p2.timestamp = time.time() - (msg_module.MIN_QUESTION_INTERVAL_SECONDS + 60)
+        board._save()
+        assert board.add_question("Third priority after slot ages out?", context="surprise=0.60") is not None
+
+    def test_reserve_budget_slots_and_context_edge_cases(self, board, monkeypatch):
+        """Reserve applies to unanswered soft cap, >=MAX blocks, None context skips cap, wrapper forwards."""
+        monkeypatch.setattr(msg_module, "MAX_QUESTIONS_PER_ROLLING_DAY", 10)
+        for i in range(MAX_UNANSWERED_QUESTIONS_SOFT_CAP - 1):
+            board._messages.append(
+                Message(
+                    message_id=f"u{i}",
+                    text=f"Backlog {i}?",
+                    msg_type=MESSAGE_TYPE_QUESTION,
+                    timestamp=time.time() - 3600 + i * 10,
+                    author="lumen",
+                    answered=False,
+                )
+            )
+        board._save()
+
+        # Reserved caller yields the last unanswered backlog slot.
+        assert (
+            board.add_question(
+                "Quiet backlog check?",
+                context=msg_module.CONTEXT_QUIET_MOMENT,
+                reserve_budget_slots=1,
+            )
+            is None
+        )
+        # reserve_budget_slots >= MAX_QUESTIONS_PER_ROLLING_DAY blocks all posts cleanly.
+        assert board.add_question("Over-reserved?", reserve_budget_slots=10) is None
+        # max_same_context_per_day is a no-op when context=None; unreserved post succeeds.
+        posted = board.add_question("Priority during backlog?", context=None, max_same_context_per_day=0)
+        assert posted is not None
+
+        # Module-level add_question wrapper forwards both keyword-only arguments.
+        seen = {}
+
+        class _StubBoard:
+            def add_question(self, text, author="lumen", context=None, **kwargs):
+                seen.update({"text": text, "author": author, "context": context, **kwargs})
+                return "ok"
+
+        monkeypatch.setattr(msg_module, "get_board", lambda: _StubBoard())
+        assert (
+            msg_module.add_question(
+                "Wrapper forward?",
+                context=msg_module.CONTEXT_QUIET_MOMENT,
+                reserve_budget_slots=1,
+                max_same_context_per_day=1,
+            )
+            == "ok"
+        )
+        assert seen == {
+            "text": "Wrapper forward?",
+            "author": "lumen",
+            "context": msg_module.CONTEXT_QUIET_MOMENT,
+            "reserve_budget_slots": 1,
+            "max_same_context_per_day": 1,
+        }
+
     def test_questions_similar_public_helper_matches_board_behavior(self, board):
         """Question similarity is available without reaching into MessageBoard internals."""
         q1 = "why is it that I now know that dim light changes my attention?"
