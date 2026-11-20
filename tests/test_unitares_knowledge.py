@@ -36,15 +36,15 @@ class _FakeResponse:
 
 
 class _PostingSession:
-    """Records the one JSON-RPC request share_insight_to_unitares sends."""
+    """Records the one HTTP request share_insight_to_unitares sends."""
 
     def __init__(self, body: str, status: int = 200) -> None:
         self.closed = False
         self.requests: list = []
         self._response = _FakeResponse(body, status)
 
-    def post(self, url, json=None, headers=None):
-        self.requests.append({"url": url, "json": json, "headers": headers})
+    def post(self, url, json=None, headers=None, **kwargs):
+        self.requests.append({"url": url, "json": json, "headers": headers, **kwargs})
         return self._response
 
 
@@ -75,6 +75,7 @@ def setup_function() -> None:
     uk._session_loop = None
     uk._shared_insights.clear()
     uk._last_share_time = 0.0
+    uk._auth_hold_until = 0.0
 
 
 def teardown_function() -> None:
@@ -177,3 +178,69 @@ def test_unattributed_share_is_skipped_without_a_request(monkeypatch, capsys):
     assert _share(session) is None
     assert session.requests == []
     assert "no client_session_id" in capsys.readouterr().err
+
+
+def test_rest_mode_posts_canonical_store_with_bearer_and_no_forbidden_keys(monkeypatch):
+    monkeypatch.setenv("UNITARES_URL", "https://gov.cirwel.org/v1/tools/call")
+    monkeypatch.setenv("UNITARES_HTTP_API_TOKEN", "secret-agent-token")
+    body = json.dumps({"name": "knowledge", "result": {"success": True, "discovery_id": "d-rest"}, "success": True})
+    session = _PostingSession(body)
+
+    res = _share(session, client_session_id="agent-69a1a4f7-a30")
+
+    assert res == {"success": True, "discovery_id": "d-rest"}
+    assert len(session.requests) == 1
+    req = session.requests[0]
+    assert req["url"] == "https://gov.cirwel.org/v1/tools/call"
+    assert req["headers"]["Authorization"] == "Bearer secret-agent-token"
+    assert "X-Agent-Id" not in req["headers"]
+    assert "X-Session-ID" not in req["headers"]
+    assert req["allow_redirects"] is False
+    assert req["json"]["name"] == "knowledge"
+    args = req["json"]["arguments"]
+    assert args["action"] == "store"
+    assert args["severity"] == "low"
+    assert args["client_session_id"] == "agent-69a1a4f7-a30"
+    for forbidden in ("agent_id", "agent_uuid", "continuity_token", "session_id", "kwargs"):
+        assert forbidden not in args
+    assert hash(INSIGHT) in uk._shared_insights
+
+
+def test_rest_mode_scope_denied_and_refused_are_not_recorded_as_shared(monkeypatch, capsys):
+    monkeypatch.setenv("UNITARES_URL", "https://gov.cirwel.org/v1/tools/call")
+    monkeypatch.setenv("UNITARES_HTTP_API_TOKEN", "secret-agent-token")
+    denied_body = json.dumps({"success": False, "error": "lacks knowledge_store scope", "error_type": "AgentTokenScope"})
+    session = _PostingSession(denied_body, status=403)
+
+    res = _share(session, client_session_id="agent-69a1a4f7-a30")
+
+    assert res is None
+    assert hash(INSIGHT) not in uk._shared_insights
+    assert "scope_denied" in capsys.readouterr().err
+
+
+def test_rest_mode_refuses_bearer_over_non_loopback_http(monkeypatch, capsys):
+    monkeypatch.setenv("UNITARES_URL", "http://unitares.tail.ts.net:8767/v1/tools/call")
+    monkeypatch.setenv("UNITARES_HTTP_API_TOKEN", "secret-agent-token")
+    session = _PostingSession("{}")
+
+    res = _share(session, client_session_id="agent-69a1a4f7-a30")
+
+    assert res is None
+    assert session.requests == []
+    assert "non-loopback HTTP" in capsys.readouterr().err
+
+
+def test_rest_mode_unauthorized_holds_cooldown_and_redacts_token(monkeypatch, capsys):
+    monkeypatch.setenv("UNITARES_URL", "https://gov.cirwel.org/v1/tools/call")
+    monkeypatch.setenv("UNITARES_HTTP_API_TOKEN", "raw-secret-tok")
+    session = _PostingSession("{}", status=401)
+    assert _share(session, client_session_id="agent-69a1a4f7-a30") is None
+    assert len(session.requests) == 1
+    assert uk._auth_hold_until > 0.0
+
+    # While cooldown is open, second call skips HTTP POST
+    session2 = _PostingSession("{}", status=200)
+    assert _share(session2, client_session_id="agent-69a1a4f7-a30") is None
+    assert session2.requests == []
+    assert "raw-secret-tok" not in capsys.readouterr().err
