@@ -211,9 +211,19 @@ def run_creature():
 
     _mood_momentum = MoodMomentum()
     _inner_life = InnerLife()
-    _sensor_residuals = SensorResidualTracker()
+    try:
+        _sensor_residuals = SensorResidualTracker()
+    except Exception as e:
+        print(
+            f"[SensorResiduals] Init failed ({e}); running disabled",
+            file=sys.stderr,
+            flush=True,
+        )
+        _sensor_residuals = None
     inner_state = None
     _sensor_residuals_snapshot = None
+    _last_sr_obs_error_log = 0.0
+    _last_sr_save_error_log = 0.0
 
     # Persistent event loop for async calls (governance, cognitive, memory).
     # A single loop runs in a dedicated daemon thread so aiohttp sessions
@@ -359,22 +369,36 @@ def run_creature():
             )
 
             # 2a-i. Shadow-only per-sensor self-relative residual baseline
-            try:
-                _sensor_residuals_snapshot = _sensor_residuals.observe(
-                    readings,
-                    external_light_lux=_external_light_for_environment,
-                    current_warmth=anima.warmth,
-                    current_stability=anima.stability,
-                    current_clarity=anima.clarity,
-                )
-                _sensor_residuals.maybe_save()
-            except Exception as e:
-                _sensor_residuals_snapshot = None
-                print(
-                    f"[SensorResiduals] Observation error: {e}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            if _sensor_residuals is not None:
+                try:
+                    _sensor_residuals_snapshot = _sensor_residuals.observe(
+                        readings,
+                        external_light_lux=_external_light_for_environment,
+                        current_warmth=anima.warmth,
+                        current_stability=anima.stability,
+                        current_clarity=anima.clarity,
+                    )
+                except Exception as e:
+                    _sensor_residuals_snapshot = None
+                    _err_now = time.monotonic()
+                    if _err_now - _last_sr_obs_error_log >= 300.0:
+                        _last_sr_obs_error_log = _err_now
+                        print(
+                            f"[SensorResiduals] Observation error: {e}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                try:
+                    _sensor_residuals.maybe_save()
+                except Exception as e:
+                    _err_now = time.monotonic()
+                    if _err_now - _last_sr_save_error_log >= 300.0:
+                        _last_sr_save_error_log = _err_now
+                        print(
+                            f"[SensorResiduals] Save error: {e}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
             # 2a-ii. Activity State: Determine wakefulness level
             activity_state = None

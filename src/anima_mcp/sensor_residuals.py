@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
@@ -250,7 +250,10 @@ class OnlineCorrelation:
         if not isinstance(data, Mapping):
             return cls()
         try:
-            n = int(data["n"])
+            raw_n = data["n"]
+            if isinstance(raw_n, bool):
+                return cls()
+            n = int(raw_n)
             mean_x = float(data["mean_x"])
             mean_y = float(data["mean_y"])
             m2_x = float(data["m2_x"])
@@ -259,7 +262,12 @@ class OnlineCorrelation:
         except (KeyError, TypeError, ValueError):
             return cls()
         if (
-            n < 0
+            isinstance(data.get("mean_x"), bool)
+            or isinstance(data.get("mean_y"), bool)
+            or isinstance(data.get("m2_x"), bool)
+            or isinstance(data.get("m2_y"), bool)
+            or isinstance(data.get("c_xy"), bool)
+            or n < 0
             or m2_x < 0.0
             or m2_y < 0.0
             or not all(map(math.isfinite, (mean_x, mean_y, m2_x, m2_y, c_xy)))
@@ -529,12 +537,21 @@ class ResidualBand:
         if not isinstance(data, Mapping):
             return band
         try:
-            n = int(data["n"])
+            raw_n = data["n"]
+            if isinstance(raw_n, bool):
+                return band
+            n = int(raw_n)
             mean = float(data["mean"])
             var = float(data["var"])
         except (KeyError, TypeError, ValueError):
             return band
-        if n < 0 or var < 0.0 or not all(map(math.isfinite, (mean, var))):
+        if (
+            isinstance(data.get("mean"), bool)
+            or isinstance(data.get("var"), bool)
+            or n < 0
+            or var < 0.0
+            or not all(map(math.isfinite, (mean, var)))
+        ):
             return band
 
         band.n = n
@@ -640,11 +657,20 @@ class SensorResidualTracker:
         }
         self.observed_ticks: int = 0
         self._last_results: Dict[str, Dict[str, Any]] = {}
+        self._last_observed_at: Optional[float] = None
         self._last_composites: Dict[str, Any] = self._build_composites({}, now=time.time())
         self._last_save_at: float = time.time()
 
         if auto_load:
-            self._load()
+            try:
+                self._load()
+            except Exception as e:
+                print(
+                    f"[SensorResiduals] Unexpected load error ({e}); cold-starting",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._reset_fresh()
 
     def _reset_fresh(self) -> None:
         for spec in CHANNEL_SPECS:
@@ -799,6 +825,7 @@ class SensorResidualTracker:
             )
 
         self._last_results = results
+        self._last_observed_at = ts
         self._last_composites = composites
         return self.shm_snapshot(now=ts)
 
@@ -929,13 +956,15 @@ class SensorResidualTracker:
             if res is not None:
                 z_val = round(float(res["z"]), 4) if res.get("z") is not None else None
                 status = res["status"]
+                sigma_floored = bool(res.get("sigma_floored", band.sigma_floored))
             else:
                 z_val = None
                 status = "warming" if band.n < band.min_samples else "missing"
+                sigma_floored = band.sigma_floored
             entry: Dict[str, Any] = {
                 "status": status,
                 "z": z_val,
-                "sigma_floored": band.sigma_floored,
+                "sigma_floored": sigma_floored,
                 "samples": band.n,
                 "min_samples": band.min_samples,
                 "valid_fraction": round(band.valid_fraction, 4),
@@ -951,10 +980,12 @@ class SensorResidualTracker:
             if self._last_results
             else self._build_composites({}, now=ts)
         )
+        obs_ts = self._last_observed_at if self._last_observed_at is not None else ts
         return {
             "schema_version": SCHEMA_VERSION,
             "authority": AUTHORITY,
             "moves_no_gate": MOVES_NO_GATE,
+            "observed_at": datetime.fromtimestamp(obs_ts).isoformat(),
             "observed_ticks": self.observed_ticks,
             "channels": channels,
             "composites": composites,

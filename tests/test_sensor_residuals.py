@@ -616,7 +616,7 @@ async def test_handle_diagnostics_sensor_residuals_states(tmp_path: Path):
     assert out_stale["sensor_residuals"]["status"] == "unknown"
     assert out_stale["sensor_residuals"]["reason"] == "shm_stale"
 
-    # Opt-in detail reads persisted JSON read-only
+    # Opt-in detail reads persisted JSON read-only, while "false" string does not enable it
     persisted = tmp_path / "sr_detail.json"
     tracker = SensorResidualTracker(persisted, min_samples=3, auto_load=False)
     _feed_varying_cycle(tracker, 5)
@@ -627,7 +627,109 @@ async def test_handle_diagnostics_sensor_residuals_states(tmp_path: Path):
          patch("anima_mcp.accessors._get_sensors", return_value=sensors), \
          patch("anima_mcp.accessors._get_shm_client", return_value=fresh_shm), \
          patch("anima_mcp.sensor_residuals.DEFAULT_PERSISTENCE_PATH", persisted):
+        out_false = json.loads((await handle_diagnostics({"sensor_residuals_detail": "false"}))[0].text)
         out_detail = json.loads((await handle_diagnostics({"sensor_residuals_detail": True}))[0].text)
 
+    assert "sensor_residuals_detail" not in out_false
     assert out_detail["sensor_residuals_detail"]["available"] is True
     assert "ambient_temp_c" in out_detail["sensor_residuals_detail"]["channels"]
+
+    # Stale snapshot observed_at inside fresh SHM envelope fails toward unknown
+    stale_snap_shm = SimpleNamespace(
+        read=lambda: {
+            "timestamp": fresh_ts,
+            "sensor_residuals": {
+                "observed_at": stale_ts,
+                "observed_ticks": 5,
+            },
+        }
+    )
+    with patch("anima_mcp.accessors._get_leds", return_value=None), \
+         patch("anima_mcp.accessors._get_display", return_value=None), \
+         patch("anima_mcp.accessors._get_display_update_task", return_value=None), \
+         patch("anima_mcp.accessors._get_sensors", return_value=sensors), \
+         patch("anima_mcp.accessors._get_shm_client", return_value=stale_snap_shm):
+        out_snap_stale = json.loads((await handle_diagnostics({}))[0].text)
+    assert out_snap_stale["sensor_residuals"]["available"] is False
+    assert out_snap_stale["sensor_residuals"]["status"] == "unknown"
+    assert out_snap_stale["sensor_residuals"]["reason"] == "snapshot_stale"
+
+    # Spoofed authority/moves_no_gate/available in SHM cannot override invariant fields
+    spoof_shm = SimpleNamespace(
+        read=lambda: {
+            "timestamp": fresh_ts,
+            "sensor_residuals": {
+                "available": False,
+                "authority": "authoritative_gate",
+                "moves_no_gate": False,
+                "observed_ticks": 7,
+            },
+        }
+    )
+    with patch("anima_mcp.accessors._get_leds", return_value=None), \
+         patch("anima_mcp.accessors._get_display", return_value=None), \
+         patch("anima_mcp.accessors._get_display_update_task", return_value=None), \
+         patch("anima_mcp.accessors._get_sensors", return_value=sensors), \
+         patch("anima_mcp.accessors._get_shm_client", return_value=spoof_shm):
+        out_spoof = json.loads((await handle_diagnostics({}))[0].text)
+    assert out_spoof["sensor_residuals"]["available"] is True
+    assert out_spoof["sensor_residuals"]["authority"] == AUTHORITY
+    assert out_spoof["sensor_residuals"]["moves_no_gate"] is True
+
+
+def test_non_finite_bool_and_interleaved_missing_and_boundary_flush(tmp_path: Path):
+    # Non-finite and bool external_light_lux inputs map to missing and leave baseline intact
+    tracker = SensorResidualTracker(tmp_path / "sr.json", min_samples=3, window_samples=8, auto_load=False)
+    for bad in (None, float("nan"), float("inf"), float("-inf"), True):
+        snap = tracker.observe(_make_readings(light_lux=1000.0), external_light_lux=bad, now=100.0)
+        assert snap["channels"]["external_light_lux"]["status"] == "missing"
+        assert snap["channels"]["external_light_lux"]["z"] is None
+        assert snap["channels"]["external_light_lux"]["samples"] == 0
+
+    # Held repeats crossing window_samples match exact sequential folding
+    from dataclasses import replace as dc_replace
+
+    spec = CHANNEL_SPEC_MAP["ambient_temp_c"]
+    seq = ResidualBand(
+        spec=dc_replace(spec, physical_frozen_guard=False),
+        min_samples=3,
+        window_samples=6,
+    )
+    held = ResidualBand(spec=spec, min_samples=3, window_samples=6, frozen_run_threshold=60)
+    values = [20.0, 24.0, 22.0, 22.0, 22.0, 22.0, 22.0, 22.0, 25.0]
+    for idx, v in enumerate(values):
+        res_seq = seq.observe(v, now=float(idx))
+        res_held = held.observe(v, now=float(idx))
+    assert held.n == seq.n
+    assert held.mean == pytest.approx(seq.mean)
+    assert held.var == pytest.approx(seq.var)
+    assert res_held["z"] == pytest.approx(res_seq["z"])
+
+    # Interleaved None breaks a repeated run cleanly before frozen threshold
+    interleaved = ResidualBand(spec=spec, min_samples=2, window_samples=20, frozen_run_threshold=5)
+    for i in range(4):
+        assert interleaved.observe(21.0, now=float(i))["status"] != "frozen"
+    assert interleaved.observe(None, now=5.0)["status"] == "missing"
+    for i in range(4):
+        assert interleaved.observe(21.0, now=6.0 + i)["status"] != "frozen"
+
+    # Boolean / NaN corrupted fields in JSON reject cleanly without crashing
+    assert ResidualBand.from_dict(spec, {"n": True, "mean": 1.0, "var": 0.1}, min_samples=3, window_samples=10, frozen_run_threshold=60).n == 0
+    assert OnlineCorrelation.from_dict({"n": True, "mean_x": 0.0, "mean_y": 0.0, "m2_x": 1.0, "m2_y": 1.0, "c_xy": 0.0}).n == 0
+
+    # Read-only loader leaves a corrupt JSON file untouched (no quarantine rename)
+    bad_file = tmp_path / "corrupt_only.json"
+    bad_file.write_text("{broken")
+    ro = load_persisted_sensor_residuals(bad_file)
+    assert ro["available"] is False
+    assert bad_file.exists()
+    assert not tmp_path.joinpath("corrupt_only.json.corrupt").exists()
+
+    # Save failure in unwritable target returns False without disrupting observe()
+    unwritable = tmp_path / "as_file"
+    unwritable.write_text("blocker")
+    isolated = SensorResidualTracker(unwritable / "child.json", min_samples=2, auto_load=False)
+    snap_ok = isolated.observe(_make_readings(), now=500.0)
+    assert snap_ok["observed_ticks"] == 1
+    assert isolated.save(now=500.0) is False
+

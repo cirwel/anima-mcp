@@ -528,7 +528,7 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
 
     # Opt-in: full persisted shadow sensor residual baselines, sigma floor
     # occupancy, |z| histograms, and online correlations (pure read-only).
-    if arguments.get("sensor_residuals_detail"):
+    if _is_truthy_flag(arguments.get("sensor_residuals_detail")):
         try:
             from ..sensor_residuals import load_persisted_sensor_residuals
             result["sensor_residuals_detail"] = load_persisted_sensor_residuals()
@@ -539,6 +539,16 @@ async def handle_diagnostics(arguments: dict) -> list[TextContent]:
             }
 
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+def _is_truthy_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
 
 
 def _read_sensor_residuals_from_shm() -> dict:
@@ -557,28 +567,38 @@ def _read_sensor_residuals_from_shm() -> dict:
             "reason": reason,
         }
 
+    def _is_fresh_iso(ts_value: object) -> bool:
+        if not isinstance(ts_value, str) or not ts_value:
+            return False
+        try:
+            parsed = datetime.fromisoformat(ts_value.replace("Z", "+00:00"))
+            age = (datetime.now(parsed.tzinfo) - parsed).total_seconds()
+        except Exception:
+            return False
+        return -5.0 <= age <= SHM_STALE_THRESHOLD_SECONDS
+
     shm_client = _get_shm_client()
     shm_data = shm_client.read() if shm_client else None
     if not isinstance(shm_data, dict):
         return _unavailable("shm_unavailable")
 
-    ts_str = shm_data.get("timestamp")
-    if not isinstance(ts_str, str) or not ts_str:
-        return _unavailable("shm_stale")
-    try:
-        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        age_seconds = (datetime.now(ts.tzinfo) - ts).total_seconds()
-    except Exception:
-        return _unavailable("shm_stale")
-
-    if age_seconds > SHM_STALE_THRESHOLD_SECONDS or age_seconds < -5:
+    if not _is_fresh_iso(shm_data.get("timestamp")):
         return _unavailable("shm_stale")
 
     sr = shm_data.get("sensor_residuals")
     if not isinstance(sr, dict):
         return _unavailable("not_in_shm")
 
-    return {"available": True, **sr}
+    observed_at = sr.get("observed_at")
+    if observed_at is not None and not _is_fresh_iso(observed_at):
+        return _unavailable("snapshot_stale")
+
+    return {
+        **sr,
+        "available": True,
+        "authority": AUTHORITY,
+        "moves_no_gate": MOVES_NO_GATE,
+    }
 
 
 async def handle_manage_display(arguments: dict) -> list[TextContent]:
