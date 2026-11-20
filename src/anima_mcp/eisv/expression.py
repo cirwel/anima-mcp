@@ -190,6 +190,7 @@ class StudentExpressionGenerator:
         self._model_dir = model_dir
         self._loaded = False
         self._fallback = ExpressionGenerator(seed=fallback_seed)
+        self.last_generation_source: Optional[str] = None
         self._load_models()
 
     def _load_models(self) -> None:
@@ -330,6 +331,7 @@ class StudentExpressionGenerator:
         Falls back to rule-based generator if model not loaded or window missing.
         """
         if not self._loaded or window is None:
+            self.last_generation_source = "fallback"
             return self._fallback.generate(shape)
 
         try:
@@ -345,6 +347,7 @@ class StudentExpressionGenerator:
             token2_idx = self._predict_forest(self._token2_forest, X_t2)
             token_2 = self._mappings["tokens_with_none"][token2_idx]
 
+            self.last_generation_source = "student"
             if pattern == "SINGLE":
                 return [token_1]
             elif pattern == "REPETITION":
@@ -356,6 +359,7 @@ class StudentExpressionGenerator:
             else:
                 return [token_1]
         except Exception:
+            self.last_generation_source = "fallback"
             return self._fallback.generate(shape)
 
     def update_weights(

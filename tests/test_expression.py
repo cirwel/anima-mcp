@@ -214,6 +214,27 @@ class TestExpressionGeneratorWeights:
         assert gen.update_weights(shape, [token], 1.0, reward=-0.5) == 1
         assert gen.get_weights(shape)[token] == pytest.approx(before - 0.04)
 
+    def test_student_tracks_last_generation_source_on_student_vs_fallback(self):
+        from pathlib import Path
+
+        model_dir = Path(__file__).resolve().parent.parent / "data" / "student_model"
+        if not model_dir.exists():
+            pytest.skip("student_model artifacts absent")
+        gen = StudentExpressionGenerator(str(model_dir), fallback_seed=42)
+        assert gen.is_loaded is True
+
+        gen.generate("settled_presence", window=None)
+        assert gen.last_generation_source == "fallback"
+
+        window = {
+            "states": [
+                {"E": 0.5, "I": 0.8, "S": 0.2, "V": -0.3},
+                {"E": 0.5, "I": 0.8, "S": 0.2, "V": -0.3},
+            ]
+        }
+        gen.generate("settled_presence", window=window)
+        assert gen.last_generation_source == "student"
+
     def test_get_weights_returns_copy(self):
         gen = ExpressionGenerator(seed=42)
         w1 = gen.get_weights("settled_presence")

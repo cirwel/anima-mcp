@@ -563,8 +563,12 @@ class TestPersistence:
                 "degenerate_stratum": 0,
                 "unknown_bounds": 0,
                 "floor_violation": 0,
+                "ceiling_violation": 0,
                 "no_baseline": 0,
                 "zero_delta": 0,
+                "saturated": 0,
+                "no_shape": 0,
+                "update_error": 0,
             },
         }
 
@@ -655,7 +659,7 @@ class TestPersistence:
         assert suggestion["generator_source"] == "student"
         before = ta._generator.get_weights("settled_presence").copy()
 
-        # Both explicit generator_source="student" and omitted (defaults to loaded student) skip.
+        # Explicit "student", omitted (None), and unrecognized sources all skip (affirmative gate).
         assert ta.record_eisv_weight_feedback(
             ["~stillness~"],
             1.0,
@@ -671,33 +675,63 @@ class TestPersistence:
             actual_count=3,
             anchored_recall=True,
         ) == 0
+        assert ta.record_eisv_weight_feedback(
+            ["~stillness~"],
+            1.0,
+            suggested_count=2,
+            actual_count=3,
+            generator_source="unknown_source",
+            anchored_recall=True,
+        ) == 0
 
         assert ta._generator.get_weights("settled_presence") == before
         updates = ta.get_state()["expression_generator"]["eisv_weight_updates"]
         assert updates["student_active"] is True
         assert updates["update_count"] == 0
-        assert updates["skipped"]["not_fallback_generated"] == 2
+        assert updates["skipped"]["not_fallback_generated"] == 3
         ta.close()
 
-    def test_anchored_recall_skips_floor_violations_as_anomalies(self):
+        # Also verify omitted/unknown provenance fails closed even when student is NOT loaded.
+        ta_fb = TrajectoryAwareness(buffer_size=30, seed=42)
+        _make_settled_buffer(ta_fb)
+        ta_fb.get_trajectory_suggestion()
+        assert ta_fb.record_eisv_weight_feedback(
+            ["~stillness~"],
+            1.0,
+            suggested_count=2,
+            actual_count=3,
+            anchored_recall=True,
+        ) == 0
+        assert ta_fb.get_state()["expression_generator"]["eisv_weight_updates"]["skipped"]["not_fallback_generated"] == 1
+
+    def test_anchored_recall_skips_floor_and_ceiling_violations_as_anomalies(self):
         ta = TrajectoryAwareness(buffer_size=30, db_path=self.db_path, seed=42)
         _make_settled_buffer(ta)
         ta.get_trajectory_suggestion()
         before = ta._generator.get_weights("settled_presence").copy()
 
-        updated = ta.record_eisv_weight_feedback(
+        assert ta.record_eisv_weight_feedback(
             ["~stillness~"],
             0.0,
             suggested_count=2,
             actual_count=2,
             generator_source="fallback",
             anchored_recall=True,
-        )
+        ) == 0
+        assert ta.record_eisv_weight_feedback(
+            ["~stillness~"],
+            0.75,
+            suggested_count=4,
+            actual_count=2,
+            generator_source="fallback",
+            anchored_recall=True,
+        ) == 0
 
-        assert updated == 0
         assert ta._generator.get_weights("settled_presence") == before
         updates = ta.get_state()["expression_generator"]["eisv_weight_updates"]
         assert updates["skipped"]["floor_violation"] == 1
+        assert updates["skipped"]["ceiling_violation"] == 1
+        assert ta._free_recall_baseline == {}
 
     def test_anchored_recall_welford_centering_prevents_ratchet_at_realistic_hit_rate(self):
         ta = TrajectoryAwareness(buffer_size=30, db_path=self.db_path, seed=42)
@@ -740,22 +774,57 @@ class TestPersistence:
         assert abs(final_w - initial_w) < 0.25
         assert abs(updates["net_reward"]) < 1.5
 
-    def test_zero_delta_direct_and_clamped_updates_are_skipped_not_counted(self):
+    def test_zero_delta_saturated_shape_routing_and_error_buckets(self):
         ta = TrajectoryAwareness(buffer_size=30, db_path=self.db_path, seed=42)
+        # Missing shape increments no_shape
+        assert ta.record_eisv_weight_feedback(["~stillness~"], 0.9) == 0
+
         _make_settled_buffer(ta)
         ta.get_trajectory_suggestion()
 
         # score == 0.5 has reward 0 -> skipped as zero_delta
         assert ta.record_eisv_weight_feedback(["~stillness~"], 0.5) == 0
 
-        # Clamp token to ceiling 10.0, then try pushing further up -> skipped as zero_delta
+        # Clamp token to ceiling 10.0, then try pushing further up -> skipped as saturated
         ta._generator._token_weights["settled_presence"]["~stillness~"] = 10.0
         assert ta.record_eisv_weight_feedback(["~stillness~"], 1.0) == 0
 
+        # Explicit shape routes credit to the suggestion's shape even if _current_shape changed.
+        ta._current_shape = "convergence"
+        before_converge = ta._generator.get_weights("convergence")["~resonance~"]
+        before_settled = ta._generator.get_weights("settled_presence")["~resonance~"]
+        assert ta.record_eisv_weight_feedback(
+            ["~resonance~"],
+            1.0,
+            shape="settled_presence",
+        ) == 1
+        assert ta._generator.get_weights("settled_presence")["~resonance~"] > before_settled
+        assert ta._generator.get_weights("convergence")["~resonance~"] == before_converge
+
+        # Exception during generator update increments update_error and leaves baseline untouched.
+        ta._free_recall_baseline[("settled_presence", 2, 3)] = (1, 0.0)
+        original_update = ta._generator.update_weights
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+        ta._generator.update_weights = _boom
+        assert ta.record_eisv_weight_feedback(
+            ["~resonance~"],
+            1.0,
+            shape="settled_presence",
+            suggested_count=2,
+            actual_count=3,
+            generator_source="fallback",
+            anchored_recall=True,
+        ) == 0
+        ta._generator.update_weights = original_update
+        assert ta._free_recall_baseline[("settled_presence", 2, 3)] == (1, 0.0)
+
         updates = ta.get_state()["expression_generator"]["eisv_weight_updates"]
-        assert updates["update_count"] == 0
-        assert updates["skipped"]["zero_delta"] == 2
-        assert updates["net_reward"] is None
+        assert updates["update_count"] == 1
+        assert updates["skipped"]["no_shape"] == 1
+        assert updates["skipped"]["zero_delta"] == 1
+        assert updates["skipped"]["saturated"] == 1
+        assert updates["skipped"]["update_error"] == 1
 
 
 class TestGetState:

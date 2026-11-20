@@ -139,10 +139,14 @@ class TrajectoryAwareness:
             "degenerate_stratum": 0,
             "unknown_bounds": 0,
             "floor_violation": 0,
+            "ceiling_violation": 0,
             "no_baseline": 0,
             "zero_delta": 0,
+            "saturated": 0,
+            "no_shape": 0,
+            "update_error": 0,
         }
-        self._free_recall_baseline: Dict[tuple[int, int], tuple[int, float]] = {}
+        self._free_recall_baseline: Dict[tuple[str, int, int], tuple[int, float]] = {}
         self._suggestion_recall_stats: Dict[
             tuple[int, int], tuple[int, float]
         ] = {}
@@ -379,20 +383,26 @@ class TrajectoryAwareness:
 
             if self._use_student:
                 eisv_tokens = self._generator.generate(shape.value, window=window)
+                gen_source = (
+                    getattr(self._generator, "last_generation_source", None)
+                    or (
+                        "student"
+                        if getattr(self._generator, "is_loaded", False)
+                        else "fallback"
+                    )
+                )
             else:
                 eisv_tokens = self._generator.generate(shape.value)
+                gen_source = "fallback"
             lumen_tokens = translate_expression(eisv_tokens)
             trigger = shape_to_lumen_trigger(shape.value)
 
-            student_active = bool(
-                self._use_student and getattr(self._generator, "is_loaded", False)
-            )
             result = {
                 "shape": shape.value,
                 "suggested_tokens": lumen_tokens,
                 "eisv_tokens": eisv_tokens,
                 "trigger": trigger,
-                "generator_source": "student" if student_active else "fallback",
+                "generator_source": gen_source,
             }
 
             self._cached_result = result
@@ -465,6 +475,7 @@ class TrajectoryAwareness:
         eisv_tokens: List[str],
         score: float,
         *,
+        shape: Optional[str] = None,
         suggested_count: Optional[int] = None,
         actual_count: Optional[int] = None,
         generator_source: Optional[str] = None,
@@ -473,12 +484,15 @@ class TrajectoryAwareness:
         """Apply feedback to matching EISV tokens and return updated token count.
 
         When ``anchored_recall`` is True, guards against structural ratchets:
-        skips student-generated output, skips degenerate strata where
-        ``min(actual_count, suggested_count) <= 1`` (achievable ceiling ==
-        anchored floor), treats scores below the anchored floor as anomalies,
-        and centers non-anchor recall on its pre-update per-stratum mean.
+        requires affirmative ``generator_source == "fallback"``, skips
+        degenerate strata where ``min(actual_count, suggested_count) <= 1``
+        (achievable ceiling == anchored floor), rejects floor/ceiling bound
+        violations, and centers non-anchor recall on its pre-update per-(shape,
+        stratum) Welford mean.
         """
-        if self._current_shape is None:
+        target_shape = shape if shape is not None else self._current_shape
+        if target_shape is None:
+            self._eisv_weight_skipped["no_shape"] += 1
             return 0
         if isinstance(score, bool) or not isinstance(score, (int, float)):
             if anchored_recall:
@@ -490,13 +504,11 @@ class TrajectoryAwareness:
                 self._eisv_weight_skipped["unknown_bounds"] += 1
             return 0
 
+        baseline_key: Optional[tuple[str, int, int]] = None
+        new_baseline: Optional[tuple[int, float]] = None
+
         if anchored_recall:
-            student_active = bool(
-                self._use_student and getattr(self._generator, "is_loaded", False)
-            )
-            if generator_source == "student" or (
-                generator_source is None and student_active
-            ):
+            if generator_source != "fallback":
                 self._eisv_weight_skipped["not_fallback_generated"] += 1
                 return 0
             if (
@@ -505,9 +517,12 @@ class TrajectoryAwareness:
                 or isinstance(suggested_count, bool)
                 or isinstance(actual_count, bool)
                 or suggested_count <= 0
-                or actual_count <= 0
+                or actual_count < 0
             ):
                 self._eisv_weight_skipped["unknown_bounds"] += 1
+                return 0
+            if actual_count == 0:
+                self._eisv_weight_skipped["degenerate_stratum"] += 1
                 return 0
 
             anchored_floor = 1.0 / suggested_count
@@ -515,8 +530,11 @@ class TrajectoryAwareness:
             if min(actual_count, suggested_count) <= 1 or achievable_ceiling <= anchored_floor:
                 self._eisv_weight_skipped["degenerate_stratum"] += 1
                 return 0
-            if numeric_score < anchored_floor - 1e-9:
+            if numeric_score < anchored_floor - 1e-6:
                 self._eisv_weight_skipped["floor_violation"] += 1
+                return 0
+            if numeric_score > achievable_ceiling + 1e-6:
+                self._eisv_weight_skipped["ceiling_violation"] += 1
                 return 0
 
             free_recall = max(
@@ -527,39 +545,44 @@ class TrajectoryAwareness:
                     / (achievable_ceiling - anchored_floor),
                 ),
             )
-            stratum = (suggested_count, actual_count)
-            prev_n, prev_mean = self._free_recall_baseline.get(stratum, (0, 0.0))
+            baseline_key = (target_shape, suggested_count, actual_count)
+            prev_n, prev_mean = self._free_recall_baseline.get(baseline_key, (0, 0.0))
             new_n = prev_n + 1
             new_mean = prev_mean + (free_recall - prev_mean) / new_n
-            self._free_recall_baseline[stratum] = (new_n, new_mean)
+            new_baseline = (new_n, new_mean)
             if prev_n == 0:
+                self._free_recall_baseline[baseline_key] = new_baseline
                 self._eisv_weight_skipped["no_baseline"] += 1
                 return 0
             effective_reward = free_recall - prev_mean
             if abs(effective_reward) < 1e-9:
+                self._free_recall_baseline[baseline_key] = new_baseline
                 self._eisv_weight_skipped["zero_delta"] += 1
                 return 0
-            logged_score = round(0.5 + 0.5 * effective_reward, 6)
         else:
             effective_reward = (numeric_score - 0.5) * 2.0
             if abs(effective_reward) < 1e-9:
                 self._eisv_weight_skipped["zero_delta"] += 1
                 return 0
-            logged_score = numeric_score
 
         try:
+            shape_weights = self._generator.get_weights(target_shape)
             matched_count = self._generator.update_weights(
-                self._current_shape,
+                target_shape,
                 eisv_tokens,
                 numeric_score,
                 reward=effective_reward,
             )
         except Exception:
+            self._eisv_weight_skipped["update_error"] += 1
             return 0
+
+        if baseline_key is not None and new_baseline is not None:
+            self._free_recall_baseline[baseline_key] = new_baseline
+
         if matched_count <= 0:
-            shape_weights = self._generator.get_weights(self._current_shape)
             if any(token in shape_weights for token in eisv_tokens):
-                self._eisv_weight_skipped["zero_delta"] += 1
+                self._eisv_weight_skipped["saturated"] += 1
             return 0
 
         self._eisv_weight_update_count += 1
@@ -571,9 +594,9 @@ class TrajectoryAwareness:
         self._eisv_weight_net_reward += effective_reward
         self._log_event(
             event_type="eisv_weight_update",
-            shape=self._current_shape,
+            shape=target_shape,
             expression_tokens=eisv_tokens,
-            eisv_weight_feedback_score=logged_score,
+            eisv_weight_feedback_score=numeric_score,
             buffer_size=len(self._buffer),
         )
         return matched_count
