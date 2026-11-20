@@ -14,14 +14,14 @@
 // also carries reminders and delivery retries. No cron, and no storage ids to
 // configure.
 //
+// Failure direction: every change of condition is written to a stored outbox
+// and stays there until the webhook accepts it. The alarm retries delivery, in
+// order, so an outage that begins and ends while the webhook is down is still
+// reported, late and marked as late.
+//
 // The token is in the URL path because that is the protocol the Pi script
 // speaks. Do not turn on Workers invocation logs for this Worker: they record
 // request URLs.
-//
-// Failure direction: a notification that cannot be delivered is never recorded
-// as delivered. The announced status stays behind the real condition and the
-// alarm retries until the webhook accepts the post. An outage whose alert never
-// got out before the recovery is still reported, afterwards, as MISSED.
 //
 // This file has no imports so the same code runs under `node --test`.
 
@@ -31,6 +31,8 @@ const RETRY_MS = 5 * MINUTE;
 // Well under the Pi's `curl -m 10`: a ping can wait behind one webhook post.
 const NOTIFY_TIMEOUT_MS = 5_000;
 const MIN_TOKEN_LENGTH = 16;
+const MAX_OUTBOX = 50;
+const DELAY_NOTE_MS = 2 * MINUTE;
 
 export function readConfig(env) {
   return {
@@ -60,13 +62,16 @@ function nonNegative(value, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-// What is true right now, as opposed to `state.status`, which is what the
-// webhook was last told. Silence outranks a reported failure: a Pi that said
+// What is true at `now`. Silence outranks a reported failure: a Pi that said
 // "unhealthy" and then went quiet is a bigger problem than either alone.
 export function condition(state, now, graceMs) {
   if (!state.lastContactAt) return "new";
   if (now - state.lastContactAt >= graceMs) return "late";
   return state.lastKind === "fail" ? "fail" : "up";
+}
+
+function isDown(c) {
+  return c === "late" || c === "fail";
 }
 
 function duration(ms) {
@@ -96,7 +101,7 @@ export function transitionMessage(cfg, from, to, state, now) {
       `probe failed. See ~/.anima/heartbeat.log on the Pi.`
     );
   }
-  if (from === "late" || from === "fail") {
+  if (isDown(from)) {
     return `RECOVERED: ${n} is healthy again after ${duration(now - (state.since || now))} down.`;
   }
   return (
@@ -105,70 +110,81 @@ export function transitionMessage(cfg, from, to, state, now) {
   );
 }
 
-function missedMessage(cfg, state) {
-  const { kind, since } = state.unreported;
-  const what = kind === "late" ? "silent" : "reporting failure";
-  return (
-    `MISSED: ${cfg.name} was ${what} for ${duration((state.lastOkAt || since) - since)} ` +
-    `from ${utc(since)}. The alert could not be delivered at the time. It is healthy now.`
-  );
-}
-
 function reminderMessage(cfg, current, state, now) {
   const what = current === "late" ? "silent" : "reporting failure";
   return `STILL DOWN: ${cfg.name} has been ${what} for ${duration(now - (state.since || now))}.`;
 }
 
-// Bring the announced status in line with the real condition, sending whatever
-// that requires, and return when the alarm should next fire (or null).
-export async function reconcile(state, now, cfg, notify) {
-  const current = condition(state, now, cfg.graceMs);
-  let pending = false;
+function enqueue(state, at, message) {
+  state.outbox.push({ at, text: message });
+  if (state.outbox.length > MAX_OUTBOX) {
+    state.outbox.shift();
+    state.dropped = (state.dropped || 0) + 1;
+  }
+}
 
-  if (current !== "new" && current !== state.status) {
-    const message = transitionMessage(cfg, state.status, current, state, now);
-    if (await notify(message)) {
+// Compare the condition at `now` with the one last observed and queue a notice
+// for any change. Notices go to a stored outbox and are delivered in order, so
+// what was observed never depends on whether the webhook was working: a
+// rejected DOWN followed by a recovery is still two notices, sent late.
+export function observe(state, now, cfg) {
+  const current = condition(state, now, cfg.graceMs);
+  if (current === "new") return current;
+  const from = state.observed;
+  if (current !== from) {
+    enqueue(state, now, transitionMessage(cfg, from, current, state, now));
+    if (!isDown(current)) state.since = null;
+    else {
       // `since` marks the start of the outage and survives late <-> fail, so a
       // recovery reports the whole outage, not just its last phase.
-      if (current === "up") state.since = null;
-      else if (!state.since || state.status === "up" || !state.status) {
-        state.since = current === "late" ? state.lastContactAt : now;
-      }
-      if (current !== "up") state.unreported = null;
-      state.status = current;
-      state.notifiedAt = now;
-    } else {
-      pending = true;
-      // Remember the outage itself, not just that a post failed: if Lumen
-      // recovers before the retry lands, condition and announced status are
-      // both "up" again and there would be nothing left to send.
-      if (current !== "up" && state.status !== "late" && state.status !== "fail" && !state.unreported) {
-        state.unreported = { kind: current, since: current === "late" ? state.lastContactAt : now };
-      }
+      if (!isDown(from)) state.since = current === "late" ? state.lastContactAt : now;
+      state.remindedAt = now;
     }
-  } else if (current === "up" && state.unreported) {
-    if (await notify(missedMessage(cfg, state))) state.unreported = null;
-    else pending = true;
+    state.observed = current;
   } else if (
-    (current === "late" || current === "fail") &&
+    isDown(current) &&
     cfg.remindMs > 0 &&
-    now - (state.notifiedAt || 0) >= cfg.remindMs
+    now - (state.remindedAt || now) >= cfg.remindMs &&
+    // No reminders on top of notices that are not getting through.
+    state.outbox.length === 0
   ) {
-    if (await notify(reminderMessage(cfg, current, state, now))) state.notifiedAt = now;
-    else pending = true;
+    enqueue(state, now, reminderMessage(cfg, current, state, now));
+    state.remindedAt = now;
   }
+  return current;
+}
 
-  state.pendingNotify = pending;
+// Deliver the outbox oldest first, stopping at the first rejection. Delivery is
+// at-least-once: a crash after a post and before the state is stored repeats it.
+export async function flush(state, now, notify) {
+  while (state.outbox.length > 0) {
+    const item = state.outbox[0];
+    let message = item.text;
+    if (now - item.at >= DELAY_NOTE_MS) {
+      message += ` (Delayed notice: this happened at ${utc(item.at)}.)`;
+    }
+    if (state.dropped) {
+      message += ` (${state.dropped} earlier notices were dropped undelivered.)`;
+    }
+    if (!(await notify(message))) return false;
+    state.outbox.shift();
+    state.dropped = 0;
+    state.notifiedAt = now;
+  }
+  return true;
+}
 
+// When the alarm should next fire, or null.
+export function nextWakeup(state, now, cfg, current, delivered) {
   const wakeups = [];
   if (current === "up" || current === "fail") wakeups.push(state.lastContactAt + cfg.graceMs);
-  if ((state.status === "late" || state.status === "fail") && cfg.remindMs > 0) {
-    wakeups.push((state.notifiedAt || now) + cfg.remindMs);
+  if (isDown(current) && cfg.remindMs > 0) {
+    wakeups.push((state.remindedAt || now) + cfg.remindMs);
   }
-  // A deadline that is already due is what the failed post was for. Waiting on
-  // it again would retry immediately, forever; the retry interval replaces it.
+  // A deadline already due has been handled or is waiting on delivery. Waiting
+  // on it again would spin; the retry interval replaces it.
   const future = wakeups.filter((t) => t > now);
-  if (pending) future.push(now + RETRY_MS);
+  if (!delivered) future.push(now + RETRY_MS);
   if (future.length > 0) return Math.min(...future);
   return wakeups.length > 0 ? now + 1000 : null;
 }
@@ -180,12 +196,13 @@ export function recordPing(state, kind, now) {
   else state.lastOkAt = now;
 }
 
-// Discord answers 204 before it has stored the message unless asked to wait.
+// Discord answers 204 before it has stored the message unless asked to wait, so
+// wait=true is forced even if the configured URL says otherwise. For any other
+// host a 2xx is taken as accepted; there is nothing further to check.
 export function webhookTarget(raw) {
   try {
     const url = new URL(raw);
-    const discord = /(^|\.)discord(app)?\.com$/.test(url.hostname);
-    if (discord && !url.searchParams.has("wait")) url.searchParams.set("wait", "true");
+    if (/(^|\.)discord(app)?\.com$/.test(url.hostname)) url.searchParams.set("wait", "true");
     return url.toString();
   } catch {
     return raw;
@@ -216,41 +233,45 @@ export class HeartbeatSwitch {
     this.storage = ctx.storage;
     this.env = env;
     this.queue = Promise.resolve();
+    this.inbox = [];
   }
 
   // One step at a time. A webhook post is a network wait, and the platform
   // delivers other events during it; without this a slow alarm could write its
   // older snapshot over a ping that had already been answered 200.
+  //
+  // A ping is stamped when it arrives, not when its turn comes: one that waited
+  // behind a slow post must not be judged late for the wait.
   run(kind) {
-    const job = this.queue.then(() => this.step(kind));
+    if (kind) this.inbox.push({ kind, at: Date.now() });
+    const job = this.queue.then(() => this.step());
     this.queue = job.catch(() => {});
     return job;
   }
 
-  async step(kind) {
+  async step() {
     const cfg = readConfig(this.env);
-    const now = Date.now();
     const state = (await this.storage.get("state")) || {};
-    // At most one failed post per step, so a dead webhook costs one timeout.
-    let webhookDown = false;
-    const notify = async (message) => {
-      if (webhookDown) return false;
-      const ok = await postWebhook(cfg, message);
-      webhookDown = !ok;
-      return ok;
-    };
-    if (kind) {
-      // Judge the silence that ends with this ping before the ping erases it.
-      // Alarms can run late; a ping arriving just past the deadline would
-      // otherwise reset the clock and the breach would never be reported.
-      if (state.lastContactAt) await reconcile(state, now, cfg, notify);
-      recordPing(state, kind, now);
+    state.outbox ||= [];
+    const arrivals = this.inbox;
+    this.inbox = [];
+    for (const ping of arrivals) {
+      // Judge the silence this ping ends before the ping erases it. Alarms can
+      // run late; a ping arriving just past the deadline would otherwise reset
+      // the clock and the breach would never be reported.
+      observe(state, ping.at, cfg);
+      recordPing(state, ping.kind, ping.at);
+      observe(state, ping.at, cfg);
     }
-    const next = await reconcile(state, now, cfg, notify);
-    await this.storage.put("state", state);
-    if (next === null) await this.storage.deleteAlarm();
-    else await this.storage.setAlarm(next);
-    return { state, cfg, now, next };
+    const now = Date.now();
+    const current = observe(state, now, cfg);
+    const delivered = await flush(state, now, (m) => postWebhook(cfg, m));
+    const next = nextWakeup(state, now, cfg, current, delivered);
+    // Alarm and state together, with no await between them, so the platform
+    // commits both or neither. State stored without its alarm would be a
+    // switch that cannot fire.
+    const alarm = next === null ? this.storage.deleteAlarm() : this.storage.setAlarm(next);
+    await Promise.all([alarm, this.storage.put("state", state)]);
   }
 
   async alarm() {
@@ -267,14 +288,13 @@ export class HeartbeatSwitch {
       const cfg = readConfig(this.env);
       const now = Date.now();
       const state = (await this.storage.get("state")) || {};
+      const outbox = state.outbox || [];
       return Response.json({
         name: cfg.name,
         condition: condition(state, now, cfg.graceMs),
-        announced: state.status || null,
-        pending_notification: Boolean(state.pendingNotify),
-        unreported_outage: state.unreported
-          ? { kind: state.unreported.kind, since: utc(state.unreported.since) }
-          : null,
+        observed: state.observed || null,
+        undelivered_notices: outbox.length,
+        oldest_undelivered: utc(outbox[0]?.at),
         last_ok: utc(state.lastOkAt),
         last_fail: utc(state.lastFailAt),
         last_contact: utc(state.lastContactAt),

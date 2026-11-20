@@ -136,11 +136,14 @@ reminder and delivery retries.
 | a `/fail` ping | `DOWN: ... reports it is not healthy` |
 | healthy ping after either | `RECOVERED` |
 | still down after `REMIND_HOURS` (default 24, `0` disables) | `STILL DOWN` |
-| recovered before the `DOWN` post could be delivered | `MISSED` |
 
-A post the webhook does not accept is not recorded as sent. The receiver retries
-every 5 minutes until it lands, and an outage that ends before its alert got
-out is reported afterwards as `MISSED`. With either secret missing it answers 503, so
+Every change is written to a stored outbox and stays there until the webhook
+accepts it. The receiver retries every 5 minutes and delivers in order, so an
+outage that starts and ends while the webhook is down still arrives as its
+`DOWN` and `RECOVERED`, each marked `Delayed notice` with the time it happened.
+A notice can repeat if the platform restarts mid-delivery. For Discord the
+receiver asks for confirmation that the message was stored; for any other
+webhook host a 2xx response is taken as accepted. With either secret missing it answers 503, so
 the Pi logs `provider unreachable` and does not ping into a receiver that cannot
 alert.
 
@@ -167,7 +170,8 @@ any provider ping URL: it is the secret. Two consequences:
   provider, and the receiver never hears them.
 
 Verify with `curl https://heartbeat.example.org/<PING_TOKEN>/status`, which
-shows the last contact, the announced state and the next alarm. The `ARMED`
+shows the last contact, the observed state, any undelivered notices and the
+next alarm. The `ARMED`
 post arriving on the phone is the proof that the delivery hop works. No `ARMED`
 post means the switch is not working, whatever the timer says. A receiver that
 has never been pinged does not alarm, so that first post is the only evidence
