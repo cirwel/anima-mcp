@@ -39,13 +39,97 @@ from .shared_memory import SharedMemoryClient
 from .unitares_bridge import UnitaresBridge
 
 
-def _sc():
-    return sys.modules.get("anima_mcp.stable_creature")
+# Enhanced learning systems (optional - for genuine agency)
+# Each module imported independently so one failure doesn't disable all 8.
+_LEARNING_MODULES: dict = {}
 
 
-def _resolve_read_led_proprioception():
-    sc = _sc()
-    return getattr(sc, "read_led_proprioception", read_led_proprioception) if sc is not None else read_led_proprioception
+def _has_module(name: str) -> bool:
+    return _LEARNING_MODULES.get(name, False)
+
+
+try:
+    from .adaptive_prediction import get_adaptive_prediction_model
+    _LEARNING_MODULES["adaptive_prediction"] = True
+except ImportError:
+    get_adaptive_prediction_model = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["adaptive_prediction"] = False
+
+try:
+    from .preferences import get_preference_system
+    _LEARNING_MODULES["preferences"] = True
+except ImportError:
+    get_preference_system = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["preferences"] = False
+
+try:
+    from .self_model import get_self_model
+    _LEARNING_MODULES["self_model"] = True
+except ImportError:
+    get_self_model = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["self_model"] = False
+
+try:
+    from .agency import get_action_selector, get_exploration_manager, ActionType
+    _LEARNING_MODULES["agency"] = True
+except ImportError:
+    get_action_selector = None  # type: ignore[assignment,misc]
+    get_exploration_manager = None  # type: ignore[assignment,misc]
+    ActionType = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["agency"] = False
+
+try:
+    from .memory_retrieval import get_memory_retriever, retrieve_relevant_memories
+    _LEARNING_MODULES["memory_retrieval"] = True
+except ImportError:
+    get_memory_retriever = None  # type: ignore[assignment,misc]
+    retrieve_relevant_memories = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["memory_retrieval"] = False
+
+try:
+    from .weighted_pathways import get_weighted_pathways, discretize_context
+    _LEARNING_MODULES["weighted_pathways"] = True
+except ImportError:
+    get_weighted_pathways = None  # type: ignore[assignment,misc]
+    discretize_context = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["weighted_pathways"] = False
+
+try:
+    from .experiential_filter import get_experiential_filter
+    _LEARNING_MODULES["experiential_filter"] = True
+except ImportError:
+    get_experiential_filter = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["experiential_filter"] = False
+
+try:
+    from .experiential_marks import get_experiential_marks
+    _LEARNING_MODULES["experiential_marks"] = True
+except ImportError:
+    get_experiential_marks = None  # type: ignore[assignment,misc]
+    _LEARNING_MODULES["experiential_marks"] = False
+
+ENHANCED_LEARNING_AVAILABLE = any(_LEARNING_MODULES.values())
+if not ENHANCED_LEARNING_AVAILABLE:
+    print("[StableCreature] Enhanced learning not available (all modules failed)")
+elif not all(_LEARNING_MODULES.values()):
+    print(
+        "[StableCreature] Enhanced learning partial: missing "
+        + ", ".join(k for k, v in _LEARNING_MODULES.items() if not v)
+    )
+
+# Voice support (optional - graceful degradation if not available)
+try:
+    from .audio import AutonomousVoice
+    VOICE_AVAILABLE = True
+except ImportError:
+    AutonomousVoice = None  # type: ignore[assignment,misc]
+    VOICE_AVAILABLE = False
+    print("[StableCreature] Voice module not available (missing dependencies)")
+
+# Config
+UPDATE_INTERVAL = 2.0  # seconds
+MAX_RETRIES = 3
+RETRY_DELAY = 0.5
 
 
 def _build_preference_state(anima, readings, *, external_light_lux) -> dict:
@@ -150,7 +234,7 @@ def _pair_led_action_to_light_capture(readings):
         precision = getattr(readings, "light_observed_precision_seconds", None)
         if isinstance(precision, (int, float)):
             observed_unix += max(0.0, float(precision)) / 2.0
-        return _resolve_read_led_proprioception()(
+        return read_led_proprioception(
             max_age_seconds=2.0,
             at_time=observed_unix,
             max_alignment_error_seconds=0.75,
@@ -436,9 +520,9 @@ class CreatureRuntimeMixin:
 
         # Initialize Voice (optional - Lumen's ability to hear and speak)
         voice = None
-        if getattr(_sc(), 'VOICE_AVAILABLE', False) and broker_voice_enabled():
+        if VOICE_AVAILABLE and broker_voice_enabled():
             try:
-                candidate = _sc().AutonomousVoice()
+                candidate = AutonomousVoice()
                 if candidate.start():
                     voice = candidate
                     caps = voice.capabilities
@@ -466,33 +550,32 @@ class CreatureRuntimeMixin:
         exploration_mgr = None
         memory_retriever = None
 
-        sc = _sc()
-        if getattr(sc, 'ENHANCED_LEARNING_AVAILABLE', False):
+        if ENHANCED_LEARNING_AVAILABLE:
             try:
-                if sc._has_module("adaptive_prediction"):
-                    adaptive_model = sc.get_adaptive_prediction_model()
+                if _has_module("adaptive_prediction"):
+                    adaptive_model = get_adaptive_prediction_model()
                     print("[StableCreature] Adaptive prediction active - Lumen learns from experience")
 
-                if sc._has_module("preferences"):
-                    preferences = sc.get_preference_system(read_only=False)
+                if _has_module("preferences"):
+                    preferences = get_preference_system(read_only=False)
                     print("[StableCreature] Preferences active - Lumen develops values")
 
-                if sc._has_module("self_model"):
-                    self_model = sc.get_self_model(read_only=False)
+                if _has_module("self_model"):
+                    self_model = get_self_model(read_only=False)
                     print("[StableCreature] Self-model active - Lumen has beliefs about itself")
 
-                if sc._has_module("agency") and legacy_broker_agency:
+                if _has_module("agency") and legacy_broker_agency:
                     # Deliberately NOT db_path. A rollback must remain isolated
                     # from the server's authoritative action table; merging it
                     # would restore the second-writer defect (#123).
-                    action_selector = sc.get_action_selector(db_path=str(BROKER_AGENCY_DB))
-                    exploration_mgr = sc.get_exploration_manager()
+                    action_selector = get_action_selector(db_path=str(BROKER_AGENCY_DB))
+                    exploration_mgr = get_exploration_manager()
                     print("[StableCreature] Legacy broker agency enabled by operator")
-                elif sc._has_module("agency"):
+                elif _has_module("agency"):
                     print("[StableCreature] Broker agency retired - server is the sole action learner")
 
-                if sc._has_module("memory_retrieval"):
-                    memory_retriever = sc.get_memory_retriever()
+                if _has_module("memory_retrieval"):
+                    memory_retriever = get_memory_retriever()
                     print("[StableCreature] Memory retrieval active - past informs present")
             except Exception as e:
                 print(f"[StableCreature] Enhanced learning init error: {e}")
@@ -569,8 +652,8 @@ class CreatureRuntimeMixin:
         return last_learning_event_drain, last_learning_event_failure_log
 
     def read_sensors_with_retry(self, sensors: Any) -> Any:
-        max_retries = getattr(_sc(), 'MAX_RETRIES', 3)
-        retry_delay = getattr(_sc(), 'RETRY_DELAY', 0.5)
+        max_retries = MAX_RETRIES
+        retry_delay = RETRY_DELAY
         readings = None
         for attempt in range(max_retries):
             try:
@@ -999,7 +1082,7 @@ class CreatureRuntimeMixin:
                         _strongest_drive = max(inner_state.drives.values()) if inner_state and inner_state.drives else 0.0
                         _activity_str = activity_state.level.value if activity_state else "active"
                         _satisfaction = preferences.get_overall_satisfaction(current_state)
-                        _pw_ctx = _sc().discretize_context(
+                        _pw_ctx = discretize_context(
                             surprise=pred_error.surprise,
                             satisfaction=_satisfaction,
                             drive=_strongest_drive,
@@ -1021,21 +1104,21 @@ class CreatureRuntimeMixin:
                 )
 
                 # Execute action effects
-                if selected_action.action_type == _sc().ActionType.FOCUS_ATTENTION:
+                if selected_action.action_type == ActionType.FOCUS_ATTENTION:
                     sensor = selected_action.parameters.get("sensor")
                     action_selector.set_attention_focus(sensor)
                     print(f"[Agency] Focusing attention on: {sensor}", file=sys.stderr, flush=True)
 
-                elif selected_action.action_type == _sc().ActionType.ADJUST_SENSITIVITY:
+                elif selected_action.action_type == ActionType.ADJUST_SENSITIVITY:
                     direction = selected_action.parameters.get("direction", "increase")
                     action_selector.adjust_sensitivity(direction)
                     print(f"[Agency] Sensitivity {direction}d", file=sys.stderr, flush=True)
 
-                elif selected_action.action_type == _sc().ActionType.ASK_QUESTION:
+                elif selected_action.action_type == ActionType.ASK_QUESTION:
                     # Generate question from metacognition (existing functionality)
                     pass  # Question generation already happens via metacognition
 
-                elif selected_action.action_type == _sc().ActionType.LED_BRIGHTNESS:
+                elif selected_action.action_type == ActionType.LED_BRIGHTNESS:
                     direction = selected_action.parameters.get("direction", "increase")
                     current = _agency_led_brightness
                     if direction == "increase" and current < 1.0:
@@ -1363,7 +1446,7 @@ class CreatureRuntimeMixin:
             }
 
         # Add enhanced learning state if available
-        if getattr(_sc(), 'ENHANCED_LEARNING_AVAILABLE', False):
+        if ENHANCED_LEARNING_AVAILABLE:
             learning_state = {}
             if preferences:
                 try:
@@ -1421,7 +1504,7 @@ class CreatureRuntimeMixin:
 
     def gather_mark_check_inputs(self, identity: Any, self_model: Any, db_path: str) -> tuple[int, dict[str, float], int, int]:
         # Approximate observation count from total alive time
-        _obs_count = int(identity.total_alive_seconds / getattr(_sc(), 'UPDATE_INTERVAL', 2.0)) if identity.total_alive_seconds else 0
+        _obs_count = int(identity.total_alive_seconds / UPDATE_INTERVAL) if identity.total_alive_seconds else 0
         _belief_confs = {}
         if self_model:
             try:
@@ -1477,7 +1560,7 @@ class CreatureRuntimeMixin:
         print("[StableCreature] Shutting down...")
 
         # Save enhanced learning state
-        if getattr(_sc(), 'ENHANCED_LEARNING_AVAILABLE', False):
+        if ENHANCED_LEARNING_AVAILABLE:
             try:
                 if adaptive_model:
                     adaptive_model._save_patterns()

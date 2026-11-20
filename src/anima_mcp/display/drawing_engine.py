@@ -48,19 +48,18 @@ from .drawing_state import (  # noqa: F401
     _EISV_PARAMS,
     _coverage_cuts,
     _curiosity_pivot,
-    _get_canvas_path,
     _get_drawing_bridge,
     curiosity_drain,
     is_earned_completion_reason,
 )
-from .drawing_state import _resolve_canvas_path
+from . import drawing_state as _drawing_state
 from .drawing_replay import ReplayRecorder
 
 
 def _replay_in_progress_path() -> Path:
     """The open piece's process log lives beside canvas.json (and follows its
     test monkeypatches); finished logs are written beside each PNG."""
-    return _resolve_canvas_path().with_name("canvas.replay.jsonl")
+    return _drawing_state._get_canvas_path().with_name("canvas.replay.jsonl")
 
 
 class DrawingEngine:

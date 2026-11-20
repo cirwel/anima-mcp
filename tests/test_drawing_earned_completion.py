@@ -207,10 +207,10 @@ class TestCompletionReasonPersistence:
         assert canvas.last_completion_reason is None
 
     def test_roundtrip_through_disk(self, tmp_path, monkeypatch):
-        from anima_mcp.display import drawing_engine as de
+        from anima_mcp.display import drawing_state as ds
 
         # Redirect canvas path to tmp
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: tmp_path / "canvas.json")
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: tmp_path / "canvas.json")
 
         canvas = CanvasState()
         canvas.last_completion_reason = "earned_coherence"
@@ -458,9 +458,9 @@ class TestSettlingPersistence:
     """
 
     def test_canvas_roundtrips_settling(self, tmp_path, monkeypatch):
-        import anima_mcp.display.drawing_engine as de
+        import anima_mcp.display.drawing_state as ds
         path = tmp_path / "canvas.json"
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: path)
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: path)
 
         canvas = CanvasState()
         canvas._resonance_settling = {"revisit_window": [True, False, True], "settled_streak": 3}
@@ -483,9 +483,9 @@ class TestSettlingPersistence:
     def test_malformed_settling_is_ignored(self, tmp_path, monkeypatch):
         """A corrupt blob must not break canvas load."""
         import json
-        import anima_mcp.display.drawing_engine as de
+        import anima_mcp.display.drawing_state as ds
         path = tmp_path / "canvas.json"
-        monkeypatch.setattr(de, "_get_canvas_path", lambda: path)
+        monkeypatch.setattr(ds, "_get_canvas_path", lambda: path)
         path.write_text(json.dumps({"pixels": {}, "resonance_settling": "not-a-dict"}))
 
         canvas = CanvasState()

@@ -55,7 +55,7 @@ def mock_display(tmp_path):
 @pytest.fixture
 def screen_renderer(mock_display, tmp_path):
     """Create a ScreenRenderer with mocked dependencies."""
-    with patch("anima_mcp.display.drawing_engine._get_canvas_path",
+    with patch("anima_mcp.display.drawing_state._get_canvas_path",
                return_value=tmp_path / "canvas.json"):
         sr = ScreenRenderer(
             display_renderer=mock_display,

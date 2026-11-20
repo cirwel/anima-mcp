@@ -256,8 +256,8 @@ class TestCompletionPredicate:
 
 class TestPersistence:
     def test_round_trip(self, tmp_path, monkeypatch):
-        from anima_mcp.display import drawing_engine as de
-        monkeypatch.setattr(de, "_get_canvas_path",
+        from anima_mcp.display import drawing_state as ds
+        monkeypatch.setattr(ds, "_get_canvas_path",
                             lambda: tmp_path / "canvas.json")
         canvas = CanvasState()
         paint(canvas, 10)
@@ -266,7 +266,7 @@ class TestPersistence:
         canvas._novelty_settling = dict(tracker)
         assert canvas.save_to_disk()
         restored = CanvasState()
-        monkeypatch.setattr(de, "_get_canvas_path",
+        monkeypatch.setattr(ds, "_get_canvas_path",
                             lambda: tmp_path / "canvas.json")
         restored.load_from_disk()
         assert restored._novelty_settling == tracker

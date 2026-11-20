@@ -710,7 +710,7 @@ class TestLEDBrightnessEstimate:
         )
         paired = {"brightness": 0.08, "alignment_error_seconds": 0.1}
         with patch(
-            "anima_mcp.stable_creature.read_led_proprioception",
+            "anima_mcp.creature_runtime.read_led_proprioception",
             return_value=paired,
         ) as read_action:
             assert _pair_led_action_to_light_capture(readings) == paired
