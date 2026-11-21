@@ -700,6 +700,75 @@ def test_snapshot_sigma_floor_watch_unwarm_channel_and_small_variance(tmp_path: 
     gates_rot = {g["id"]: g for g in rep_rot["stage2_readiness"]["gates"]}
     assert gates_rot["seven_day_live_warm_coverage"]["status"] == "pass"
 
+    # Case F: skewed 3-of-5 stability channel counts [306800, 306800, 300000, 0, 0]
+    # Naive sum // 3 = 304,533 >= 302,400, but exact tight bound is 300,000 < 302,400 -> "fail"
+    skewed_counts = {
+        "humidity_pct": 306_800,
+        "pressure_hpa": 306_800,
+        "memory_percent": 300_000,
+        "eeg_delta_power": 0,
+        "eeg_theta_power": 0,
+    }
+    skewed_channels = {}
+    for spec in CHANNEL_SPECS:
+        warm_t = skewed_counts.get(spec.name, 306_800)
+        skewed_channels[spec.name] = {
+            "n": 350_000,
+            "mean": 10.0,
+            "var": (spec.min_sigma * 2.0) ** 2,
+            "observed_ticks": 350_000,
+            "valid_ticks": 350_000,
+            "last_valid_at": 1_795_700_000.0,
+            "floored_ticks": 0,
+            "status_counts": {"warm": warm_t, "warming": 350_000 - warm_t, "missing": 0, "frozen": 0},
+            "z_abs_histogram": {"lt_1": warm_t, "1_to_2": 0, "2_to_3": 0, "ge_3": 0},
+        }
+    skewed_payload = {
+        "schema_version": RESIDUALS_SCHEMA_VERSION,
+        "comparison_version": COMPARISON_VERSION,
+        "saved_at": 1_795_700_000.0,
+        "observed_ticks": 350_000,
+        "channels": skewed_channels,
+        "correlations": {
+            "warmth_signed_z_vs_current_warmth": OnlineCorrelation().to_dict(),
+            "stability_mean_abs_z_vs_current_stability": OnlineCorrelation().to_dict(),
+            "clarity_light_z_vs_current_clarity": OnlineCorrelation().to_dict(),
+        },
+        "composites": {},
+    }
+    snap_skewed = tmp_path / "skewed_3_of_5.json"
+    snap_skewed.write_text(json.dumps(skewed_payload))
+    rep_skewed = evaluate_snapshot(snap_skewed)
+    gates_skewed = {g["id"]: g for g in rep_skewed["stage2_readiness"]["gates"]}
+    assert gates_skewed["seven_day_live_warm_coverage"]["evidence"]["stability_simultaneous_upper_bound"] == 300_000
+    assert gates_skewed["seven_day_live_warm_coverage"]["status"] == "fail"
+
+    # Case G: non-finite floored_ticks (Infinity / 1e309) must not raise OverflowError; degrades to "unknown"
+    inf_channels = {
+        spec.name: {
+            "n": 1000,
+            "mean": 1.0,
+            "var": (spec.min_sigma * 2.0) ** 2,
+            "observed_ticks": 1000,
+            "valid_ticks": 1000,
+            "last_valid_at": 1_795_700_000.0,
+            "floored_ticks": float("inf") if spec.name == "memory_percent" else 0,
+            "status_counts": {"warm": 500, "warming": 500, "missing": 0, "frozen": 0},
+            "z_abs_histogram": {"lt_1": 500, "1_to_2": 0, "2_to_3": 0, "ge_3": 0},
+        }
+        for spec in CHANNEL_SPECS
+    }
+    inf_payload = dict(payload, channels=inf_channels)
+    snap_inf = tmp_path / "inf_floored_ticks.json"
+    snap_inf.write_text(json.dumps(inf_payload, allow_nan=True))
+    rep_inf = evaluate_snapshot(snap_inf)
+    assert rep_inf["channels"]["memory_percent"]["floored_ticks"] is None
+    assert rep_inf["channels"]["memory_percent"]["floored_ticks_known"] is False
+    assert rep_inf["channels"]["memory_percent"]["sigma_floored_fraction"] is None
+    assert rep_inf["channels"]["memory_percent"]["observed_ticks"] == 1000
+    gates_inf = {g["id"]: g for g in rep_inf["stage2_readiness"]["gates"]}
+    assert gates_inf["sigma_floor_watch_channels"]["status"] == "unknown"
+
 
 def test_single_read_transaction_isolates_concurrent_wal_mutations(tmp_path: Path):
     # Create >500 rows (spans >1 batch in pass 2) in WAL mode

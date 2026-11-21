@@ -710,6 +710,14 @@ def _build_comparison_entry(
     return entry
 
 
+def _max_simultaneous_k_of_n_ticks(counts: Sequence[int], k: int) -> int:
+    """Exact tight upper bound on ticks with at least ``k`` active channels."""
+    if k <= 0 or len(counts) < k:
+        return 0
+    sorted_desc = sorted((max(0, int(c)) for c in counts), reverse=True)
+    return min(sum(sorted_desc[j:]) // (k - j) for j in range(k))
+
+
 def _build_stage2_readiness(
     *,
     source_kind: str,
@@ -747,11 +755,13 @@ def _build_stage2_readiness(
     stability_channel_warm_count = sum(
         1 for t in stability_warm_ticks.values() if t >= required_live_warm_ticks
     )
-    # Exact pigeonhole upper bound on simultaneous 3-of-5 stability ticks:
+    # Exact tight upper bound on simultaneous 3-of-5 stability ticks:
     # rotating 3-of-5 contributors can reach >= required_live_warm_ticks even
-    # when fewer than 3 individual channels each exceed required_live_warm_ticks.
-    stability_simultaneous_upper_bound = (
-        sum(stability_warm_ticks.values()) // STABILITY_MIN_CONTRIBUTORS
+    # when fewer than 3 individual channels each exceed required_live_warm_ticks,
+    # while still catching skewed totals like [306800, 306800, 300000, 0, 0].
+    stability_simultaneous_upper_bound = _max_simultaneous_k_of_n_ticks(
+        list(stability_warm_ticks.values()),
+        STABILITY_MIN_CONTRIBUTORS,
     )
 
     if source_kind == "persisted_snapshot":
@@ -1458,9 +1468,19 @@ def evaluate_snapshot(
         floored_ticks_known = restore_comparison and _has_valid_nonneg_int_key(
             ch_data, "floored_ticks"
         )
+        # Strip invalid floored_ticks (e.g. JSON Infinity/1e309) on a shallow copy
+        # so ResidualBand.from_dict cannot raise OverflowError on int(inf).
+        if isinstance(ch_data, Mapping) and not _has_valid_nonneg_int_key(
+            ch_data, "floored_ticks"
+        ):
+            band_input: Any = {
+                k: v for k, v in ch_data.items() if k != "floored_ticks"
+            }
+        else:
+            band_input = ch_data
         band = ResidualBand.from_dict(
             spec,
-            ch_data,
+            band_input,
             min_samples=eff_min,
             window_samples=eff_window,
             frozen_run_threshold=eff_frozen,
