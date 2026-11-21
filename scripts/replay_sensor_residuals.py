@@ -49,6 +49,23 @@ def _paths_refer_to_same_file(a: Path, b: Path) -> bool:
         return os.path.abspath(str(pa)) == os.path.abspath(str(pb))
 
 
+def _protected_input_paths(input_path: Path, *, is_sqlite_db: bool) -> list[Path]:
+    """Return input path plus SQLite sidecars (-wal, -shm, -journal) when reading a DB."""
+    targets = [input_path]
+    if is_sqlite_db:
+        expanded = input_path.expanduser()
+        raw_str = str(expanded)
+        try:
+            resolved_str = str(expanded.resolve())
+        except OSError:
+            resolved_str = raw_str
+        for suffix in ("-wal", "-shm", "-journal"):
+            targets.append(Path(raw_str + suffix))
+            if resolved_str != raw_str:
+                targets.append(Path(resolved_str + suffix))
+    return targets
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -141,12 +158,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if args.json_out is not None:
         out_path = Path(args.json_out)
-        if _paths_refer_to_same_file(out_path, input_path):
-            print(
-                f"error: --json-out ({out_path}) must not refer to the same file as the input ({input_path})",
-                file=sys.stderr,
-            )
-            return 2
+        protected = _protected_input_paths(
+            input_path, is_sqlite_db=(args.snapshot is None)
+        )
+        for target in protected:
+            if _paths_refer_to_same_file(out_path, target):
+                print(
+                    f"error: --json-out ({out_path}) must not overwrite input or SQLite sidecar ({target})",
+                    file=sys.stderr,
+                )
+                return 2
 
     try:
         if args.snapshot is not None:

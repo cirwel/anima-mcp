@@ -18,6 +18,7 @@ from anima_mcp.residual_backtest import (
     DEFAULT_MIN_SAMPLES,
     evaluate_snapshot,
     format_markdown_report,
+    iter_state_history_records,
     load_state_history_tuples,
     reconstruct_state_history_row,
     replay_state_history,
@@ -616,6 +617,131 @@ def test_snapshot_sigma_floor_watch_unwarm_channel_and_small_variance(tmp_path: 
     gates_b = {g["id"]: g for g in rep_b["stage2_readiness"]["gates"]}
     assert gates_b["sigma_floor_watch_channels"]["status"] == "warn"
 
+    # Case C: snapshot variance scope explicitly reports paired warm samples (never "all warm ticks")
+    assert gates_a["non_degenerate_stability_variance"]["evidence"]["sample_scope"] == "paired_warm_ticks"
+    assert "paired warm samples" in gates_a["non_degenerate_stability_variance"]["reason"]
+    assert "all warm ticks" not in gates_a["non_degenerate_stability_variance"]["reason"]
+    assert gates_a["non_degenerate_warmth_variance"]["evidence"]["sample_scope"] == "paired_warm_ticks"
+    assert "paired warm samples" in gates_a["non_degenerate_warmth_variance"]["reason"]
+
+    # Case D: missing floored_ticks key on a watched channel in JSON -> "unknown", never "pass"
+    missing_ft_channels = {}
+    for spec in CHANNEL_SPECS:
+        ch = {
+            "n": 1000,
+            "mean": 1.0,
+            "var": (spec.min_sigma * 2.0) ** 2,
+            "observed_ticks": 1000,
+            "valid_ticks": 1000,
+            "last_valid_at": 1_795_700_000.0,
+            "floored_ticks": 0,
+            "status_counts": {"warm": 500, "warming": 500, "missing": 0, "frozen": 0},
+            "z_abs_histogram": {"lt_1": 500, "1_to_2": 0, "2_to_3": 0, "ge_3": 0},
+        }
+        if spec.name == "eeg_delta_power":
+            del ch["floored_ticks"]
+        missing_ft_channels[spec.name] = ch
+    missing_ft_payload = dict(payload, channels=missing_ft_channels)
+    snap_c = tmp_path / "missing_floored_ticks.json"
+    snap_c.write_text(json.dumps(missing_ft_payload))
+    rep_c = evaluate_snapshot(snap_c)
+    assert rep_c["channels"]["eeg_delta_power"]["floored_ticks"] is None
+    assert rep_c["channels"]["eeg_delta_power"]["floored_ticks_known"] is False
+    assert rep_c["channels"]["eeg_delta_power"]["sigma_floored_fraction"] is None
+    gates_c = {g["id"]: g for g in rep_c["stage2_readiness"]["gates"]}
+    assert gates_c["sigma_floor_watch_channels"]["status"] == "unknown"
+
+    # Case E: rotating 3-of-5 stability contributors (<302,400 per channel, >=302,400 composite warm) -> "pass"
+    n_rot = 306_800
+    rot_channels = {}
+    for spec in CHANNEL_SPECS:
+        warm_t = 250_000 if spec.composite == "stability" else 306_800
+        rot_channels[spec.name] = {
+            "n": 350_000,
+            "mean": 10.0,
+            "var": (spec.min_sigma * 2.0) ** 2,
+            "observed_ticks": 350_000,
+            "valid_ticks": 350_000,
+            "last_valid_at": 1_795_700_000.0,
+            "floored_ticks": 0,
+            "status_counts": {"warm": warm_t, "warming": 43_200, "missing": 0, "frozen": 0},
+            "z_abs_histogram": {"lt_1": warm_t, "1_to_2": 0, "2_to_3": 0, "ge_3": 0},
+        }
+    rot_payload = {
+        "schema_version": RESIDUALS_SCHEMA_VERSION,
+        "comparison_version": COMPARISON_VERSION,
+        "saved_at": 1_795_700_000.0,
+        "observed_ticks": 350_000,
+        "channels": rot_channels,
+        "correlations": {
+            "warmth_signed_z_vs_current_warmth": {
+                "n": n_rot,
+                "mean_x": 0.1,
+                "mean_y": 0.55,
+                "m2_x": 0.25 * n_rot,
+                "m2_y": 0.01 * n_rot,
+                "c_xy": 0.04 * n_rot,
+            },
+            "stability_mean_abs_z_vs_current_stability": {
+                "n": n_rot,
+                "mean_x": 0.5,
+                "mean_y": 0.80,
+                "m2_x": 0.25 * n_rot,
+                "m2_y": 0.01 * n_rot,
+                "c_xy": -0.025 * n_rot,
+            },
+            "clarity_light_z_vs_current_clarity": OnlineCorrelation().to_dict(),
+        },
+        "composites": {},
+    }
+    snap_rot = tmp_path / "rotating_3_of_5.json"
+    snap_rot.write_text(json.dumps(rot_payload))
+    rep_rot = evaluate_snapshot(snap_rot)
+    gates_rot = {g["id"]: g for g in rep_rot["stage2_readiness"]["gates"]}
+    assert gates_rot["seven_day_live_warm_coverage"]["status"] == "pass"
+
+
+def test_single_read_transaction_isolates_concurrent_wal_mutations(tmp_path: Path):
+    # Create >500 rows (spans >1 batch in pass 2) in WAL mode
+    wal_db = tmp_path / "txn_wal.db"
+    rows = _synthetic_rows(550, start=datetime(2026, 11, 1, 0, 0, 0), interval_s=60.0)
+    conn = sqlite3.connect(str(wal_db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE state_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            warmth REAL,
+            clarity REAL,
+            stability REAL,
+            presence REAL,
+            sensors TEXT DEFAULT '{}'
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO state_history (timestamp, warmth, clarity, stability, presence, sensors) VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    try:
+        it = iter_state_history_records(wal_db)
+        first = next(it)
+        assert first.anima.warmth == pytest.approx(rows[0][1])
+
+        # Mutate rows in the second batch (rowid > 500) on a separate WAL writer
+        # while the read iterator is mid-stream; single BEGIN snapshot must isolate it!
+        conn.execute("UPDATE state_history SET warmth = 0.123 WHERE id > 500")
+        conn.commit()
+
+        remaining = list(it)
+        assert len(remaining) == 549
+        # Row 550 must still reflect the original pre-mutation warmth, not 0.123
+        assert remaining[-1].anima.warmth == pytest.approx(rows[-1][1])
+    finally:
+        conn.close()
+
 
 def test_wal_readonly_days_anchor_mixed_tz_and_null_legacy_shadow_variance(tmp_path: Path):
     # 1. WAL-backed DB with uncommitted WAL frames must be visible under default ?mode=ro
@@ -794,6 +920,24 @@ def test_cli_db_replay_snapshot_and_argument_validation(tmp_path: Path, capsys):
 
     assert cli.main(["--snapshot", str(snap_path), "--json-out", str(snap_path)]) == 2
     assert snap_path.read_bytes() == snap_bytes_before
+
+    # [P1] --json-out must NEVER overwrite SQLite sidecar files (-wal, -shm, -journal)
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(f"{db_path}{suffix}")
+        assert cli.main(["--db", str(db_path), "--json-out", str(sidecar)]) == 2
+        assert not sidecar.exists()
+
+    wal_sidecar = Path(f"{db_path}-wal")
+    wal_sidecar.write_bytes(b"simulated-wal-bytes")
+    wal_symlink = tmp_path / "wal_link"
+    wal_symlink.symlink_to(wal_sidecar)
+    try:
+        assert cli.main(["--db", str(db_path), "--json-out", str(wal_sidecar)]) == 2
+        assert cli.main(["--db", str(db_path), "--json-out", str(wal_symlink)]) == 2
+        assert wal_sidecar.read_bytes() == b"simulated-wal-bytes"
+    finally:
+        wal_symlink.unlink()
+        wal_sidecar.unlink()
 
     # Corrupt SQLite DB and unwritable --json-out return exit code 2 without raw tracebacks
     corrupt_db = tmp_path / "corrupt.db"

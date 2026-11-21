@@ -184,7 +184,11 @@ def _connect_readonly(
     target = Path(db_path).expanduser()
     if not target.exists():
         raise FileNotFoundError(f"SQLite database not found: {target}")
-    return sqlite3.connect(_sqlite_readonly_uri(target, immutable=immutable), uri=True)
+    return sqlite3.connect(
+        _sqlite_readonly_uri(target, immutable=immutable),
+        uri=True,
+        isolation_level=None,
+    )
 
 
 def _parse_iso_datetime(value: Any) -> Optional[datetime]:
@@ -366,6 +370,9 @@ def iter_state_history_records(
     days_f = _validate_days(days)
     conn = _connect_readonly(db_path, immutable=immutable)
     try:
+        # Execute both passes inside one explicit read transaction so concurrent
+        # WAL commits cannot skew --days anchoring or row fetches.
+        conn.execute("BEGIN")
         if not _has_state_history_table(conn):
             raise ValueError("state_history table not found")
 
@@ -438,6 +445,11 @@ def iter_state_history_records(
                         )
                 yield record
     finally:
+        if conn.in_transaction:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
         conn.close()
 
 
@@ -568,11 +580,21 @@ def _summarize_intervals(intervals_s: Sequence[float]) -> Dict[str, Any]:
     }
 
 
+def _has_valid_nonneg_int_key(mapping: Any, key: str) -> bool:
+    if not isinstance(mapping, Mapping) or key not in mapping:
+        return False
+    val = mapping.get(key)
+    if isinstance(val, bool) or not isinstance(val, int):
+        return False
+    return val >= 0
+
+
 def _build_channel_report(
     band: ResidualBand,
     *,
     warm_z_values: Optional[Sequence[float]],
     distribution_source: str,
+    floored_ticks_known: bool = True,
 ) -> Dict[str, Any]:
     spec = band.spec
     warm_ticks = int(band.status_counts.get("warm", 0))
@@ -593,6 +615,11 @@ def _build_channel_report(
             "p95": None,
         }
 
+    floored_ticks: Optional[int] = band.floored_ticks if floored_ticks_known else None
+    sigma_floored_fraction: Optional[float] = (
+        _ratio_opt(band.floored_ticks, warm_ticks) if floored_ticks_known else None
+    )
+
     return {
         "name": spec.name,
         "composite": spec.composite,
@@ -611,8 +638,9 @@ def _build_channel_report(
         "frozen_ticks": frozen_ticks,
         "warm_fraction": _ratio_opt(warm_ticks, band.observed_ticks),
         "valid_fraction": _ratio_opt(band.valid_ticks, band.observed_ticks),
-        "floored_ticks": band.floored_ticks,
-        "sigma_floored_fraction": _ratio_opt(band.floored_ticks, warm_ticks),
+        "floored_ticks": floored_ticks,
+        "floored_ticks_known": floored_ticks_known,
+        "sigma_floored_fraction": sigma_floored_fraction,
         "current_sigma_floored": band.sigma_floored if band.n > 0 else None,
         "baseline_mean": round(band.mean, 6) if band.n > 0 else None,
         "raw_sigma": round(band.raw_sigma, 6) if band.n > 0 else None,
@@ -719,36 +747,32 @@ def _build_stage2_readiness(
     stability_channel_warm_count = sum(
         1 for t in stability_warm_ticks.values() if t >= required_live_warm_ticks
     )
-    stability_channel_bounds_ok = (
-        stability_channel_warm_count >= STABILITY_MIN_CONTRIBUTORS
+    # Exact pigeonhole upper bound on simultaneous 3-of-5 stability ticks:
+    # rotating 3-of-5 contributors can reach >= required_live_warm_ticks even
+    # when fewer than 3 individual channels each exceed required_live_warm_ticks.
+    stability_simultaneous_upper_bound = (
+        sum(stability_warm_ticks.values()) // STABILITY_MIN_CONTRIBUTORS
     )
 
     if source_kind == "persisted_snapshot":
-        necessary_bounds_ok = (
-            using_production_defaults
-            and observed_ticks >= required_live_total_ticks
-            and warmth_channel_bounds_ok
-            and stability_channel_bounds_ok
-        )
         simultaneous_proven = (
             warmth_composite_warm_ticks >= required_live_warm_ticks
             and stability_composite_warm_ticks >= required_live_warm_ticks
         )
-        if not necessary_bounds_ok:
+        if not using_production_defaults:
             live_gate_status = "fail"
-            if not using_production_defaults:
-                live_reason = (
-                    f"Custom tracker parameters (min_samples={min_samples}, window_samples={window_samples}) "
-                    f"cannot satisfy the production 7-day live soak gate."
-                )
-            else:
-                min_warmth = min(warmth_warm_ticks.values())
-                live_reason = (
-                    f"Live snapshot has {observed_ticks:,}/{required_live_total_ticks:,} total ticks "
-                    f"(warmup={DEFAULT_MIN_SAMPLES:,}, 7d warm target={required_live_warm_ticks:,}); "
-                    f"min warmth channel warm_ticks={min_warmth:,}, stability channels >=7d warm="
-                    f"{stability_channel_warm_count}/{STABILITY_MIN_CONTRIBUTORS} required."
-                )
+            live_reason = (
+                f"Custom tracker parameters (min_samples={min_samples}, window_samples={window_samples}) "
+                f"cannot satisfy the production 7-day live soak gate."
+            )
+        elif observed_ticks < required_live_total_ticks or not warmth_channel_bounds_ok:
+            live_gate_status = "fail"
+            min_warmth = min(warmth_warm_ticks.values())
+            live_reason = (
+                f"Live snapshot has {observed_ticks:,}/{required_live_total_ticks:,} total ticks "
+                f"(warmup={DEFAULT_MIN_SAMPLES:,}, 7d warm target={required_live_warm_ticks:,}); "
+                f"min warmth channel warm_ticks={min_warmth:,}."
+            )
         elif simultaneous_proven:
             live_gate_status = "pass"
             live_reason = (
@@ -757,10 +781,18 @@ def _build_stage2_readiness(
                 f"paired simultaneous warm ticks: warmth={warmth_composite_warm_ticks:,}, "
                 f"stability={stability_composite_warm_ticks:,} >= {required_live_warm_ticks:,})."
             )
+        elif stability_simultaneous_upper_bound < required_live_warm_ticks:
+            live_gate_status = "fail"
+            live_reason = (
+                f"Live snapshot stability channels cannot reach >=7d simultaneous 3-of-5 coverage "
+                f"(pigeonhole upper bound={stability_simultaneous_upper_bound:,} < {required_live_warm_ticks:,}; "
+                f"paired stability warm ticks={stability_composite_warm_ticks:,})."
+            )
         else:
             live_gate_status = "unknown"
             live_reason = (
-                f"Per-channel warm counts cleared >= {required_live_warm_ticks:,}, but snapshot "
+                f"Channel totals do not rule out >= {required_live_warm_ticks:,} simultaneous warm ticks "
+                f"(stability 3-of-5 upper bound={stability_simultaneous_upper_bound:,}), but snapshot "
                 f"cannot prove >=7d simultaneous composite contributor overlap "
                 f"(paired composite warm ticks: warmth={warmth_composite_warm_ticks:,}, "
                 f"stability={stability_composite_warm_ticks:,} < {required_live_warm_ticks:,})."
@@ -812,31 +844,40 @@ def _build_stage2_readiness(
                 "warmth_channel_warm_ticks": warmth_warm_ticks,
                 "stability_channel_warm_ticks": stability_warm_ticks,
                 "stability_channels_meeting_7d_live": stability_channel_warm_count,
+                "stability_simultaneous_upper_bound": stability_simultaneous_upper_bound,
                 "offline_7d_span_and_warm": offline_7d_span_and_warm,
             },
             "reason": live_reason,
         }
     )
 
-    # Gate 2: Non-degenerate shadow stability variance (evaluated on unrounded full-shadow warm ticks)
+    # Gate 2: Non-degenerate shadow stability variance
+    variance_sample_scope = (
+        "paired_warm_ticks" if source_kind == "persisted_snapshot" else "all_warm_ticks"
+    )
+    variance_sample_label = (
+        "paired warm samples (snapshot OnlineCorrelation)"
+        if source_kind == "persisted_snapshot"
+        else "all warm ticks"
+    )
     stab_n, stab_var_raw, stab_sd_raw = composite_shadow_raw["stability"]
     stab_comp = comparisons["stability"]
     if stab_n < 2 or stab_var_raw is None or stab_sd_raw is None:
         stab_status = "unknown"
         stab_reason = (
-            f"Insufficient warm stability samples (n={stab_n}; need >=2) to evaluate "
-            "shadow stability variance."
+            f"Insufficient {variance_sample_label} for stability (n={stab_n}; need >=2) "
+            "to evaluate shadow stability variance."
         )
     elif stab_var_raw > MIN_NON_DEGENERATE_VARIANCE:
         stab_status = "pass"
         stab_reason = (
-            f"Shadow stability.mean_abs_z is non-degenerate across all warm ticks "
+            f"Shadow stability.mean_abs_z is non-degenerate across {variance_sample_label} "
             f"(n={stab_n:,}, sd={stab_sd_raw:.4f}, var={stab_var_raw:.9g} > {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     else:
         stab_status = "fail"
         stab_reason = (
-            f"Shadow stability.mean_abs_z variance collapsed "
+            f"Shadow stability.mean_abs_z variance collapsed across {variance_sample_label} "
             f"(n={stab_n:,}, var={stab_var_raw:.9g} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     gates.append(
@@ -846,6 +887,7 @@ def _build_stage2_readiness(
             "status": stab_status,
             "blocking": True,
             "evidence": {
+                "sample_scope": variance_sample_scope,
                 "n": stab_n,
                 "shadow_variance": round(stab_var_raw, 9) if stab_var_raw is not None else None,
                 "shadow_sd": round(stab_sd_raw, 6) if stab_sd_raw is not None else None,
@@ -858,25 +900,25 @@ def _build_stage2_readiness(
         }
     )
 
-    # Gate 3: Non-degenerate shadow warmth variance (evaluated on unrounded full-shadow warm ticks)
+    # Gate 3: Non-degenerate shadow warmth variance
     warmth_n, warmth_var_raw, warmth_sd_raw = composite_shadow_raw["warmth"]
     warmth_comp = comparisons["warmth"]
     if warmth_n < 2 or warmth_var_raw is None or warmth_sd_raw is None:
         warmth_status = "unknown"
         warmth_reason = (
-            f"Insufficient warm warmth samples (n={warmth_n}; need >=2) to evaluate "
-            "shadow warmth variance."
+            f"Insufficient {variance_sample_label} for warmth (n={warmth_n}; need >=2) "
+            "to evaluate shadow warmth variance."
         )
     elif warmth_var_raw > MIN_NON_DEGENERATE_VARIANCE:
         warmth_status = "pass"
         warmth_reason = (
-            f"Shadow warmth.signed_z is non-degenerate across all warm ticks "
+            f"Shadow warmth.signed_z is non-degenerate across {variance_sample_label} "
             f"(n={warmth_n:,}, sd={warmth_sd_raw:.4f}, var={warmth_var_raw:.9g} > {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     else:
         warmth_status = "fail"
         warmth_reason = (
-            f"Shadow warmth.signed_z variance collapsed "
+            f"Shadow warmth.signed_z variance collapsed across {variance_sample_label} "
             f"(n={warmth_n:,}, var={warmth_var_raw:.9g} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     gates.append(
@@ -886,6 +928,7 @@ def _build_stage2_readiness(
             "status": warmth_status,
             "blocking": True,
             "evidence": {
+                "sample_scope": variance_sample_scope,
                 "n": warmth_n,
                 "shadow_variance": round(warmth_var_raw, 9) if warmth_var_raw is not None else None,
                 "shadow_sd": round(warmth_sd_raw, 6) if warmth_sd_raw is not None else None,
@@ -954,12 +997,16 @@ def _build_stage2_readiness(
     watch_evidence: Dict[str, Any] = {}
     high_floored: List[str] = []
     unwarm_watch: List[str] = []
+    missing_floored_watch: List[str] = []
     currently_floored_watch: List[str] = []
     for ch_name in SIGMA_FLOOR_WATCH_CHANNELS:
         ch = channels[ch_name]
         sff = ch["sigma_floored_fraction"]
+        floored_known = bool(ch.get("floored_ticks_known", True))
         if ch["warm_ticks"] <= 0:
             unwarm_watch.append(ch_name)
+        elif not floored_known or sff is None:
+            missing_floored_watch.append(ch_name)
         if sff is not None and sff >= SIGMA_FLOOR_WARN_FRACTION:
             high_floored.append(f"{ch_name} ({sff * 100:.1f}%)")
         if ch["current_sigma_floored"] is True:
@@ -970,21 +1017,28 @@ def _build_stage2_readiness(
             "raw_sigma": ch["raw_sigma"],
             "min_sigma": ch["min_sigma"],
             "current_sigma_floored": ch["current_sigma_floored"],
+            "floored_ticks_known": floored_known,
             "sigma_floored_fraction": sff,
         }
 
+    incomplete_parts: List[str] = []
+    if unwarm_watch:
+        incomplete_parts.append(f"no warm ticks on {', '.join(unwarm_watch)}")
+    if missing_floored_watch:
+        incomplete_parts.append(
+            f"missing floored_ticks in snapshot on {', '.join(missing_floored_watch)}"
+        )
+
     if high_floored:
         watch_status = "warn"
-        unwarm_note = (
-            f" (still lacking warm ticks on: {', '.join(unwarm_watch)})"
-            if unwarm_watch
-            else ""
+        incomplete_note = (
+            f" ({'; '.join(incomplete_parts)})" if incomplete_parts else ""
         )
         watch_reason = (
             f"High sigma-floored fraction (>={SIGMA_FLOOR_WARN_FRACTION * 100:.0f}%) on "
-            f"{', '.join(high_floored)}{unwarm_note}; review min_sigma floors before Stage-2 cutover."
+            f"{', '.join(high_floored)}{incomplete_note}; review min_sigma floors before Stage-2 cutover."
         )
-    elif unwarm_watch:
+    elif incomplete_parts:
         watch_status = "unknown"
         curr_note = (
             f"; current raw_sigma < min_sigma on: {', '.join(currently_floored_watch)}"
@@ -992,8 +1046,7 @@ def _build_stage2_readiness(
             else ""
         )
         watch_reason = (
-            f"Insufficient warm evidence on sigma-floor watch channel(s): "
-            f"{', '.join(unwarm_watch)}{curr_note}."
+            f"Incomplete sigma-floor watch evidence ({'; '.join(incomplete_parts)}){curr_note}."
         )
     else:
         watch_status = "pass"
@@ -1402,6 +1455,9 @@ def evaluate_snapshot(
         ch_data = (
             channels_raw.get(spec.name) if isinstance(channels_raw, Mapping) else None
         )
+        floored_ticks_known = restore_comparison and _has_valid_nonneg_int_key(
+            ch_data, "floored_ticks"
+        )
         band = ResidualBand.from_dict(
             spec,
             ch_data,
@@ -1415,6 +1471,7 @@ def evaluate_snapshot(
             band,
             warm_z_values=None,
             distribution_source="snapshot_histogram_only",
+            floored_ticks_known=floored_ticks_known,
         )
 
     corr_raw = raw.get("correlations")
