@@ -1,8 +1,10 @@
 """Offline historical SensorResidualTracker replay and Stage-2 readiness evaluator (#79, #175).
 
 Reads Lumen's durable ``state_history`` SQLite table strictly read-only
-(``?mode=ro&immutable=1``) or an existing persisted ``sensor_residuals.json``
-snapshot, replays historical observations through the real
+(``?mode=ro`` by default so WAL-backed DBs include ``-wal`` frames cleanly;
+opt-in ``immutable=True`` / ``--immutable`` for frozen backup copies) or an
+existing persisted ``sensor_residuals.json`` snapshot, replays historical
+observations through the real
 :class:`anima_mcp.sensor_residuals.SensorResidualTracker`, and emits a
 structured Stage-2 readiness report (JSON + Markdown).
 
@@ -11,16 +13,16 @@ Design invariants:
     ``eisv_mapper.py``, or ``anima_broker/lib/anima_broker/governance/eisv_mapper.ex``.
   * Strictly read-only: never modifies SQLite databases or persisted snapshots,
     and never invokes ``SensorResidualTracker.save()``.
-  * Fail toward unknown (Invariant 2): NULL, missing, boolean, or non-finite
-    fields reconstruct as ``None`` rather than fabricated defaults, and
-    unevaluated distributions/gates report ``None`` / ``unknown`` rather than
-    passing.
+  * Fail toward unknown (Invariant 2): NULL, missing, boolean, string, or
+    non-finite numeric fields reconstruct as ``None`` rather than fabricated
+    defaults, and unevaluated distributions/gates report ``None`` / ``unknown``
+    rather than passing.
 """
 from __future__ import annotations
 
 from array import array
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -147,7 +149,12 @@ PYTHON_ELIXIR_PARITY_ITEMS: Tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class StateHistoryRecord:
-    """Reconstructed chronological row from ``state_history``."""
+    """Reconstructed chronological row from ``state_history``.
+
+    Note: ``anima`` is an :class:`Anima` instance whose scalar fields may be
+    ``None`` when the corresponding ``state_history`` column was NULL or
+    non-finite (preserving Invariant 2 rather than substituting defaults).
+    """
 
     timestamp: datetime
     timestamp_unix: float
@@ -161,17 +168,23 @@ class StateHistoryRecord:
         return (self.timestamp, self.readings, self.anima)
 
 
-def _sqlite_readonly_uri(db_path: Path | str) -> str:
+def _sqlite_readonly_uri(db_path: Path | str, *, immutable: bool = False) -> str:
     resolved = Path(db_path).expanduser().resolve()
     encoded = quote(resolved.as_posix(), safe="/:")
-    return f"file:{encoded}?mode=ro&immutable=1"
+    if immutable:
+        return f"file:{encoded}?mode=ro&immutable=1"
+    return f"file:{encoded}?mode=ro"
 
 
-def _connect_readonly(db_path: Path | str) -> sqlite3.Connection:
+def _connect_readonly(
+    db_path: Path | str,
+    *,
+    immutable: bool = False,
+) -> sqlite3.Connection:
     target = Path(db_path).expanduser()
     if not target.exists():
         raise FileNotFoundError(f"SQLite database not found: {target}")
-    return sqlite3.connect(_sqlite_readonly_uri(target), uri=True)
+    return sqlite3.connect(_sqlite_readonly_uri(target, immutable=immutable), uri=True)
 
 
 def _parse_iso_datetime(value: Any) -> Optional[datetime]:
@@ -189,10 +202,24 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
 
 
 def _datetime_to_unix(dt: datetime) -> float:
-    """Convert datetime to a monotonic Unix timestamp without local-DST jumps."""
+    """Convert datetime to a normalized UTC-referenced Unix timestamp.
+
+    Timezone-aware timestamps are converted to UTC. Naive timestamps (as written
+    by Lumen's local ``datetime.now().isoformat()`` in ``state_history``) are
+    interpreted on a fixed UTC reference frame so elapsed intervals are
+    monotonic and unaffected by local DST transitions.
+    """
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc).timestamp()
     return dt.astimezone(timezone.utc).timestamp()
+
+
+def _strict_numeric_float(value: Any) -> Optional[float]:
+    """Convert a JSON/SQLite numeric value to finite float, rejecting bool/str/None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    out = float(value)
+    return out if math.isfinite(out) else None
 
 
 def _extract_int(value: Any) -> Optional[int]:
@@ -209,13 +236,19 @@ def _extract_optional_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _extract_gated_external_light(sensors_dict: Mapping[str, Any]) -> Tuple[Optional[float], Optional[str]]:
-    """Return gated external_light_lux only; never fall back to raw light_lux."""
+def _extract_gated_external_light(
+    sensors_dict: Mapping[str, Any],
+) -> Tuple[Optional[float], Optional[str]]:
+    """Return gated external_light_lux ONLY when attribution is 'ready_shadow'.
+
+    Never falls back to raw ``light_lux`` and rejects missing/non-ready status
+    as well as bool/str values (mirroring ``light_attribution.py``).
+    """
     raw_status = sensors_dict.get("light_attribution_status")
-    status = str(raw_status) if isinstance(raw_status, str) else None
-    if status is not None and status != "ready_shadow":
+    status = raw_status if isinstance(raw_status, str) else None
+    if status != "ready_shadow":
         return None, status
-    ext_lux = _finite_float(sensors_dict.get("external_light_lux"))
+    ext_lux = _strict_numeric_float(sensors_dict.get("external_light_lux"))
     return ext_lux, status
 
 
@@ -229,8 +262,10 @@ def reconstruct_state_history_row(
 ) -> Optional[StateHistoryRecord]:
     """Reconstruct one ``state_history`` row into ``(timestamp, SensorReadings, Anima)``.
 
-    Honors Invariant 2 (fail toward unknown): NULL, missing, boolean, non-finite,
-    or malformed JSON fields become ``None`` rather than invented defaults.
+    Honors Invariant 2 (fail toward unknown): NULL, missing, boolean, string,
+    non-finite, or malformed JSON fields become ``None`` rather than invented
+    defaults. Note that ``Anima`` numeric fields are preserved as ``None`` when
+    missing/NULL in ``state_history``.
     """
     ts_dt = _parse_iso_datetime(timestamp_raw)
     if ts_dt is None:
@@ -243,7 +278,11 @@ def reconstruct_state_history_row(
         sensors_dict = dict(sensors_raw)
         valid_json = True
     elif isinstance(sensors_raw, (str, bytes, bytearray)):
-        text = sensors_raw.decode("utf-8", errors="replace") if isinstance(sensors_raw, (bytes, bytearray)) else sensors_raw
+        text = (
+            sensors_raw.decode("utf-8", errors="replace")
+            if isinstance(sensors_raw, (bytes, bytearray))
+            else sensors_raw
+        )
         if text.strip():
             try:
                 parsed = json.loads(text)
@@ -255,7 +294,7 @@ def reconstruct_state_history_row(
 
     reading_kwargs: Dict[str, Any] = {"timestamp": ts_dt}
     for field_name in _SENSOR_FLOAT_FIELDS:
-        reading_kwargs[field_name] = _finite_float(sensors_dict.get(field_name))
+        reading_kwargs[field_name] = _strict_numeric_float(sensors_dict.get(field_name))
     reading_kwargs["light_observed_at"] = _parse_iso_datetime(
         sensors_dict.get("light_observed_at")
     )
@@ -273,10 +312,10 @@ def reconstruct_state_history_row(
 
     # Preserve None for missing/NULL legacy anima values (fail toward unknown).
     anima = Anima(
-        warmth=_finite_float(warmth_raw),      # type: ignore[arg-type]
-        clarity=_finite_float(clarity_raw),    # type: ignore[arg-type]
-        stability=_finite_float(stability_raw),  # type: ignore[arg-type]
-        presence=_finite_float(presence_raw),  # type: ignore[arg-type]
+        warmth=_strict_numeric_float(warmth_raw),      # type: ignore[arg-type]
+        clarity=_strict_numeric_float(clarity_raw),    # type: ignore[arg-type]
+        stability=_strict_numeric_float(stability_raw),  # type: ignore[arg-type]
+        presence=_strict_numeric_float(presence_raw),  # type: ignore[arg-type]
         readings=readings,
     )
     return StateHistoryRecord(
@@ -297,79 +336,107 @@ def _has_state_history_table(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def _compute_window_cutoff(
-    conn: sqlite3.Connection,
-    days: Optional[float],
-) -> Tuple[Optional[datetime], Optional[datetime], Optional[float]]:
-    """Anchor ``--days`` to the latest DB timestamp for reproducible backup replays."""
-    row = conn.execute("SELECT MAX(timestamp) FROM state_history").fetchone()
-    if not row or row[0] is None:
-        return None, None, None
-    max_dt = _parse_iso_datetime(row[0])
-    if max_dt is None or days is None:
-        return max_dt, None, None
+def _validate_days(days: Optional[float]) -> Optional[float]:
+    if days is None:
+        return None
+    if isinstance(days, bool):
+        raise ValueError("days must be a positive finite number")
     days_f = float(days)
     if not math.isfinite(days_f) or days_f <= 0.0:
         raise ValueError("days must be a positive finite number")
-    cutoff_dt = max_dt - timedelta(days=days_f)
-    return max_dt, cutoff_dt, _datetime_to_unix(cutoff_dt)
+    return days_f
+
+
+_SQLITE_ROWID_CHUNK_SIZE = 500
 
 
 def iter_state_history_records(
     db_path: Path | str,
     *,
     days: Optional[float] = None,
+    immutable: bool = False,
     counters: Optional[Dict[str, int]] = None,
 ) -> Iterator[StateHistoryRecord]:
-    """Stream chronological :class:`StateHistoryRecord` rows from SQLite read-only."""
-    conn = _connect_readonly(db_path)
+    """Stream chronological :class:`StateHistoryRecord` rows from SQLite read-only.
+
+    Anchors ``--days`` and orders rows strictly by parsed, UTC-normalized
+    timestamps (never SQL text ``MAX(timestamp)`` or lexical text sorting),
+    skipping and counting unparseable timestamps cleanly.
+    """
+    days_f = _validate_days(days)
+    conn = _connect_readonly(db_path, immutable=immutable)
     try:
         if not _has_state_history_table(conn):
             raise ValueError("state_history table not found")
 
-        _, cutoff_dt, cutoff_unix = _compute_window_cutoff(conn, days)
-        if cutoff_dt is not None:
-            # 1-day SQL pre-filter keeps index scan fast while exact Python
-            # timestamp comparison avoids naive/tz-mixed boundary issues.
-            sql_floor = (cutoff_dt - timedelta(days=1)).isoformat()
-            cursor = conn.execute(
-                "SELECT timestamp, warmth, clarity, stability, presence, sensors "
-                "FROM state_history WHERE timestamp >= ? "
-                "ORDER BY timestamp ASC, rowid ASC",
-                (sql_floor,),
-            )
-        else:
-            cursor = conn.execute(
-                "SELECT timestamp, warmth, clarity, stability, presence, sensors "
-                "FROM state_history ORDER BY timestamp ASC, rowid ASC"
-            )
-
-        for ts_raw, w, c, s, p, sensors_raw in cursor:
-            record = reconstruct_state_history_row(ts_raw, w, c, s, p, sensors_raw)
-            if record is None:
+        # Pass 1: parse timestamps across table to anchor --days and sort
+        # chronologically on normalized timestamps, ignoring bad timestamp rows.
+        valid_index: List[Tuple[float, int]] = []
+        max_unix: Optional[float] = None
+        for rowid, ts_raw in conn.execute("SELECT rowid, timestamp FROM state_history"):
+            ts_dt = _parse_iso_datetime(ts_raw)
+            if ts_dt is None:
                 if counters is not None:
                     counters["skipped_bad_timestamp_rows"] = (
                         counters.get("skipped_bad_timestamp_rows", 0) + 1
                     )
                 continue
-            if cutoff_unix is not None and record.timestamp_unix < cutoff_unix:
-                continue
-            if counters is not None:
-                if not record.valid_sensors_json:
-                    counters["malformed_sensor_json_rows"] = (
-                        counters.get("malformed_sensor_json_rows", 0) + 1
-                    )
-                if any(
-                    v is None
-                    for v in (
-                        record.anima.warmth,
-                        record.anima.clarity,
-                        record.anima.stability,
-                        record.anima.presence,
-                    )
-                ):
-                    counters["null_anima_rows"] = counters.get("null_anima_rows", 0) + 1
-            yield record
+            ts_unix = _datetime_to_unix(ts_dt)
+            valid_index.append((ts_unix, int(rowid)))
+            if max_unix is None or ts_unix > max_unix:
+                max_unix = ts_unix
+
+        if not valid_index or max_unix is None:
+            return
+
+        if days_f is not None:
+            cutoff_unix = max_unix - days_f * 86400.0
+            valid_index = [
+                (ts_unix, rid) for ts_unix, rid in valid_index if ts_unix >= cutoff_unix
+            ]
+            if not valid_index:
+                return
+
+        valid_index.sort(key=lambda item: (item[0], item[1]))
+
+        # Pass 2: stream full rows in bounded rowid batches in exact sorted order.
+        for start in range(0, len(valid_index), _SQLITE_ROWID_CHUNK_SIZE):
+            batch = valid_index[start : start + _SQLITE_ROWID_CHUNK_SIZE]
+            batch_rids = [rid for _, rid in batch]
+            placeholders = ",".join("?" for _ in batch_rids)
+            fetched: Dict[int, Tuple[Any, Any, Any, Any, Any, Any]] = {}
+            for rid, ts_raw, w, c, s, p, sensors_raw in conn.execute(
+                f"SELECT rowid, timestamp, warmth, clarity, stability, presence, sensors "
+                f"FROM state_history WHERE rowid IN ({placeholders})",
+                batch_rids,
+            ):
+                fetched[int(rid)] = (ts_raw, w, c, s, p, sensors_raw)
+
+            for _, rid in batch:
+                raw_row = fetched.get(rid)
+                if raw_row is None:
+                    continue
+                record = reconstruct_state_history_row(*raw_row)
+                if record is None:
+                    continue
+                if counters is not None:
+                    if not record.valid_sensors_json:
+                        counters["malformed_sensor_json_rows"] = (
+                            counters.get("malformed_sensor_json_rows", 0) + 1
+                        )
+                    if any(
+                        v is None
+                        for v in (
+                            record.anima.warmth,
+                            record.anima.clarity,
+                            record.anima.stability,
+                            record.anima.presence,
+                        )
+                    ):
+                        counters["null_anima_rows"] = (
+                            counters.get("null_anima_rows", 0) + 1
+                        )
+                yield record
     finally:
         conn.close()
 
@@ -378,9 +445,13 @@ def load_state_history_tuples(
     db_path: Path | str,
     *,
     days: Optional[float] = None,
+    immutable: bool = False,
 ) -> List[Tuple[datetime, SensorReadings, Anima]]:
     """Read chronological ``(timestamp, SensorReadings, Anima)`` tuples read-only."""
-    return [rec.as_tuple() for rec in iter_state_history_records(db_path, days=days)]
+    return [
+        rec.as_tuple()
+        for rec in iter_state_history_records(db_path, days=days, immutable=immutable)
+    ]
 
 
 def _percentile(sorted_values: Sequence[float], q: float) -> Optional[float]:
@@ -404,6 +475,8 @@ def _series_distribution(values: Sequence[float]) -> Dict[str, Any]:
             "mean": None,
             "sd": None,
             "variance": None,
+            "variance_raw": None,
+            "sd_raw": None,
             "p05": None,
             "p50": None,
             "p95": None,
@@ -421,7 +494,9 @@ def _series_distribution(values: Sequence[float]) -> Dict[str, Any]:
         "n": n,
         "mean": round(mean, 6),
         "sd": round(sd, 6) if sd is not None else None,
-        "variance": round(var, 6) if var is not None else None,
+        "variance": round(var, 9) if var is not None else None,
+        "variance_raw": var,
+        "sd_raw": sd,
         "p05": round(_percentile(ordered, 0.05), 6),  # type: ignore[arg-type]
         "p50": round(_percentile(ordered, 0.50), 6),  # type: ignore[arg-type]
         "p95": round(_percentile(ordered, 0.95), 6),  # type: ignore[arg-type]
@@ -582,10 +657,10 @@ def _build_comparison_entry(
         "n": corr.n,
         "pearson_r": _round_opt(corr.pearson_r, 4),
         "shadow_mean": round(corr.mean_x, 6) if corr.n > 0 else None,
-        "shadow_variance": round(shadow_var, 6) if shadow_var is not None else None,
+        "shadow_variance": round(shadow_var, 9) if shadow_var is not None else None,
         "shadow_sd": round(shadow_sd, 6) if shadow_sd is not None else None,
         "legacy_mean": round(corr.mean_y, 6) if corr.n > 0 else None,
-        "legacy_variance": round(legacy_var, 6) if legacy_var is not None else None,
+        "legacy_variance": round(legacy_var, 9) if legacy_var is not None else None,
         "legacy_sd": round(legacy_sd, 6) if legacy_sd is not None else None,
     }
     if pair_name == "stability":
@@ -619,6 +694,8 @@ def _build_stage2_readiness(
     channels: Mapping[str, Mapping[str, Any]],
     composites: Mapping[str, Mapping[str, Any]],
     comparisons: Mapping[str, Mapping[str, Any]],
+    composite_shadow_raw: Mapping[str, Tuple[int, Optional[float], Optional[float]]],
+    correlation_r_raw: Mapping[str, Optional[float]],
 ) -> Dict[str, Any]:
     """Evaluate explicit Stage-2 cutover gates without fabricating missing evidence."""
     gates: List[Dict[str, Any]] = []
@@ -632,37 +709,61 @@ def _build_stage2_readiness(
     stability_warm_ticks = {
         ch: int(channels[ch]["warm_ticks"]) for ch in STABILITY_CHANNELS
     }
-    warmth_live_ok = all(t >= required_live_warm_ticks for t in warmth_warm_ticks.values())
-    stability_live_warm_count = sum(
+    warmth_composite_warm_ticks = int(composites["warmth"]["n"])
+    stability_composite_warm_ticks = int(composites["stability"]["n"])
+    clarity_light_composite_warm_ticks = int(composites["clarity_light"]["n"])
+
+    warmth_channel_bounds_ok = all(
+        t >= required_live_warm_ticks for t in warmth_warm_ticks.values()
+    )
+    stability_channel_warm_count = sum(
         1 for t in stability_warm_ticks.values() if t >= required_live_warm_ticks
     )
-    stability_live_ok = stability_live_warm_count >= STABILITY_MIN_CONTRIBUTORS
+    stability_channel_bounds_ok = (
+        stability_channel_warm_count >= STABILITY_MIN_CONTRIBUTORS
+    )
 
     if source_kind == "persisted_snapshot":
-        live_7d_pass = (
+        necessary_bounds_ok = (
             using_production_defaults
             and observed_ticks >= required_live_total_ticks
-            and warmth_live_ok
-            and stability_live_ok
+            and warmth_channel_bounds_ok
+            and stability_channel_bounds_ok
         )
-        live_gate_status = "pass" if live_7d_pass else "fail"
-        if live_7d_pass:
+        simultaneous_proven = (
+            warmth_composite_warm_ticks >= required_live_warm_ticks
+            and stability_composite_warm_ticks >= required_live_warm_ticks
+        )
+        if not necessary_bounds_ok:
+            live_gate_status = "fail"
+            if not using_production_defaults:
+                live_reason = (
+                    f"Custom tracker parameters (min_samples={min_samples}, window_samples={window_samples}) "
+                    f"cannot satisfy the production 7-day live soak gate."
+                )
+            else:
+                min_warmth = min(warmth_warm_ticks.values())
+                live_reason = (
+                    f"Live snapshot has {observed_ticks:,}/{required_live_total_ticks:,} total ticks "
+                    f"(warmup={DEFAULT_MIN_SAMPLES:,}, 7d warm target={required_live_warm_ticks:,}); "
+                    f"min warmth channel warm_ticks={min_warmth:,}, stability channels >=7d warm="
+                    f"{stability_channel_warm_count}/{STABILITY_MIN_CONTRIBUTORS} required."
+                )
+        elif simultaneous_proven:
+            live_gate_status = "pass"
             live_reason = (
-                f"Live snapshot cleared >=7d warm coverage "
+                f"Live snapshot cleared >=7d simultaneous composite warm coverage "
                 f"({observed_ticks:,} ticks >= {required_live_total_ticks:,}; "
-                f"warmth and {stability_live_warm_count}/{len(STABILITY_CHANNELS)} stability channels warm >= {required_live_warm_ticks:,})."
-            )
-        elif not using_production_defaults:
-            live_reason = (
-                f"Custom tracker parameters (min_samples={min_samples}, window_samples={window_samples}) "
-                f"cannot satisfy the production 7-day live soak gate."
+                f"paired simultaneous warm ticks: warmth={warmth_composite_warm_ticks:,}, "
+                f"stability={stability_composite_warm_ticks:,} >= {required_live_warm_ticks:,})."
             )
         else:
-            min_warmth = min(warmth_warm_ticks.values())
+            live_gate_status = "unknown"
             live_reason = (
-                f"Live snapshot has {observed_ticks:,}/{required_live_total_ticks:,} total ticks "
-                f"(warmup={DEFAULT_MIN_SAMPLES:,}, 7d warm target={required_live_warm_ticks:,}); "
-                f"min warmth warm_ticks={min_warmth:,}, stability channels >=7d warm={stability_live_warm_count}/{STABILITY_MIN_CONTRIBUTORS} required."
+                f"Per-channel warm counts cleared >= {required_live_warm_ticks:,}, but snapshot "
+                f"cannot prove >=7d simultaneous composite contributor overlap "
+                f"(paired composite warm ticks: warmth={warmth_composite_warm_ticks:,}, "
+                f"stability={stability_composite_warm_ticks:,} < {required_live_warm_ticks:,})."
             )
     else:
         # Offline SQLite state_history replay cannot substitute for live 2s broker soak.
@@ -679,15 +780,17 @@ def _build_stage2_readiness(
         )
         live_reason = (
             f"Offline state_history replay ({observed_ticks:,} rows over {span_str}, {cadence_str}; "
-            f"min_samples={min_samples:,}) does not replace live 7-day 2s-tick broker soak "
+            f"simultaneous composite warm ticks: warmth={warmth_composite_warm_ticks:,}, "
+            f"stability={stability_composite_warm_ticks:,}; min_samples={min_samples:,}) "
+            f"does not replace live 7-day 2s-tick broker soak "
             f"(target >= {required_live_warm_ticks:,} warm ticks in live ~/.anima/sensor_residuals.json)."
         )
 
     offline_7d_span_and_warm = (
         wall_clock_span_days is not None
         and wall_clock_span_days >= 7.0
-        and int(composites["warmth"]["n"]) > 0
-        and int(composites["stability"]["n"]) > 0
+        and warmth_composite_warm_ticks > 0
+        and stability_composite_warm_ticks > 0
     )
     gates.append(
         {
@@ -703,40 +806,38 @@ def _build_stage2_readiness(
                 "required_live_warm_ticks": required_live_warm_ticks,
                 "wall_clock_span_days": _round_opt(wall_clock_span_days, 3),
                 "cadence_ratio_vs_broker": cadence_ratio_vs_broker,
-                "warmth_warm_ticks": warmth_warm_ticks,
-                "stability_warm_ticks": stability_warm_ticks,
-                "stability_channels_meeting_7d_live": stability_live_warm_count,
+                "warmth_composite_warm_ticks": warmth_composite_warm_ticks,
+                "stability_composite_warm_ticks": stability_composite_warm_ticks,
+                "clarity_light_composite_warm_ticks": clarity_light_composite_warm_ticks,
+                "warmth_channel_warm_ticks": warmth_warm_ticks,
+                "stability_channel_warm_ticks": stability_warm_ticks,
+                "stability_channels_meeting_7d_live": stability_channel_warm_count,
                 "offline_7d_span_and_warm": offline_7d_span_and_warm,
             },
             "reason": live_reason,
         }
     )
 
-    # Gate 2: Non-degenerate shadow stability variance
+    # Gate 2: Non-degenerate shadow stability variance (evaluated on unrounded full-shadow warm ticks)
+    stab_n, stab_var_raw, stab_sd_raw = composite_shadow_raw["stability"]
     stab_comp = comparisons["stability"]
-    stab_n = int(stab_comp["n"])
-    stab_shadow_var = stab_comp["shadow_variance"]
-    stab_shadow_sd = stab_comp["shadow_sd"]
-    stab_legacy_var = stab_comp["legacy_variance"]
-    stab_r = stab_comp["pearson_r"]
-    if stab_n < 2 or stab_shadow_var is None:
+    if stab_n < 2 or stab_var_raw is None or stab_sd_raw is None:
         stab_status = "unknown"
         stab_reason = (
             f"Insufficient warm stability samples (n={stab_n}; need >=2) to evaluate "
             "shadow stability variance."
         )
-    elif stab_shadow_var > MIN_NON_DEGENERATE_VARIANCE:
+    elif stab_var_raw > MIN_NON_DEGENERATE_VARIANCE:
         stab_status = "pass"
         stab_reason = (
-            f"Shadow stability.mean_abs_z is non-degenerate "
-            f"(n={stab_n:,}, sd={stab_shadow_sd:.4f}, var={stab_shadow_var:.6f} > {MIN_NON_DEGENERATE_VARIANCE:g}; "
-            f"legacy var={stab_legacy_var}, pearson_r={stab_r})."
+            f"Shadow stability.mean_abs_z is non-degenerate across all warm ticks "
+            f"(n={stab_n:,}, sd={stab_sd_raw:.4f}, var={stab_var_raw:.9g} > {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     else:
         stab_status = "fail"
         stab_reason = (
             f"Shadow stability.mean_abs_z variance collapsed "
-            f"(n={stab_n:,}, var={stab_shadow_var:.6f} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
+            f"(n={stab_n:,}, var={stab_var_raw:.9g} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     gates.append(
         {
@@ -746,70 +847,119 @@ def _build_stage2_readiness(
             "blocking": True,
             "evidence": {
                 "n": stab_n,
-                "shadow_variance": stab_shadow_var,
-                "shadow_sd": stab_shadow_sd,
-                "legacy_variance": stab_legacy_var,
+                "shadow_variance": round(stab_var_raw, 9) if stab_var_raw is not None else None,
+                "shadow_sd": round(stab_sd_raw, 6) if stab_sd_raw is not None else None,
+                "paired_n": int(stab_comp["n"]),
+                "legacy_variance": stab_comp["legacy_variance"],
                 "legacy_sd": stab_comp["legacy_sd"],
-                "pearson_r": stab_r,
                 "min_variance_threshold": MIN_NON_DEGENERATE_VARIANCE,
             },
             "reason": stab_reason,
         }
     )
 
-    # Gate 3: Shadow warmth variance & legacy correlation
+    # Gate 3: Non-degenerate shadow warmth variance (evaluated on unrounded full-shadow warm ticks)
+    warmth_n, warmth_var_raw, warmth_sd_raw = composite_shadow_raw["warmth"]
     warmth_comp = comparisons["warmth"]
-    warmth_n = int(warmth_comp["n"])
-    warmth_shadow_var = warmth_comp["shadow_variance"]
-    warmth_shadow_sd = warmth_comp["shadow_sd"]
-    warmth_r = warmth_comp["pearson_r"]
-    if warmth_n < 2 or warmth_shadow_var is None:
+    if warmth_n < 2 or warmth_var_raw is None or warmth_sd_raw is None:
         warmth_status = "unknown"
         warmth_reason = (
             f"Insufficient warm warmth samples (n={warmth_n}; need >=2) to evaluate "
-            "shadow warmth variance and correlation."
+            "shadow warmth variance."
         )
-    elif warmth_shadow_var > MIN_NON_DEGENERATE_VARIANCE:
+    elif warmth_var_raw > MIN_NON_DEGENERATE_VARIANCE:
         warmth_status = "pass"
         warmth_reason = (
-            f"Shadow warmth.signed_z is non-degenerate "
-            f"(n={warmth_n:,}, sd={warmth_shadow_sd:.4f}, var={warmth_shadow_var:.6f}; "
-            f"pearson_r={warmth_r} vs legacy anima.warmth)."
+            f"Shadow warmth.signed_z is non-degenerate across all warm ticks "
+            f"(n={warmth_n:,}, sd={warmth_sd_raw:.4f}, var={warmth_var_raw:.9g} > {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     else:
         warmth_status = "fail"
         warmth_reason = (
             f"Shadow warmth.signed_z variance collapsed "
-            f"(n={warmth_n:,}, var={warmth_shadow_var:.6f} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
+            f"(n={warmth_n:,}, var={warmth_var_raw:.9g} <= {MIN_NON_DEGENERATE_VARIANCE:g})."
         )
     gates.append(
         {
             "id": "non_degenerate_warmth_variance",
-            "name": "Non-degenerate shadow warmth variance & correlation",
+            "name": "Non-degenerate shadow warmth variance",
             "status": warmth_status,
             "blocking": True,
             "evidence": {
                 "n": warmth_n,
-                "shadow_variance": warmth_shadow_var,
-                "shadow_sd": warmth_shadow_sd,
+                "shadow_variance": round(warmth_var_raw, 9) if warmth_var_raw is not None else None,
+                "shadow_sd": round(warmth_sd_raw, 6) if warmth_sd_raw is not None else None,
+                "paired_n": int(warmth_comp["n"]),
                 "legacy_variance": warmth_comp["legacy_variance"],
                 "legacy_sd": warmth_comp["legacy_sd"],
-                "pearson_r": warmth_r,
+                "min_variance_threshold": MIN_NON_DEGENERATE_VARIANCE,
             },
             "reason": warmth_reason,
         }
     )
 
-    # Gate 4: Sigma-floor watch channels (memory_percent, eeg_delta_power, eeg_theta_power)
+    # Gate 4: Shadow vs legacy correlation direction alignment (warmth r > 0, stability r < 0)
+    warmth_r_raw = correlation_r_raw.get("warmth")
+    stab_r_raw = correlation_r_raw.get("stability")
+    wrong_sign: List[str] = []
+    missing_r: List[str] = []
+    if warmth_r_raw is None:
+        missing_r.append("warmth")
+    elif warmth_r_raw <= 0.0:
+        wrong_sign.append(f"warmth (r={warmth_r_raw:.4f}, expected > 0)")
+    if stab_r_raw is None:
+        missing_r.append("stability")
+    elif stab_r_raw >= 0.0:
+        wrong_sign.append(f"stability (r={stab_r_raw:.4f}, expected < 0)")
+
+    if wrong_sign:
+        corr_status = "fail"
+        extra_missing = f"; missing pearson_r on {', '.join(missing_r)}" if missing_r else ""
+        corr_reason = (
+            f"Wrong-sign shadow vs legacy correlation on {', '.join(wrong_sign)}{extra_missing}."
+        )
+    elif missing_r:
+        corr_status = "unknown"
+        corr_reason = (
+            f"Pearson r unavailable on {', '.join(missing_r)} "
+            f"(warmth paired n={warmth_comp['n']:,}, stability paired n={stab_comp['n']:,}); "
+            "cannot confirm shadow-vs-legacy correlation alignment."
+        )
+    else:
+        corr_status = "pass"
+        corr_reason = (
+            f"Shadow vs legacy correlations have expected signs "
+            f"(warmth r={warmth_r_raw:.4f} > 0, n={warmth_comp['n']:,}; "
+            f"stability r={stab_r_raw:.4f} < 0, n={stab_comp['n']:,})."
+        )
+    gates.append(
+        {
+            "id": "shadow_legacy_correlation_alignment",
+            "name": "Shadow vs legacy correlation alignment (warmth > 0, stability < 0)",
+            "status": corr_status,
+            "blocking": True,
+            "evidence": {
+                "warmth_paired_n": int(warmth_comp["n"]),
+                "warmth_pearson_r": warmth_comp["pearson_r"],
+                "stability_paired_n": int(stab_comp["n"]),
+                "stability_pearson_r": stab_comp["pearson_r"],
+                "wrong_sign": wrong_sign,
+                "missing_correlation": missing_r,
+            },
+            "reason": corr_reason,
+        }
+    )
+
+    # Gate 5: Sigma-floor watch channels (memory_percent, eeg_delta_power, eeg_theta_power)
     watch_evidence: Dict[str, Any] = {}
     high_floored: List[str] = []
-    any_watch_warm = False
+    unwarm_watch: List[str] = []
     currently_floored_watch: List[str] = []
     for ch_name in SIGMA_FLOOR_WATCH_CHANNELS:
         ch = channels[ch_name]
         sff = ch["sigma_floored_fraction"]
-        if ch["warm_ticks"] > 0:
-            any_watch_warm = True
+        if ch["warm_ticks"] <= 0:
+            unwarm_watch.append(ch_name)
         if sff is not None and sff >= SIGMA_FLOOR_WARN_FRACTION:
             high_floored.append(f"{ch_name} ({sff * 100:.1f}%)")
         if ch["current_sigma_floored"] is True:
@@ -823,26 +973,33 @@ def _build_stage2_readiness(
             "sigma_floored_fraction": sff,
         }
 
-    if not any_watch_warm:
-        watch_status = "unknown"
-        if currently_floored_watch:
-            watch_reason = (
-                "No warm ticks scored on sigma-floor watch channels yet; "
-                f"current raw_sigma < min_sigma on: {', '.join(currently_floored_watch)}."
-            )
-        else:
-            watch_reason = "No warm ticks scored on sigma-floor watch channels yet."
-    elif high_floored:
+    if high_floored:
         watch_status = "warn"
+        unwarm_note = (
+            f" (still lacking warm ticks on: {', '.join(unwarm_watch)})"
+            if unwarm_watch
+            else ""
+        )
         watch_reason = (
             f"High sigma-floored fraction (>={SIGMA_FLOOR_WARN_FRACTION * 100:.0f}%) on "
-            f"{', '.join(high_floored)}; review min_sigma floors before Stage-2 cutover."
+            f"{', '.join(high_floored)}{unwarm_note}; review min_sigma floors before Stage-2 cutover."
+        )
+    elif unwarm_watch:
+        watch_status = "unknown"
+        curr_note = (
+            f"; current raw_sigma < min_sigma on: {', '.join(currently_floored_watch)}"
+            if currently_floored_watch
+            else ""
+        )
+        watch_reason = (
+            f"Insufficient warm evidence on sigma-floor watch channel(s): "
+            f"{', '.join(unwarm_watch)}{curr_note}."
         )
     else:
         watch_status = "pass"
         watch_reason = (
             "All three sigma-floor watch channels (memory_percent, eeg_delta_power, "
-            f"eeg_theta_power) stayed below {SIGMA_FLOOR_WARN_FRACTION * 100:.0f}% floored during warm ticks."
+            f"eeg_theta_power) had warm ticks and stayed below {SIGMA_FLOOR_WARN_FRACTION * 100:.0f}% floored."
         )
     gates.append(
         {
@@ -855,7 +1012,7 @@ def _build_stage2_readiness(
         }
     )
 
-    # Gate 5: Python + Elixir parity checklist (manual release/code-parity gate)
+    # Gate 6: Python + Elixir parity checklist (manual release/code-parity gate)
     gates.append(
         {
             "id": "python_elixir_parity_checklist",
@@ -897,8 +1054,10 @@ def replay_state_history(
     min_samples: Optional[int] = None,
     window_samples: Optional[int] = None,
     frozen_run_threshold: Optional[int] = None,
+    immutable: bool = False,
 ) -> Dict[str, Any]:
     """Replay historical ``state_history`` rows through ``SensorResidualTracker``."""
+    _validate_days(days)
     eff_min = DEFAULT_MIN_SAMPLES if min_samples is None else max(1, int(min_samples))
     eff_window = (
         DEFAULT_WINDOW_SAMPLES
@@ -958,7 +1117,9 @@ def replay_state_history(
     prev_unix: Optional[float] = None
     rows_replayed = 0
 
-    for rec in iter_state_history_records(db_path, days=days, counters=counters):
+    for rec in iter_state_history_records(
+        db_path, days=days, immutable=immutable, counters=counters
+    ):
         rows_replayed += 1
         if first_ts is None:
             first_ts = rec.timestamp
@@ -1065,10 +1226,16 @@ def replay_state_history(
         )
 
     composites_report: Dict[str, Dict[str, Any]] = {}
+    composite_shadow_raw: Dict[str, Tuple[int, Optional[float], Optional[float]]] = {}
     for comp_name in COMPOSITE_ORDER:
         warm_vals = composite_warm_vals[comp_name]
         dist = _series_distribution(warm_vals)
         warm_ticks = len(warm_vals)
+        composite_shadow_raw[comp_name] = (
+            warm_ticks,
+            dist["variance_raw"],
+            dist["sd_raw"],
+        )
         entry: Dict[str, Any] = {
             "name": comp_name,
             "metric": COMPOSITE_METRIC_NAMES[comp_name],
@@ -1112,13 +1279,16 @@ def replay_state_history(
         composites_report[comp_name] = entry
 
     comparisons_report: Dict[str, Dict[str, Any]] = {}
+    correlation_r_raw: Dict[str, Optional[float]] = {}
     for pair_name, corr_key, shadow_label, legacy_label in COMPARISON_SPECS:
+        corr = tracker.correlations[corr_key]
+        correlation_r_raw[pair_name] = corr.pearson_r
         comparisons_report[pair_name] = _build_comparison_entry(
             pair_name,
             corr_key,
             shadow_label,
             legacy_label,
-            tracker.correlations[corr_key],
+            corr,
             legacy_all_values=legacy_all_vals[pair_name],
         )
 
@@ -1133,6 +1303,8 @@ def replay_state_history(
         channels=channels_report,
         composites=composites_report,
         comparisons=comparisons_report,
+        composite_shadow_raw=composite_shadow_raw,
+        correlation_r_raw=correlation_r_raw,
     )
 
     return {
@@ -1144,8 +1316,9 @@ def replay_state_history(
         "source": {
             "kind": "sqlite_replay",
             "path": str(Path(db_path).expanduser()),
+            "sqlite_immutable": bool(immutable),
             "window_days_requested": days,
-            "window_anchor": "max_db_timestamp" if days is not None else "full_history",
+            "window_anchor": "max_valid_db_timestamp" if days is not None else "full_history",
             "wall_clock_start": first_ts.isoformat() if first_ts is not None else None,
             "wall_clock_end": last_ts.isoformat() if last_ts is not None else None,
             "wall_clock_span_seconds": _round_opt(wall_span_s, 1),
@@ -1255,13 +1428,24 @@ def evaluate_snapshot(
         correlations[key] = OnlineCorrelation.from_dict(entry)
 
     comparisons_report: Dict[str, Dict[str, Any]] = {}
+    composite_shadow_raw: Dict[str, Tuple[int, Optional[float], Optional[float]]] = {}
+    correlation_r_raw: Dict[str, Optional[float]] = {}
     for pair_name, corr_key, shadow_label, legacy_label in COMPARISON_SPECS:
+        corr = correlations[corr_key]
+        correlation_r_raw[pair_name] = corr.pearson_r
+        if corr.n >= 2:
+            raw_var = max(0.0, corr.m2_x / corr.n)
+            raw_sd = math.sqrt(raw_var)
+        else:
+            raw_var = None
+            raw_sd = None
+        composite_shadow_raw[pair_name] = (corr.n, raw_var, raw_sd)
         comparisons_report[pair_name] = _build_comparison_entry(
             pair_name,
             corr_key,
             shadow_label,
             legacy_label,
-            correlations[corr_key],
+            corr,
             legacy_all_values=None,
         )
 
@@ -1321,6 +1505,8 @@ def evaluate_snapshot(
         channels=channels_report,
         composites=composites_report,
         comparisons=comparisons_report,
+        composite_shadow_raw=composite_shadow_raw,
+        correlation_r_raw=correlation_r_raw,
     )
 
     return {

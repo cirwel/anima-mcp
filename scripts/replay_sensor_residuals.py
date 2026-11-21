@@ -2,9 +2,10 @@
 """Offline SensorResidualTracker replay & Stage-2 readiness evaluator CLI (#79, #175).
 
 Replays historical rows from Lumen's ``state_history`` SQLite table strictly
-read-only (``?mode=ro&immutable=1``) through the real ``SensorResidualTracker``,
-or evaluates an existing persisted ``sensor_residuals.json`` snapshot, and
-prints a Stage-2 readiness report (Markdown to stdout, optional JSON output).
+read-only (``?mode=ro`` by default; optional ``--immutable`` for frozen backups)
+through the real ``SensorResidualTracker``, or evaluates an existing persisted
+``sensor_residuals.json`` snapshot, and prints a Stage-2 readiness report
+(Markdown to stdout, optional JSON output).
 
 Usage:
   PYTHONPATH=src python3 scripts/replay_sensor_residuals.py \\
@@ -19,6 +20,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 from typing import Optional, Sequence
 
@@ -30,6 +32,21 @@ from anima_mcp.residual_backtest import (  # noqa: E402
     format_markdown_report,
     replay_state_history,
 )
+
+
+def _paths_refer_to_same_file(a: Path, b: Path) -> bool:
+    """Return True if two paths resolve to the same path or same inode."""
+    pa = a.expanduser()
+    pb = b.expanduser()
+    try:
+        if os.path.samefile(pa, pb):
+            return True
+    except OSError:
+        pass
+    try:
+        return pa.resolve() == pb.resolve()
+    except OSError:
+        return os.path.abspath(str(pa)) == os.path.abspath(str(pb))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,7 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Restrict SQLite replay to the last N days anchored to the latest "
-            "timestamp in state_history (omit for full history)."
+            "valid timestamp in state_history (omit for full history)."
+        ),
+    )
+    parser.add_argument(
+        "--immutable",
+        action="store_true",
+        default=False,
+        help=(
+            "Open SQLite with immutable=1 (for frozen backup copies on read-only media; "
+            "do not use on live WAL-mode databases)."
         ),
     )
     parser.add_argument(
@@ -105,6 +131,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("Specify either --db or --snapshot, not both.")
     if args.snapshot is not None and args.days is not None:
         parser.error("--days applies only to SQLite --db replay, not --snapshot.")
+    if args.snapshot is not None and args.immutable:
+        parser.error("--immutable applies only to SQLite --db replay, not --snapshot.")
+
+    input_path = (
+        Path(args.snapshot)
+        if args.snapshot is not None
+        else Path(args.db if args.db is not None else str(DEFAULT_DB_PATH))
+    )
+    if args.json_out is not None:
+        out_path = Path(args.json_out)
+        if _paths_refer_to_same_file(out_path, input_path):
+            print(
+                f"error: --json-out ({out_path}) must not refer to the same file as the input ({input_path})",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         if args.snapshot is not None:
@@ -115,25 +157,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 frozen_run_threshold=args.frozen_run_threshold,
             )
         else:
-            db_path = args.db if args.db is not None else str(DEFAULT_DB_PATH)
             report = replay_state_history(
-                db_path,
+                str(input_path),
                 days=args.days,
                 min_samples=args.min_samples,
                 window_samples=args.window_samples,
                 frozen_run_threshold=args.frozen_run_threshold,
+                immutable=args.immutable,
             )
-    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+
+        if args.json_out is not None:
+            out_path = Path(args.json_out).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                json.dumps(report, indent=2, sort_keys=False) + "\n",
+                encoding="utf-8",
+            )
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-
-    if args.json_out:
-        out_path = Path(args.json_out).expanduser()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            json.dumps(report, indent=2, sort_keys=False) + "\n",
-            encoding="utf-8",
-        )
 
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=False))

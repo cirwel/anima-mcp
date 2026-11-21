@@ -181,6 +181,53 @@ def test_reconstruct_row_handles_nulls_malformed_json_and_light_gate():
     assert rec_gated.readings.light_lux == pytest.approx(777.0)
     assert rec_gated.external_light_lux is None  # gated out by inconclusive status
 
+    # Missing light_attribution_status blocks external_light_lux (strict ready_shadow gate)
+    rec_missing_status = reconstruct_state_history_row(
+        "2026-11-10T12:08:00",
+        0.5,
+        0.7,
+        0.8,
+        0.75,
+        json.dumps({"external_light_lux": 140.0, "light_lux": 500.0}),
+    )
+    assert rec_missing_status is not None
+    assert rec_missing_status.external_light_lux is None
+
+    # String or bool external_light_lux under ready_shadow must be rejected
+    for bad_lux in ("140.0", True, False, None):
+        rec_bad_lux = reconstruct_state_history_row(
+            "2026-11-10T12:12:00",
+            0.5,
+            0.7,
+            0.8,
+            0.75,
+            json.dumps(
+                {
+                    "external_light_lux": bad_lux,
+                    "light_attribution_status": "ready_shadow",
+                }
+            ),
+        )
+        assert rec_bad_lux is not None
+        assert rec_bad_lux.external_light_lux is None
+
+    # Finite numeric external_light_lux with ready_shadow passes through
+    rec_ready = reconstruct_state_history_row(
+        "2026-11-10T12:16:00",
+        0.5,
+        0.7,
+        0.8,
+        0.75,
+        json.dumps(
+            {
+                "external_light_lux": 140.5,
+                "light_attribution_status": "ready_shadow",
+            }
+        ),
+    )
+    assert rec_ready is not None
+    assert rec_ready.external_light_lux == pytest.approx(140.5)
+
     # Bad timestamp returns None
     assert reconstruct_state_history_row("not-a-timestamp", 0.5, 0.5, 0.5, 0.5, "{}") is None
     assert reconstruct_state_history_row(None, 0.5, 0.5, 0.5, 0.5, "{}") is None
@@ -399,13 +446,14 @@ def test_evaluate_snapshot_warming_and_full_7d_live(tmp_path: Path):
     assert gates["seven_day_live_warm_coverage"]["status"] == "fail"
     assert gates["non_degenerate_stability_variance"]["status"] == "unknown"
 
-    # 3b. Synthetic full 7-day live warm snapshot (345,600+ ticks) -> all automated gates pass
-    corr_warmth = OnlineCorrelation()
-    corr_stab = OnlineCorrelation()
+    # 3b. Snapshot with per-channel warm >= 302,400 but low paired correlation count (100):
+    # simultaneous contributor overlap is NOT proven -> seven_day_live_warm_coverage == "unknown"
+    corr_warmth_small = OnlineCorrelation()
+    corr_stab_small = OnlineCorrelation()
     for i in range(100):
         w = math.sin(i * 0.2)
-        corr_warmth.update(w, 0.5 + 0.1 * w)
-        corr_stab.update(abs(w) + 0.2, 0.85 - 0.1 * abs(w))
+        corr_warmth_small.update(w, 0.5 + 0.1 * w)
+        corr_stab_small.update(abs(w) + 0.2, 0.85 - 0.1 * abs(w))
 
     full_channels = {}
     for spec in CHANNEL_SPECS:
@@ -427,15 +475,15 @@ def test_evaluate_snapshot_warming_and_full_7d_live(tmp_path: Path):
             },
             "z_abs_histogram": {"lt_1": 200_000, "1_to_2": 80_000, "2_to_3": 20_000, "ge_3": 6_800},
         }
-    full_payload = {
+    unproven_payload = {
         "schema_version": RESIDUALS_SCHEMA_VERSION,
         "comparison_version": COMPARISON_VERSION,
         "saved_at": 1_795_700_000.0,
         "observed_ticks": 350_000,
         "channels": full_channels,
         "correlations": {
-            "warmth_signed_z_vs_current_warmth": corr_warmth.to_dict(),
-            "stability_mean_abs_z_vs_current_stability": corr_stab.to_dict(),
+            "warmth_signed_z_vs_current_warmth": corr_warmth_small.to_dict(),
+            "stability_mean_abs_z_vs_current_stability": corr_stab_small.to_dict(),
             "clarity_light_z_vs_current_clarity": OnlineCorrelation().to_dict(),
         },
         "composites": {
@@ -443,6 +491,34 @@ def test_evaluate_snapshot_warming_and_full_7d_live(tmp_path: Path):
             "stability": {"status": "warm"},
             "clarity_light": {"status": "warm"},
         },
+    }
+    unproven_path = tmp_path / "unproven_7d_sr.json"
+    unproven_path.write_text(json.dumps(unproven_payload))
+    unproven_rep = evaluate_snapshot(unproven_path)
+    unproven_gates = {g["id"]: g for g in unproven_rep["stage2_readiness"]["gates"]}
+    assert unproven_gates["seven_day_live_warm_coverage"]["status"] == "unknown"
+
+    # 3c. Synthetic full 7-day live warm snapshot with proven >=302,400 paired simultaneous warm ticks
+    n_full = 306_800
+    full_payload = dict(unproven_payload)
+    full_payload["correlations"] = {
+        "warmth_signed_z_vs_current_warmth": {
+            "n": n_full,
+            "mean_x": 0.1,
+            "mean_y": 0.55,
+            "m2_x": 0.25 * n_full,
+            "m2_y": 0.01 * n_full,
+            "c_xy": 0.04 * n_full,  # r = 0.04 / sqrt(0.0025) = +0.8
+        },
+        "stability_mean_abs_z_vs_current_stability": {
+            "n": n_full,
+            "mean_x": 0.5,
+            "mean_y": 0.80,
+            "m2_x": 0.25 * n_full,
+            "m2_y": 0.01 * n_full,
+            "c_xy": -0.025 * n_full,  # r = -0.5
+        },
+        "clarity_light_z_vs_current_clarity": OnlineCorrelation().to_dict(),
     }
     full_path = tmp_path / "full_7d_sr.json"
     full_path.write_text(json.dumps(full_payload))
@@ -452,11 +528,12 @@ def test_evaluate_snapshot_warming_and_full_7d_live(tmp_path: Path):
     assert full_gates["seven_day_live_warm_coverage"]["status"] == "pass"
     assert full_gates["non_degenerate_stability_variance"]["status"] == "pass"
     assert full_gates["non_degenerate_warmth_variance"]["status"] == "pass"
+    assert full_gates["shadow_legacy_correlation_alignment"]["status"] == "pass"
     assert full_gates["sigma_floor_watch_channels"]["status"] == "pass"
     assert full_gates["python_elixir_parity_checklist"]["status"] == "manual_required"
     assert full_rep["stage2_readiness"]["blocking_gates"] == ["python_elixir_parity_checklist"]
-    assert full_rep["comparisons"]["warmth"]["pearson_r"] == pytest.approx(1.0)
-    assert full_rep["comparisons"]["stability"]["pearson_r"] == pytest.approx(-1.0)
+    assert full_rep["comparisons"]["warmth"]["pearson_r"] == pytest.approx(0.8)
+    assert full_rep["comparisons"]["stability"]["pearson_r"] == pytest.approx(-0.5)
 
     # Custom min_samples override on snapshot must NOT pass production 7-day soak gate
     override_rep = evaluate_snapshot(full_path, min_samples=100)
@@ -470,6 +547,165 @@ def test_evaluate_snapshot_warming_and_full_7d_live(tmp_path: Path):
         evaluate_snapshot(bad_snap)
     assert bad_snap.exists()
     assert not (tmp_path / "bad_sr.json.corrupt").exists()
+
+
+def test_snapshot_sigma_floor_watch_unwarm_channel_and_small_variance(tmp_path: Path):
+    # Case A: 2 watch channels warm & low-floored, 1 watch channel (eeg_theta_power) unwarm -> "unknown"
+    # Plus variance = 1.21e-6 (would round to 1e-6 at 6 decimals) must PASS unrounded > 1e-6 check
+    channels = {}
+    for spec in CHANNEL_SPECS:
+        warm_ticks = 0 if spec.name == "eeg_theta_power" else 500
+        channels[spec.name] = {
+            "n": 1000 if warm_ticks else 10,
+            "mean": 1.0,
+            "var": (spec.min_sigma * 2.0) ** 2,
+            "observed_ticks": 1000,
+            "valid_ticks": 1000 if warm_ticks else 10,
+            "last_valid_at": 1_795_700_000.0,
+            "floored_ticks": 0,
+            "status_counts": {
+                "warm": warm_ticks,
+                "warming": 1000 - warm_ticks,
+                "missing": 0,
+                "frozen": 0,
+            },
+            "z_abs_histogram": {"lt_1": warm_ticks, "1_to_2": 0, "2_to_3": 0, "ge_3": 0},
+        }
+    n_pair = 100
+    payload = {
+        "schema_version": RESIDUALS_SCHEMA_VERSION,
+        "comparison_version": COMPARISON_VERSION,
+        "saved_at": 1_795_700_000.0,
+        "observed_ticks": 1000,
+        "channels": channels,
+        "correlations": {
+            "warmth_signed_z_vs_current_warmth": {
+                "n": n_pair,
+                "mean_x": 0.0,
+                "mean_y": 0.5,
+                "m2_x": 1.21e-6 * n_pair,
+                "m2_y": 0.01 * n_pair,
+                "c_xy": 0.5 * math.sqrt(1.21e-6 * 0.01) * n_pair,  # r = +0.5
+            },
+            "stability_mean_abs_z_vs_current_stability": {
+                "n": n_pair,
+                "mean_x": 0.5,
+                "mean_y": 0.8,
+                "m2_x": 1.21e-6 * n_pair,
+                "m2_y": 0.01 * n_pair,
+                "c_xy": -0.5 * math.sqrt(1.21e-6 * 0.01) * n_pair,  # r = -0.5
+            },
+            "clarity_light_z_vs_current_clarity": OnlineCorrelation().to_dict(),
+        },
+        "composites": {},
+    }
+    snap_a = tmp_path / "unwarm_watch.json"
+    snap_a.write_text(json.dumps(payload))
+    rep_a = evaluate_snapshot(snap_a)
+    gates_a = {g["id"]: g for g in rep_a["stage2_readiness"]["gates"]}
+    assert gates_a["sigma_floor_watch_channels"]["status"] == "unknown"
+    assert gates_a["non_degenerate_stability_variance"]["status"] == "pass"
+    assert gates_a["non_degenerate_warmth_variance"]["status"] == "pass"
+    assert gates_a["shadow_legacy_correlation_alignment"]["status"] == "pass"
+
+    # Case B: one watch channel breaches >=50% floored while another is still unwarm -> "warn"
+    payload["channels"]["memory_percent"]["floored_ticks"] = 400
+    snap_b = tmp_path / "warn_with_unwarm.json"
+    snap_b.write_text(json.dumps(payload))
+    rep_b = evaluate_snapshot(snap_b)
+    gates_b = {g["id"]: g for g in rep_b["stage2_readiness"]["gates"]}
+    assert gates_b["sigma_floor_watch_channels"]["status"] == "warn"
+
+
+def test_wal_readonly_days_anchor_mixed_tz_and_null_legacy_shadow_variance(tmp_path: Path):
+    # 1. WAL-backed DB with uncommitted WAL frames must be visible under default ?mode=ro
+    wal_db = tmp_path / "wal.db"
+    conn = sqlite3.connect(str(wal_db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE state_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            warmth REAL,
+            clarity REAL,
+            stability REAL,
+            presence REAL,
+            sensors TEXT DEFAULT '{}'
+        )
+        """
+    )
+    # Mix timezone offsets (+02:00 vs Z) out of lexical order AND include a "zzzz-bad-ts" row
+    # that lexically sorts AFTER every ISO timestamp!
+    base_rows = _synthetic_rows(50, start=datetime(2026, 11, 1, 0, 0, 0), interval_s=3600.0)
+    # Replace all legacy anima values with NULL on one replay copy later; first test WAL + bad-ts + mixed TZ
+    conn.executemany(
+        "INSERT INTO state_history (timestamp, warmth, clarity, stability, presence, sensors) VALUES (?, ?, ?, ?, ?, ?)",
+        base_rows,
+    )
+    # Add mixed-TZ rows representing 2026-11-05T08:00:00Z (+02:00 = 10:00) and 2026-11-05T09:00:00Z
+    sample_sensors = base_rows[-1][5]
+    conn.execute(
+        "INSERT INTO state_history (timestamp, warmth, clarity, stability, presence, sensors) VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-11-05T09:00:00Z", 0.6, 0.7, 0.8, 0.7, sample_sensors),
+    )
+    conn.execute(
+        "INSERT INTO state_history (timestamp, warmth, clarity, stability, presence, sensors) VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-11-05T10:00:00+02:00", 0.6, 0.7, 0.8, 0.7, sample_sensors),
+    )
+    # Lexically larger invalid timestamp must NOT break --days anchoring
+    conn.execute(
+        "INSERT INTO state_history (timestamp, warmth, clarity, stability, presence, sensors) VALUES (?, ?, ?, ?, ?, ?)",
+        ("zzzz-bad-ts", 0.5, 0.5, 0.5, 0.5, sample_sensors),
+    )
+    conn.commit()
+    # Keep writer open (WAL frames uncheckpointed) while reading strictly read-only
+    try:
+        tuples = load_state_history_tuples(wal_db, days=1)
+        # Only the 2 rows within 1 day of 2026-11-05T09:00:00Z should be returned, in UTC order
+        assert len(tuples) == 2
+        assert tuples[0][0].isoformat() == "2026-11-05T10:00:00+02:00"  # 08:00Z first
+        assert tuples[1][0].isoformat() == "2026-11-05T09:00:00+00:00"  # 09:00Z second
+
+        rep_wal = replay_state_history(wal_db, days=1)
+        assert rep_wal["source"]["sqlite_immutable"] is False
+        assert rep_wal["source"]["rows_replayed"] == 2
+        assert rep_wal["source"]["data_hygiene"]["skipped_bad_timestamp_rows"] == 1
+    finally:
+        conn.close()
+
+    # Validate days up front even on empty DB
+    empty_db = _create_state_history_db(tmp_path / "empty_days.db", [])
+    for bad_days in (0, -5, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="days"):
+            replay_state_history(empty_db, days=bad_days)  # type: ignore[arg-type]
+
+    # 2. Full-shadow variance works even when ALL legacy anima columns are NULL
+    null_legacy_rows = [
+        (ts, None, None, None, None, sensors)
+        for ts, _, _, _, _, sensors in _synthetic_rows(60, interval_s=240.0)
+    ]
+    null_db = _create_state_history_db(tmp_path / "null_legacy.db", null_legacy_rows)
+    rep_null = replay_state_history(null_db, min_samples=15, window_samples=50)
+    gates_null = {g["id"]: g for g in rep_null["stage2_readiness"]["gates"]}
+    assert rep_null["comparisons"]["warmth"]["n"] == 0
+    assert rep_null["comparisons"]["stability"]["n"] == 0
+    assert gates_null["non_degenerate_warmth_variance"]["status"] == "pass"
+    assert gates_null["non_degenerate_stability_variance"]["status"] == "pass"
+    assert gates_null["shadow_legacy_correlation_alignment"]["status"] == "unknown"
+
+    # 3. Wrong-sign correlation (inverted legacy warmth & stability) fails alignment gate
+    inverted_rows = [
+        (ts, 1.0 - w, c, 1.0 - s, p, sensors)
+        for ts, w, c, s, p, sensors in _synthetic_rows(80, interval_s=240.0)
+    ]
+    inv_db = _create_state_history_db(tmp_path / "inverted.db", inverted_rows)
+    rep_inv = replay_state_history(inv_db, min_samples=15, window_samples=60)
+    gates_inv = {g["id"]: g for g in rep_inv["stage2_readiness"]["gates"]}
+    assert rep_inv["comparisons"]["warmth"]["pearson_r"] < 0
+    assert rep_inv["comparisons"]["stability"]["pearson_r"] > 0
+    assert gates_inv["shadow_legacy_correlation_alignment"]["status"] == "fail"
+    assert "shadow_legacy_correlation_alignment" in rep_inv["stage2_readiness"]["blocking_gates"]
 
 
 # ---------------------------------------------------------------------------
@@ -528,13 +764,52 @@ def test_cli_db_replay_snapshot_and_argument_validation(tmp_path: Path, capsys):
         cli.main(["--db", str(db_path), "--snapshot", str(snap_path)])
     assert exc_both.value.code == 2
 
-    # Reject --days with --snapshot
+    # Reject --days and --immutable with --snapshot
     with pytest.raises(SystemExit) as exc_days:
         cli.main(["--snapshot", str(snap_path), "--days", "7"])
     assert exc_days.value.code == 2
 
+    with pytest.raises(SystemExit) as exc_imm:
+        cli.main(["--snapshot", str(snap_path), "--immutable"])
+    assert exc_imm.value.code == 2
+
     # Missing file returns exit code 2 cleanly
     assert cli.main(["--db", str(tmp_path / "missing.db")]) == 2
+
+    # [P1] --json-out must NEVER overwrite --db or --snapshot (direct, symlink, or hardlink)
+    db_bytes_before = db_path.read_bytes()
+    snap_bytes_before = snap_path.read_bytes()
+    assert cli.main(["--db", str(db_path), "--json-out", str(db_path)]) == 2
+    assert db_path.read_bytes() == db_bytes_before
+
+    db_symlink = tmp_path / "db_link.db"
+    db_symlink.symlink_to(db_path)
+    assert cli.main(["--db", str(db_path), "--json-out", str(db_symlink)]) == 2
+    assert db_path.read_bytes() == db_bytes_before
+
+    db_hardlink = tmp_path / "db_hard.db"
+    os.link(db_path, db_hardlink)
+    assert cli.main(["--db", str(db_path), "--json-out", str(db_hardlink)]) == 2
+    assert db_path.read_bytes() == db_bytes_before
+
+    assert cli.main(["--snapshot", str(snap_path), "--json-out", str(snap_path)]) == 2
+    assert snap_path.read_bytes() == snap_bytes_before
+
+    # Corrupt SQLite DB and unwritable --json-out return exit code 2 without raw tracebacks
+    corrupt_db = tmp_path / "corrupt.db"
+    corrupt_db.write_text("not a sqlite file at all")
+    assert cli.main(["--db", str(corrupt_db)]) == 2
+    assert "error:" in capsys.readouterr().err
+
+    blocker = tmp_path / "file_blocker"
+    blocker.write_text("x")
+    assert cli.main(["--db", str(db_path), "--json-out", str(blocker / "out.json")]) == 2
+    assert "error:" in capsys.readouterr().err
+
+    # --immutable opt-in works cleanly on frozen backup DBs
+    assert cli.main(["--db", str(db_path), "--immutable", "--format", "json"]) == 0
+    imm_out = json.loads(capsys.readouterr().out)
+    assert imm_out["source"]["sqlite_immutable"] is True
 
 
 def test_residual_backtest_isolation_guardrails():
