@@ -637,14 +637,24 @@ class MessageBoard:
             if now - last_question_time < MIN_QUESTION_INTERVAL_SECONDS:
                 return None  # Too soon since last question
 
-        # Deduplication: don't ask similar questions within the expiry window.
+        # Deduplication, two rules:
+        # 1. Don't ask a similar question within the expiry window, answered
+        #    or not (unchanged).
+        # 2. Don't re-ask a question that is still open. Expiry ends the
+        #    response window, not the question: an expired, never-answered
+        #    question is still waiting on its first answer, so asking it
+        #    again only adds a copy. Before this rule, the same handful of
+        #    questions filled the 50-slot board (one drive question five
+        #    times in four days) whenever nobody was answering. A state
+        #    check, not a new threshold: it lapses when the question is
+        #    answered or trimmed off the board.
         four_hours_ago = now - QUESTION_EXPIRY_SECONDS
 
-        for q in recent_questions[-20:]:
-            if q.timestamp > four_hours_ago:
-                # Check for exact or similar questions
-                if self._questions_similar(text, q.text):
-                    return None  # Skip similar question
+        for q in recent_questions:
+            if q.timestamp <= four_hours_ago and q.answered:
+                continue
+            if self._questions_similar(text, q.text):
+                return None  # Skip similar question
 
         msg = self.add_message(text, MESSAGE_TYPE_QUESTION, author=author)
         if msg:
