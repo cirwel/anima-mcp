@@ -208,7 +208,7 @@ def _consume_drive_events(
 
     try:
         if drive_events:
-            from .messages import add_observation, add_question
+            from .messages import add_observation, add_question, open_duplicate_question
 
             for de in drive_events:
                 if (
@@ -237,6 +237,17 @@ def _consume_drive_events(
                         continue
                     ctx.drive_request_attempts[dim] = now
                     q = add_question(text, author="lumen", context=f"drive: {dim}")
+                    if not q:
+                        # The same ask still open on the board (expired but
+                        # never answered) IS the outward request: the board
+                        # declines a copy, so commit against the open one.
+                        # Otherwise this would retry every minute and never
+                        # enter cooldown until someone answers.
+                        try:
+                            q = open_duplicate_question(text)
+                        except Exception as dup_err:
+                            logger.debug("[Drive] open-question lookup failed: %s", dup_err)
+                            q = None
                     if q:
                         ctx.consumed_drive_events.add(evt_key)
                         if "/" not in dim and ".." not in dim:

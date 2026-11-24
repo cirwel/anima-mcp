@@ -221,6 +221,25 @@ class TestQuestions:
         # A different question still posts.
         assert board.add_question("Why did temperature jump?") is not None
 
+    def test_open_question_blocks_only_exact_text_not_fuzzy_matches(self, board):
+        """The open-question rule is exact; fuzzy similarity stays a 4-hour rule."""
+        long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000
+        board._messages.append(
+            Message(
+                message_id="stem-old",
+                text="what caused the light to drop?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=long_ago,
+                author="lumen",
+            )
+        )
+        board._save()
+        # Shares the "what caused" stem, which questions_similar treats as similar.
+        assert questions_similar(
+            "what caused the light to drop?", "what caused the warmth to rise?"
+        )
+        assert board.add_question("what caused the warmth to rise?") is not None
+
     def test_answered_question_can_be_asked_again_after_window(self, board):
         """Once answered and past the expiry window, a recurring want may recur."""
         long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000

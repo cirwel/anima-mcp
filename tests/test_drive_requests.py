@@ -293,6 +293,38 @@ class TestDriveEventConsumption:
         display_loop._consume_drive_events(ctx, [clarity_req, warmth_req], ack_dir=tmp_path)
         assert asked.count("drive: warmth") == 2
 
+    def test_open_duplicate_on_board_commits_the_request(self, tmp_path, monkeypatch):
+        """A request whose ask is still open on the board acks against it."""
+        from anima_mcp import display_loop, messages
+
+        open_q = object()
+        monkeypatch.setattr(messages, "add_question", lambda text, **kw: None)
+        monkeypatch.setattr(messages, "open_duplicate_question", lambda text: open_q)
+        monkeypatch.setattr(messages, "add_observation", lambda *a, **kw: None)
+        monkeypatch.setattr(display_loop.time, "time", lambda: 3000.0)
+
+        ctx = self._make_ctx()
+        req = {"dimension": "clarity", "event_type": "request", "text": "could there be more light?"}
+        display_loop._consume_drive_events(ctx, [req], ack_dir=tmp_path)
+
+        assert float((tmp_path / "anima_drive_ack_clarity").read_text()) == 3000.0
+        assert ("clarity", "request") in ctx.consumed_drive_events
+
+    def test_suppressed_without_open_duplicate_stays_unacked(self, tmp_path, monkeypatch):
+        """Rate limits and fuzzy dedup still leave the request active for retry."""
+        from anima_mcp import display_loop, messages
+
+        monkeypatch.setattr(messages, "add_question", lambda text, **kw: None)
+        monkeypatch.setattr(messages, "open_duplicate_question", lambda text: None)
+        monkeypatch.setattr(messages, "add_observation", lambda *a, **kw: None)
+
+        ctx = self._make_ctx()
+        req = {"dimension": "clarity", "event_type": "request", "text": "could there be more light?"}
+        display_loop._consume_drive_events(ctx, [req], ack_dir=tmp_path)
+
+        assert not (tmp_path / "anima_drive_ack_clarity").exists()
+        assert ("clarity", "request") not in ctx.consumed_drive_events
+
     def test_request_throttle_empty_list_malformed_and_none_ctx(self, tmp_path, monkeypatch):
         from anima_mcp import display_loop, messages
 
