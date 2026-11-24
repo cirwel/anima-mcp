@@ -1,6 +1,6 @@
 # Elixir Broker Migration — Design & Staging Plan
 
-**Status:** Proposed
+**Status:** Phase 1 & Phase 2 shipped (2026-07-01 / 2026-07-09; `anima-broker-ex.service` live — see `2026-07-01-phase2-governance-seam-addendum.md` and `CLAUDE.md`)
 **Date:** 2026-06-29
 **Decision:** Strangler migration. Stand up an Elixir/OTP broker *alongside* the
 current Python services on the existing Pi OS, move responsibilities one at a

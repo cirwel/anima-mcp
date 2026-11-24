@@ -145,9 +145,9 @@ tar -xzf "$STATE_ARCHIVE" -C ~/backups/lumen/anima_data
 
 ## Backup Schedule
 
-- **Automated (Mac):** `/Users/cirwel/scripts/backup_lumen.sh` -- twice daily (6am, 6pm) + hourly snapshots
+- **Automated (Mac):** `~/scripts/backup_lumen.sh` -- twice daily (6am, 6pm) + hourly snapshots
 - **Launchd plist:** `~/Library/LaunchAgents/com.unitares.lumen-backup.plist`
-- **Log:** `/Users/cirwel/backups/lumen_backup.log`
+- **Log:** `~/backups/lumen_backup.log`
 - **Pi local backup:** `backup_state.sh` runs hourly at `:30` via `anima-state-backup.timer`, saves JSON state to `~/.anima/backups/state/` (24 snapshots). `backup_db.sh` (`:15`, `anima-db-backup.timer`) and `db_maintenance.sh` (`:00`, `anima-db-maintenance.timer`) are timers too; none of these is in cron any more (`scripts/install_scheduled_jobs.sh`, run by deploy and restore).
 - **Pi storage maintenance:** `anima-storage-maintenance.timer` runs hourly at
   `:45`, after the database (`:15`) and learned-state (`:30`) snapshots.
@@ -247,7 +247,7 @@ When the Pi's SD card needs a complete reflash (WiFi dead, corrupted OS, etc.).
 
 **If Pi is reachable:**
 ```bash
-/Users/cirwel/scripts/backup_lumen.sh
+~/scripts/backup_lumen.sh
 ```
 
 **If Pi is dead:** Use existing Mac backups at `~/backups/lumen/anima_data/`.
@@ -286,7 +286,7 @@ mkdir -p ~/.anima
 
 ```bash
 # From Mac
-cd /Users/cirwel/projects/anima-mcp
+cd ~/projects/anima-mcp
 ./scripts/restore_lumen.sh
 # Or: ./scripts/restore_lumen.sh 192.168.1.165
 ```
@@ -294,8 +294,8 @@ cd /Users/cirwel/projects/anima-mcp
 ### Phase 5: Verify
 
 ```bash
-sudo systemctl status anima-broker anima
-journalctl -u anima -u anima-broker -f
+sudo systemctl status anima-broker-ex anima-broker anima
+journalctl -u anima-broker-ex -u anima-broker -u anima -f
 curl http://localhost:8766/health
 
 # Verify identity

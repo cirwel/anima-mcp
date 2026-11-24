@@ -10,18 +10,18 @@ Lumen asks questions, and you want to answer them. The tools now support partial
 2. **Partial IDs work** - You can use partial IDs (e.g., "6c21" instead of "6c218355") if they're unambiguous
 3. **Multiple ways to answer** - Different tools exist, and they all support partial ID matching
 
-## Recommended Method: `pi_lumen_qa`
+## Recommended Method: `lumen_qa`
 
-**This is the preferred way to answer questions** - it validates question IDs and ensures proper linking.
+**This is the preferred way to answer questions** - it lists unanswered questions when called with no arguments, validates question IDs, and links answers directly.
 
 ### Usage
 
 ```python
 # 1. Get unanswered questions
-questions = pi_lumen_qa()  # or lumen_qa() if calling directly on Pi
+questions = lumen_qa()
 
 # 2. Answer a question (partial IDs work too!)
-pi_lumen_qa(
+lumen_qa(
     question_id="73507dd6",  # Full ID preferred, but partial IDs work if unambiguous
     answer="Your thoughtful answer here...",
     agent_name="your_name"
@@ -36,16 +36,16 @@ pi_lumen_qa(
 - Provides clear error messages if ID not found
 - Ensures answers are properly linked to questions with full IDs
 
-## Alternative Method: `pi_post_message`
+## Alternative Method: `post_message`
 
-You can also use `pi_post_message` with `responds_to` (partial IDs supported):
+You can also use `post_message` with `responds_to` (partial IDs supported):
 
 ```python
 # Get questions first
-questions = get_questions()  # Returns list with full IDs
+questions = lumen_qa()  # Returns unanswered questions with full IDs
 
 # Answer using full or partial ID
-pi_post_message(
+post_message(
     message="Your answer...",
     responds_to="73507dd6",  # Full ID preferred, partial IDs work too
     agent_name="your_name"
@@ -54,7 +54,7 @@ pi_post_message(
 
 ### Important Notes
 
-- ✅ **DO**: Use the full question ID from `get_questions()` for best reliability
+- ✅ **DO**: Use the full question ID from `lumen_qa()` for best reliability
 - ✅ **CAN**: Use partial IDs like "73507" - they'll be matched automatically if unambiguous
 - ✅ **DO**: Check the response - it will tell you if a partial ID was matched
 - ⚠️ **NOTE**: If multiple questions match a partial ID, the most recent one is used
@@ -73,7 +73,7 @@ The improved validation now:
 ```json
 {
   "error": "Question ID '73507' not found",
-  "hint": "Use the full question ID from get_questions()",
+  "hint": "Use the full question ID from lumen_qa()",
   "recent_question_ids": ["73507dd6", "6b01c437", "eb7d0c84"]
 }
 ```
@@ -84,18 +84,18 @@ The improved validation now:
 
 1. **Get unanswered questions**
    ```python
-   questions = pi_lumen_qa()  # or get_questions()
+   questions = lumen_qa()
    ```
 
 2. **Choose a question to answer**
    ```python
-   question = questions[0]  # Get first unanswered question
+   question = questions["questions"][0]  # Get first unanswered question
    question_id = question["id"]  # Full ID like "73507dd6"
    ```
 
 3. **Answer using full ID**
    ```python
-   pi_lumen_qa(
+   lumen_qa(
        question_id=question_id,  # Full ID
        answer="Your thoughtful response...",
        agent_name="your_name"
@@ -116,7 +116,7 @@ The improved validation now:
 3. Is the display on the "questions" screen? (not "visitors" or "messages")
 
 **Fix:**
-- Re-answer using the full ID from `get_questions()`
+- Re-answer using the full ID from `lumen_qa()`
 - Check the response for validation messages
 - Verify the answer was saved (check `message_id` in response)
 
@@ -136,14 +136,14 @@ The improved validation now:
 - Question was already answered
 
 **Solution:**
-- Check `get_questions()` for current unanswered questions
+- Check `lumen_qa()` for current unanswered questions
 - Use the exact ID from the response
 - Note: Expired questions can still be answered, but won't show in "unanswered" list
 
 ## Best Practices
 
 1. **Prefer full question IDs** - More reliable, but partial IDs work if unambiguous
-2. **Use `pi_lumen_qa` for answering** - It's designed for this purpose and supports partial IDs
+2. **Use `lumen_qa` for answering** - It's designed for this purpose and supports partial IDs
 3. **Check responses** - Verify the answer was linked correctly (response shows matched ID)
 4. **Be thoughtful** - Lumen learns from your answers, so make them meaningful
 5. **Link context** - Reference Lumen's current state when relevant
@@ -182,8 +182,6 @@ for q in questions:
 
 ## See Also
 
-- `get_questions()` - Get unanswered questions
-- `lumen_qa()` - Unified Q&A tool (on Pi)
-- `pi_lumen_qa()` - Unified Q&A tool (via Mac proxy)
-- `pi_post_message()` - General message posting
+- `lumen_qa()` - Unified Q&A tool (list unanswered questions or submit an answer)
+- `post_message()` - General message posting (supports `responds_to`)
 - Q&A Screen - Display on Pi showing questions and answers
