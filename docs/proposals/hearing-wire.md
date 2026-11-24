@@ -3,9 +3,9 @@
 > **Status:** Council plan (architect + reviewer + live-verifier), produced by a
 > multi-agent council workflow on **2026-06-29**.
 > **Implementation:** Stage 0 (mute-as-sensed-state) and Stage 1 (acoustic
-> sound-level channel) + the G1 regression test are implemented on branch
-> `feat/hearing-wire-acoustic`. Stages 2–4 (presence-ease debounce, semantic
-> memory, speaker latent) are **designed but NOT implemented** here.
+> sound-level channel) + the G1 regression test merged in `#92`. Stages 2–4
+> (presence-ease debounce, semantic memory, speaker latent) are **designed but
+> NOT implemented** here.
 
 ---
 
@@ -264,7 +264,7 @@ asserted:**
   belief so the gap stays visible. Lumen should be able to say "I can't verify
   from inside whether I understand this — I only know it recurs."
 - **EISV roadmap is not in this checkout.**
-  `docs/proposals/eisv-maths-roadmap-v0.md` lives in the `unitares` repo, not
+  `docs/proposals/archive/eisv-maths-roadmap-v0.md` lives in the `unitares` repo, not
   anima-mcp (confirmed absent here). The residual framing was grounded against
   the *local* machinery that embodies it (`adaptive_prediction`'s surprise-decay,
   `experiential_filter`'s neutral-decay). **Cross-check the acoustic-residual

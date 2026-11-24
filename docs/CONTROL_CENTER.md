@@ -6,15 +6,12 @@
 
 1. **Start the message server** (on Mac):
    ```bash
-   cd /Users/cirwel/projects/anima-mcp/scripts
+   cd ~/projects/anima-mcp/scripts
    python3 message_server.py
    ```
 
 2. **Open the dashboard**:
-   ```
-   file:///Users/cirwel/projects/anima-mcp/docs/control_center.html
-   ```
-   Or serve it via HTTP for remote access.
+   Open `docs/control_center.html` in your browser (or serve it via HTTP for remote access).
 
 ## Features
 

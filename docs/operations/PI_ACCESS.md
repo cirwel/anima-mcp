@@ -46,27 +46,36 @@ Host lumen-2222
 
 ## Deploy Code
 ```bash
+# Preferred: guarded deploy from clean checkout
+cd ~/projects/anima-mcp && ./deploy.sh --host lumen
+
+# Direct rsync (initial setup only; prefer ./deploy.sh so Git revision stays aligned)
 rsync -avz -e "ssh -i ~/.ssh/id_ed25519_pi" \
   --exclude='.venv' --exclude='*.db' --exclude='__pycache__' --exclude='.git' \
-  /Users/cirwel/projects/anima-mcp/ \
+  ~/projects/anima-mcp/ \
   unitares-anima@lumen.local:/home/unitares-anima/anima-mcp/
 ```
 
 ## Service Management
 
-**Restart MCP server (mind):**
+**Restart MCP server (mind + display/LEDs):**
 ```bash
 ssh lumen.local 'sudo systemctl restart anima.service'
 ```
 
-**Restart hardware broker (body):**
+**Restart Python hardware/learning broker:**
 ```bash
 ssh lumen.local 'sudo systemctl restart anima-broker.service'
 ```
 
-**Check status:**
+**Restart Elixir sensor + governance broker:**
 ```bash
-ssh lumen.local 'sudo systemctl status anima.service anima-broker.service --no-pager'
+ssh lumen.local 'sudo systemctl restart anima-broker-ex.service'
+```
+
+**Check status (all three services must run):**
+```bash
+ssh lumen.local 'sudo systemctl status anima-broker-ex.service anima-broker.service anima.service --no-pager'
 ```
 
 ## Check Logs
