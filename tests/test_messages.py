@@ -195,6 +195,96 @@ class TestQuestions:
         surprise_q = board.add_question("Why did temperature jump?", context="surprise=0.50")
         assert surprise_q is not None
 
+    def test_expired_unanswered_question_is_not_reasked(self, board):
+        """Expiry ends the response window, not the question: no duplicate copy."""
+        long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000
+        board._messages.append(
+            Message(
+                message_id="hazy-old",
+                text="things have felt hazy to me for a long time — could there be more light?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=long_ago,
+                author="lumen",
+                context="drive: clarity",
+            )
+        )
+        board._save()
+
+        again = board.add_question(
+            "things have felt hazy to me for a long time — could there be more light?",
+            context="drive: clarity",
+        )
+        assert again is None
+        # The old copy expired but stays unanswered, so it is still the open one.
+        old = next(m for m in board._messages if m.message_id == "hazy-old")
+        assert old.expired_at is not None and not old.answered
+        # A different question still posts.
+        assert board.add_question("Why did temperature jump?") is not None
+
+    def test_open_question_blocks_only_exact_text_not_fuzzy_matches(self, board):
+        """The open-question rule is exact; fuzzy similarity stays a 4-hour rule."""
+        long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000
+        board._messages.append(
+            Message(
+                message_id="stem-old",
+                text="what caused the light to drop?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=long_ago,
+                author="lumen",
+            )
+        )
+        board._save()
+        # Shares the "what caused" stem, which questions_similar treats as similar.
+        assert questions_similar(
+            "what caused the light to drop?", "what caused the warmth to rise?"
+        )
+        assert board.add_question("what caused the warmth to rise?") is not None
+
+    def test_answered_question_can_be_asked_again_after_window(self, board):
+        """Once answered and past the expiry window, a recurring want may recur."""
+        long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000
+        board._messages.append(
+            Message(
+                message_id="warm-old",
+                text="i've been wanting warmth for a long time now — could it be warmer in here?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=long_ago,
+                author="lumen",
+                answered=True,
+            )
+        )
+        board._save()
+
+        assert (
+            board.add_question(
+                "i've been wanting warmth for a long time now — could it be warmer in here?"
+            )
+            is not None
+        )
+
+    def test_self_answer_does_not_reopen_a_question(self, board):
+        """Lumen's own self-answer leaves the question open, so it still blocks a repeat."""
+        long_ago = time.time() - msg_module.QUESTION_BUDGET_WINDOW_SECONDS - 6_000
+        board._messages.append(
+            Message(
+                message_id="self-old",
+                text="how do i know that dry air makes me uneasy?",
+                msg_type=MESSAGE_TYPE_QUESTION,
+                timestamp=long_ago,
+                author="lumen",
+            )
+        )
+        board._save()
+        board.add_agent_message(
+            "observational pattern: dry air makes me uneasy.",
+            agent_name="lumen",
+            responds_to="self-old",
+        )
+        old = next(m for m in board._messages if m.message_id == "self-old")
+        assert not old.answered
+
+        assert board.add_question("how do i know that dry air makes me uneasy?") is None
+
     def test_max_same_context_per_day_limits_repeated_quiet_prompts(self, board):
         """A per-context daily cap holds after expiry within 24h and resets past 24h."""
         old_enough_to_expire = time.time() - (msg_module.QUESTION_EXPIRY_SECONDS + 600)

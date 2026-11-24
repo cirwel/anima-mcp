@@ -91,6 +91,11 @@ def _question_semantic_core(normalized: str) -> str:
     return t
 
 
+def _normalize_question_text(s: str) -> str:
+    """Case, outer whitespace and trailing punctuation folded; nothing else."""
+    return " ".join(s.lower().split()).rstrip("?!.").rstrip()
+
+
 def questions_similar(q1: str, q2: str) -> bool:
     """Return True when two questions are similar enough to suppress churn."""
 
@@ -604,6 +609,9 @@ class MessageBoard:
         """
         import time
 
+        # Pick up answers written since the last read (mtime-gated, cheap):
+        # the open-question check below reads ``answered``.
+        self._load()
         now = time.time()
         self._expire_old_questions(now)
 
@@ -646,6 +654,18 @@ class MessageBoard:
                 if self._questions_similar(text, q.text):
                     return None  # Skip similar question
 
+        # Don't re-ask a question that is still open. Expiry ends the
+        # response window, not the question: lumen_qa still lists an expired,
+        # never-answered question, so asking it again only adds a copy. Before
+        # this, the same handful of questions filled the 50-slot board (one
+        # drive question five times in four days) whenever nobody answered.
+        # Exact text only: questions_similar's fuzzy rules are tuned for the
+        # four-hour window above and would block distinct questions (shared
+        # stems, one-word template differences) for weeks. A state check,
+        # not a threshold: it lapses when the question is answered or trimmed.
+        if self._open_duplicate(text) is not None:
+            return None
+
         msg = self.add_message(text, MESSAGE_TYPE_QUESTION, author=author)
         if msg:
             if context:
@@ -677,6 +697,27 @@ class MessageBoard:
     def _questions_similar(self, q1: str, q2: str) -> bool:
         """Check if two questions are similar (fuzzy matching)."""
         return questions_similar(q1, q2)
+
+    def _open_duplicate(self, text: str) -> Optional[Message]:
+        """Newest question with this exact text that no one has answered yet.
+
+        Expired questions count: expiry closes the response window, not the
+        question. Lumen's self-answers never set ``answered``.
+        """
+        key = _normalize_question_text(text)
+        for m in reversed(self._messages):
+            if (
+                m.msg_type == MESSAGE_TYPE_QUESTION
+                and not m.answered
+                and _normalize_question_text(m.text) == key
+            ):
+                return m
+        return None
+
+    def open_duplicate(self, text: str) -> Optional[Message]:
+        """Public form of :meth:`_open_duplicate`, reloading first."""
+        self._load()
+        return self._open_duplicate(text)
 
     def get_unanswered_questions(self, limit: int = 5, auto_expire: bool = True) -> List[Message]:
         """Get unanswered questions for agents to respond to.
@@ -855,6 +896,11 @@ def add_question(
         reserve_budget_slots=reserve_budget_slots,
         max_same_context_per_day=max_same_context_per_day,
     )
+
+
+def open_duplicate_question(text: str) -> Optional[Message]:
+    """Convenience: the still-unanswered question with this exact text, if any."""
+    return get_board().open_duplicate(text)
 
 
 def get_unanswered_questions(limit: int = 5) -> List[Message]:
