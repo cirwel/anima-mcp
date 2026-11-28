@@ -135,15 +135,14 @@ def test_stability_fallback_matches_the_dict_default():
     """dict said neural: 0.1, the consumer's .get fallback said 0.2 — a config
     missing the key silently doubled the weight (#175).
 
-    theta/delta are pinned so the EEG branch is taken. Without them
-    ``_sense_stability`` falls back to ``get_computational_neural_state``,
-    whose sensor is a SINGLETON that appends to ``_cpu_history`` and derives
-    ``dt`` from ``time.time()`` on every call — so the two calls this test
-    compares are not two evaluations of a pure function, and asserting exact
-    equality across them made the test timing- and order-dependent. It failed
-    once in CI at 0.583 vs 0.601 and passed on rerun with identical code.
-    The subject here is the WEIGHT fallback, not the neural source; pinning
-    the neural term isolates it and makes the invariant actually protected."""
+    theta/delta are pinned so the banded branch is taken. Before #175's
+    fallback fix, omitting them made ``_sense_stability`` re-derive the bands
+    from the ``get_computational_neural_state`` SINGLETON (which appends to
+    ``_cpu_history`` and advances ``dt`` on every call), so two calls were not
+    two evaluations of a pure function: this test once failed in CI at 0.583
+    vs 0.601 and passed on rerun. Absent bands now read as full uncertainty
+    without sampling (tests/test_neural_fallback.py). The subject here is the
+    WEIGHT fallback; pinning the neural term keeps it isolated."""
     from anima_mcp.anima import _sense_stability
 
     def _grounded():

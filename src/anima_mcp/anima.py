@@ -470,6 +470,16 @@ def sense_self_with_memory(
     )
 
 
+# _neural_fallback_note (#175): the legacy neural terms in warmth, clarity and
+# presence carry weight 0.0 by default (de-aliased from CPU%, #173/#175), yet
+# each still called get_computational_neural_state() whenever the readings
+# lacked the bands. That sensor is a stateful singleton: every call appends to
+# its CPU/temperature history and advances its EMA and dt clock, so a term that
+# contributed nothing still moved the delta/theta/gamma the next real reading
+# reports, and could raise out of sense_self(). A zero-weight term now samples
+# nothing. A non-zero override keeps the old fallback unchanged.
+
+
 def _sense_warmth(r: SensorReadings, cal: NervousSystemCalibration, *, salience_weights: Optional[Dict[str, float]] = None) -> float:
     """
     How warm does the creature feel?
@@ -510,20 +520,22 @@ def _sense_warmth(r: SensorReadings, cal: NervousSystemCalibration, *, salience_
 
     # Legacy-named beta/gamma computational views. This contribution is
     # disabled by default calibration to avoid counting CPU activity twice.
+    # Fallback 0.0, not the historical 0.20: a config file predating the
+    # "neural" key must not silently resurrect the CPU% alias (config.py
+    # warmth_weights explains the de-alias).
+    neural_weight = cal.warmth_weights.get("neural", 0.0)
     if r.eeg_beta_power is not None and r.eeg_gamma_power is not None:
-        neural_warmth = (r.eeg_beta_power + r.eeg_gamma_power) / 2
-    else:
-        # Fallback: derive from system metrics directly
+        components.append((r.eeg_beta_power + r.eeg_gamma_power) / 2)
+        weights.append(neural_weight)
+    elif neural_weight > 0:
+        # Fallback: derive from system metrics directly. Only for a term that
+        # counts — see _neural_fallback_note.
         neural = get_computational_neural_state(
             cpu_percent=r.cpu_percent or 0,
             memory_percent=r.memory_percent or 50
         )
-        neural_warmth = (neural.beta + neural.gamma) / 2
-    components.append(neural_warmth)
-    # Fallback 0.0, not the historical 0.20: a config file predating the
-    # "neural" key must not silently resurrect the CPU% alias (config.py
-    # warmth_weights explains the de-alias).
-    weights.append(cal.warmth_weights.get("neural", 0.0))
+        components.append((neural.beta + neural.gamma) / 2)
+        weights.append(neural_weight)
 
     if not components:
         return 0.5
@@ -747,25 +759,36 @@ def _sense_clarity(
         }
 
     # Alpha computational view in a legacy EEG-named field.
+    # Fallback 0.0, not the historical 0.3 — same reasoning as warmth's.
+    alpha_weight = cal.clarity_weights.get("neural", 0.0)
     if r.eeg_alpha_power is not None:
-        neural_clarity = r.eeg_alpha_power
-        neural_source = "sensor_readings.eeg_alpha_power"
-    else:
-        # Fall back to computational neural (derives bands from system state)
+        add_component(
+            "computational_alpha",
+            r.eeg_alpha_power,
+            alpha_weight,
+            source="sensor_readings.eeg_alpha_power",
+        )
+    elif alpha_weight > 0:
+        # Fall back to computational neural (derives bands from system state).
+        # Only for a term that counts — see _neural_fallback_note.
         neural = get_computational_neural_state(
             cpu_percent=r.cpu_percent or 0,
             memory_percent=r.memory_percent or 50,
             cpu_temp=r.cpu_temp_c
         )
-        neural_clarity = neural.alpha
-        neural_source = "computational_alpha_fallback"
-    # Fallback 0.0, not the historical 0.3 — same reasoning as warmth's.
-    add_component(
-        "computational_alpha",
-        neural_clarity,
-        cal.clarity_weights.get("neural", 0.0),
-        source=neural_source,
-    )
+        add_component(
+            "computational_alpha",
+            neural.alpha,
+            alpha_weight,
+            source="computational_alpha_fallback",
+        )
+    else:
+        details["computational_alpha"] = {
+            "available": False,
+            "value": None,
+            "configured_weight": 0.0,
+            "source": "zero_weight_not_sampled",
+        }
 
     total_weight = sum(weights)
     value = (
@@ -887,22 +910,23 @@ def _sense_stability(
 
     # Computational dynamics heuristic: low I/O-integration + CPU/thermal
     # stability view contributes instability under its explicit 0.1 weight.
-    if r.eeg_theta_power is not None and r.eeg_delta_power is not None:
-        neural_groundedness = (r.eeg_theta_power + r.eeg_delta_power) / 2
-    else:
-        # Fall back to computational neural (derives bands from system state)
-        neural = get_computational_neural_state(
-            cpu_percent=r.cpu_percent or 0,
-            memory_percent=r.memory_percent or 50,
-            cpu_temp=r.cpu_temp_c
-        )
-        neural_groundedness = (neural.theta + neural.delta) / 2
-
-    # Invert: low groundedness = high instability
     # Fallback matches the dict default (was 0.2 vs the dict's 0.1 — a config
     # missing the key silently DOUBLED the weight; #175 trap class).
     neural_weight = cal.stability_weights.get("neural", 0.1)
-    instability += (1.0 - neural_groundedness) * neural_weight
+    if r.eeg_theta_power is not None and r.eeg_delta_power is not None:
+        # Invert: low groundedness = high instability
+        neural_groundedness = (r.eeg_theta_power + r.eeg_delta_power) / 2
+        neural_instability = 1.0 - neural_groundedness
+    else:
+        # Absent theta/delta are UNKNOWN, read at full uncertainty — the same
+        # convention as the missing-sensors term above (CLAUDE.md invariant 2).
+        # This used to re-derive the bands from the computational-neural
+        # singleton: in the broker that is the very source whose failure left
+        # them None (sensors/pi.py), it coerced a missing cpu_percent to an idle
+        # 0, and it appended a phantom sample to the shared CPU history that
+        # the next real reading's delta is computed from (#175).
+        neural_instability = 1.0
+    instability += neural_instability * neural_weight
     count += neural_weight
 
     if count == 0:
@@ -949,23 +973,23 @@ def _sense_presence(r: SensorReadings, cal: NervousSystemCalibration, *, salienc
         count += weight
 
     # Neural void: High gamma = high ctx switching = scattered = less presence
+    # Weight 0.0 by design and fallback 0.0 deliberately (#175): gamma is
+    # mostly cpu_percent renamed (r=+0.743), which already has its own door
+    # above — and a config predating the key must not resurrect the alias.
+    weight = cal.presence_weights.get("neural", 0.0)
     if r.eeg_gamma_power is not None:
-        neural_gamma = r.eeg_gamma_power
-    else:
-        # Fall back to computational neural (derives bands from system state)
+        void += r.eeg_gamma_power * weight
+        count += weight
+    elif weight > 0:
+        # Fall back to computational neural (derives bands from system state).
+        # Only for a term that counts — see _neural_fallback_note.
         neural = get_computational_neural_state(
             cpu_percent=r.cpu_percent or 0,
             memory_percent=r.memory_percent or 50,
             cpu_temp=r.cpu_temp_c
         )
-        neural_gamma = neural.gamma
-
-    # Weight 0.0 by design and fallback 0.0 deliberately (#175): gamma is
-    # mostly cpu_percent renamed (r=+0.743), which already has its own door
-    # above — and a config predating the key must not resurrect the alias.
-    weight = cal.presence_weights.get("neural", 0.0)
-    void += neural_gamma * weight
-    count += weight
+        void += neural.gamma * weight
+        count += weight
 
     if count == 0:
         return 0.5
